@@ -1,6 +1,6 @@
 ## Summary
 
-Instead of every workspace package declaring a version range on a dependency, a new `workspace-consistent` version specifier protocol would allow packages to delegate to a range defined at the root `package.json`.
+Instead of every workspace package declaring a version range on a dependency, a new `workspace-consistent:` version specifier protocol would allow packages to delegate to a range defined at the root `package.json`.
 
 ## Motivation
 
@@ -69,7 +69,7 @@ While there are situations making differing versions become unavoidable, this is
 {
   "name": "@monorepo/foo",
   "dependencies": {
-    "react": "workspace-consistent",
+    "react": "workspace-consistent:",
   }
 }
 ```
@@ -79,11 +79,11 @@ While there are situations making differing versions become unavoidable, this is
 {
   "name": "@monorepo/bar",
   "dependencies": {
-    "react": "workspace-consistent",
-    "react-dom": "workspace-consistent"
+    "react": "workspace-consistent:",
+    "react-dom": "workspace-consistent:"
   },
   "devDependencies": {
-    "jest": "workspace-consistent"
+    "jest": "workspace-consistent:"
   }
 }
 ```
@@ -116,19 +116,19 @@ importers:
 
   packages/foo:
     specifiers:
-      react: workspace-consistent
+      react: workspace-consistent:
     dependencies:
-      react: workspace-consistent
+      react: workspace-consistent:
 
   packages/foo:
     specifiers:
-      jest: workspace-consistent
-      react: workspace-consistent
-      react-dom: workspace-consistent
+      jest: workspace-consistent:
+      react: workspace-consistent:
+      react-dom: workspace-consistent:
     dependencies:
-      jest: workspace-consistent
-      react: workspace-consistent
-      react-dom: workspace-consistent_react@workspace-consistent
+      jest: workspace-consistent:
+      react: workspace-consistent:
+      react-dom: workspace-consistent:_react@workspace-consistent:
 
 # No proposed changes to the packages section.
 packages:
@@ -147,13 +147,15 @@ packages:
 ```
 </details>
 
+`package.json` files must refer to `workspace-consistent:` rather than `workspace-consistent` (with the colon) since the later refers to an npm dist tag.
+
 ### Peers Suffix Elaboration
 
-It's worth elaborating on the lockfile resolved version for `react-dom`, which was recorded as: `workspace-consistent_react@workspace-consistent` for the [_minimal example_](#minimal-example) above.
+It's worth elaborating on the lockfile resolved version for `react-dom`, which was recorded as: `workspace-consistent:_react@workspace-consistent:` for the [_minimal example_](#minimal-example) above.
 
-The `react@workspace-consistent` portion (after the underscore) is referred to as the *"peers suffix"* in pnpm nomenclature. A "_peers suffix_" appears in this case since `react-dom` declares a peer dependency on `react`.
+The `react@workspace-consistent:` portion (after the underscore) is referred to as the *"peers suffix"* in pnpm nomenclature. A "_peers suffix_" appears in this case since `react-dom` declares a peer dependency on `react`.
 
-Without workspace consistent versions, this would normally render as `17.0.2_react@17.0.2`. The `17.0.2` portions are intentionally replaced with `workspace-consistent` to keep changes to the lockfile small. The extra indirection allows edits to be limited to the `workspaceConsistent` and `packages` section whenever the workspace changes its `react` or `react-dom` version. See [_Merge conflicts in `pnpm-lock.yaml` are reduced_](#1-merge-conflicts-in-pnpm-lockyaml-are-reduced) for the problem this solves.
+Without workspace consistent versions, this would normally render as `17.0.2_react@17.0.2`. The `17.0.2` portions are intentionally replaced with `workspace-consistent:` to keep changes to the lockfile small. The extra indirection allows edits to be limited to the `workspaceConsistent` and `packages` section whenever the workspace changes its `react` or `react-dom` version. See [_Merge conflicts in `pnpm-lock.yaml` are reduced_](#1-merge-conflicts-in-pnpm-lockyaml-are-reduced) for the problem this solves.
 
 ## Rationale for First-Class Support
 
@@ -163,7 +165,7 @@ While there's existing tooling in the frontend ecosystem for consistent versions
 
 When upgrading a dependency intended to be consistent across workspace packages, any blocks under the `importers` key containing that dependency will have line changes in `pnpm-lock.yaml`.
 
-Suppose a commit upgrades `react` and `react-dom` to `^18.0.0-rc.3` in the [_minimal example_](#minimal-example) without `workspace-consistent` usage. This results in git merge conflicts if another commit:
+Suppose a commit upgrades `react` and `react-dom` to `^18.0.0-rc.3` in the [_minimal example_](#minimal-example) without `workspace-consistent:` usage. This results in git merge conflicts if another commit:
 
 - <details close>
   <summary>Changes the version of a dependency line-adjacent to the upgraded dependency.</summary>
@@ -301,22 +303,22 @@ There might be a tight relationship between `foo` and `bar`.
 
 A developer working primarily in `@monorepo/bar` may not realize the implied coupling and upgrade `@monorepo/bar` to `react@18` without realizing an edit to `@monorepo/foo` was also required.
 
-The `workspace-consistent` protocol makes it more clear from just reading `package.json` when a dependency is intended to be consistent across the monorepo. Ideally this person would search "workspace-consistent package.json` online and find pnpm.io docs.
+The `workspace-consistent:` protocol makes it more clear from just reading `package.json` when a dependency is intended to be consistent across the monorepo. Ideally this person would search "workspace-consistent package.json` online and find pnpm.io docs.
 
 ## Implementation
 
 The primary implementation changes happen in `pnpm-lock.yaml` read and write.
 
-On read, any `workspace-consistent` references will be replaced with the aliased version when deserializing the lockfile into memory. On write, the in-memory versions would be replaced with `workspace-consistent`.
+On read, any `workspace-consistent:` references will be replaced with the aliased version when deserializing the lockfile into memory. On write, the in-memory versions would be replaced with `workspace-consistent:`.
 
 This process may not be possible if the lockfile in a broken state.
 
-  - If the `workspace-consistent` is specified for a dependency in the lockfile not present in the root `package.json`, installation will abort.
-  - If the `workspace-consistent` resolution is specified for a dependency not present in the `workspaceConsistent` lockfile block, a best case resolution will be made following existing semver range to concrete version logic.
+  - If the `workspace-consistent:` is specified for a dependency in the lockfile not present in the root `package.json`, installation will abort.
+  - If the `workspace-consistent:` resolution is specified for a dependency not present in the `workspaceConsistent` lockfile block, a best case resolution will be made following existing semver range to concrete version logic.
 
 ### Other Changes
 
-Similar to the [`workspace:` protocol](https://pnpm.io/workspaces#workspace-protocol-workspace), `pnpm publish` will need to dynamically replace instances of `workspace-consistent` with the value specified in the root `package.json`.
+Similar to the [`workspace:` protocol](https://pnpm.io/workspaces#workspace-protocol-workspace), `pnpm publish` will need to dynamically replace instances of `workspace-consistent:` with the value specified in the root `package.json`.
 
 There may be changes to `pnpm update` to make sure it respects `workspaceConistent` versions, but the existing version deduplication logic may do that already.
 
@@ -472,9 +474,9 @@ The `allowTransitiveMismatches` option will provide an escape hatch in case spec
 
 ### Allowed Deviations
 
-The default behavior is to show an error if a workspace package does not use `workspace-consistent` for a configured dependency. However, sometimes a workspace package may not be able to use the same version of a dependency as the other packages in the monorepo. The `allowedDeviations` option can be used as an escape hatch.
+The default behavior is to show an error if a workspace package does not use `workspace-consistent:` for a configured dependency. However, sometimes a workspace package may not be able to use the same version of a dependency as the other packages in the monorepo. The `allowedDeviations` option can be used as an escape hatch.
 
-Once specified, `@monorepo/baz` will be allowed to declare a version range that does not begin with `workspace-consistent` for `@types/react`.
+Once specified, `@monorepo/baz` will be allowed to declare a version range that does not begin with `workspace-consistent:` for `@types/react`.
 
 ```json5
 {
@@ -526,7 +528,7 @@ Users may want to declare different subset partitions of consistent version shar
 }
 ```
 
-Workspace packages would then use `workspace-consistent:<version-group>` as the protocol. Simply `workspace-consistent` would refer to the `default` group.
+Workspace packages would then use `workspace-consistent:<version-group>` as the protocol. Simply `workspace-consistent:` would refer to the `default` group.
 
 An edge case arises if a package overlaps its version group usage.
 
@@ -550,7 +552,7 @@ Note that the algorithm above would permit this alternative scenario, which is l
   "dependencies": {
     "react": "workspace-consistent:react-rc",
     "react-dom": "workspace-consistent:react-rc",
-    "redux": "workspace-consistent"
+    "redux": "workspace-consistent:"
   }
 }
 ```
@@ -567,4 +569,4 @@ An alternative mechanism for declaring workspace consistent versions is the [`pn
 
 https://github.com/npm/rfcs/blob/main/accepted/0036-overrides.md
 
-The `workspace-consistent` protocol is conversely intended for long-lived usage.
+The `workspace-consistent:` protocol is conversely intended for long-lived usage.
