@@ -456,13 +456,13 @@ It would be useful to declare two extra fields to solve the duplicate dependency
     "workspaceConsistent": {
       "groups": {
         "default": {
-          "@types/react": "^17.0.43",
+          "object-assign": "^3.0.0",
           "react": "^17.0.2",
           "react-dom": "^17.0.2",
         }
       },
       "enforceConsistencyTransitively": true,
-      "allowTransitiveMismatches": ["@types/react"]
+      "allowTransitiveMismatches": ["object-assign"]
     }
   }
 }
@@ -470,7 +470,7 @@ It would be useful to declare two extra fields to solve the duplicate dependency
 
 `enforceConsistencyTransitively` will error if there is ever more than one item in the `packages` block of `pnpm-lock.yaml` for a dependency, even duplicates on the same version but appearing multiple times due to peer dependencies.
 
-The `allowTransitiveMismatches` option will provide an escape hatch in case specific dependencies are acceptable. In the case above, duplicate `@types/react` dependencies may be acceptable since it's usually under `devDependencies` and package authors may declare a semver range without any overlap on the monorepo workspace consistent range.
+The `allowTransitiveMismatches` option will provide an escape hatch if `enforceConsistencyTransitively` is enabled and a dependency requires a dependency version outside of the `workspaceConistent` range. For example, suppose all workspace packages specify `workspace-consistent:*` on the `object-assign` ponyfill, but `react` depends on `object-assign@^4.1.1`. In this scenario, two copies of `object-assign` across different major versions (3.x and 4.x) are present in the dependency graph. Adding `object-assign` to the `allowTransitiveMismatches` array marks this as acceptable. While the multiple copies of `object-assign` are non-ideal, this escape hatch allows users to selectively relax the `enforceConsistencyTransitively` check without disabling it entirely.
 
 ### Allowed Deviations
 
