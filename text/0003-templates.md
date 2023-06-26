@@ -195,7 +195,7 @@ Avoiding inheritance simplifies implementation and usability in several ways.
 
 A few of the problems above can be mitigated by rendering the template package itself before publishing, but this introduces other problems. Toolkit templates install dependencies in the referencing package as `devDependencies`, which isn't desirable in other templates.
 
-The existing design is inspired from the concept of "traits" in some programming languages, which provide reusability without inheritance.
+The existing design is inspired by the concept of ["_composition over inheritance_"](https://en.wikipedia.org/wiki/Composition_over_inheritance), which provides reusability without defining difficult to change relationships between packages.
 
 ### Specifiers
 
