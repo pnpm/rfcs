@@ -206,6 +206,40 @@ A package referencing the `@example/frontend-catalog` above will have the follow
 
 We expect the `pnpm.templates.catalog` flavor to very popular for monorepos. This allows dependency specifiers to be consistent between different in-repo packages.
 
+### Compatibility and Patches
+
+The `compatibility` and `patches` template flavors apply to the root `package.json` of a pnpm workspace and allow modifications to the dependency graph.
+
+```json5
+{
+  "name": "@example/patches",
+  "version": "0.1.0",
+  "pnpm": {
+    "template": "patches",
+
+    // https://pnpm.io/package_json#pnpmpackageextensions
+    "packageExtensions": {
+      "react-redux": {
+        "peerDependencies": {
+          "react-dom": "*"
+        }
+      }
+    },
+
+    // https://pnpm.io/package_json#pnpmpatcheddependencies
+    "patchedDependencies": {
+      "express@4.18.1": "patches/express@4.18.1.patch"
+    }
+  }
+}
+```
+
+Settings that reference local files (such as `patches/express@4.18.1.patch` above) will be looked up relative to the template producing `package.json` rather than the consuming `package.json`. If the referenced `patches` template is an external package, it will be fetched and linked into `node_modules/.pnpm`. This is a special case of the patches template flavor due to the need to reference files within the package. Other template flavors are not linked into `node_modules/.pnpm`.
+
+```
+node_modules/.pnpm/@example+patches/node_modules/@example/patches/patches/express@4.18.1.patch
+```
+
 ### Combining Templates
 
 Templates may not be templated from other templates. Instead of an inheritance hierarchy, a package may refer to multiple templates with later entries in the list taking precedence.
@@ -330,9 +364,11 @@ A future version of pnpm templates may provide this flavor, but significant thou
 
 ### Fetching
 
-Templates are not installed as standard dependencies and linked into `node_modules`. If a package refers to an external template on an NPM registry, only the metadata will be fetched. The fetch will be performed [without the abbreviated header](https://github.com/npm/registry/blob/master/docs/responses/package-metadata.md#abbreviated-metadata-format), so the full document is retrieved.
+Most templates are not installed as standard dependencies and linked into `node_modules`. If a package refers to an external template on an NPM registry, only the metadata will be fetched. The fetch will be performed [without the abbreviated header](https://github.com/npm/registry/blob/master/docs/responses/package-metadata.md#abbreviated-metadata-format), so the full document is retrieved.
 
-If only a subset of the version catalog is used, the full catalog of dependencies does not need to be installed.
+For the `catalog` template, not installing the template into `node_modules` provides a performance optimization. Only the subset of the version catalog that's used will be fetched and installed.
+
+The exception is the `patches` template flavor since it may refer to local patch files. The full NPM package producing the `patches` template will be fetched, added to the pnpm store, and linked into `node_modules/.pnpm`.
 
 ### Lockfile
 
