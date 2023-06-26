@@ -369,7 +369,7 @@ A future version of pnpm templates may provide this flavor, but significant thou
 
 ### Fetching
 
-Most templates are not installed as standard dependencies and linked into `node_modules`. If a package refers to an external template on an NPM registry, only the metadata will be fetched. The fetch will be performed [without the abbreviated header](https://github.com/npm/registry/blob/master/docs/responses/package-metadata.md#abbreviated-metadata-format), so the full document is retrieved.
+Most templates are not installed as standard dependencies and linked into `node_modules`. If a package refers to an external template on an NPM registry, only the metadata will be fetched. The fetch will be performed [without the abbreviated header](https://github.com/npm/registry/blob/master/docs/responses/package-metadata.md#abbreviated-metadata-format), so the full document is retrieved. The metadata will be saved to the content-addressable store for fast subsequent lookups.
 
 For the `catalog` template, not installing the template into `node_modules` provides a performance optimization. Only the subset of the version catalog that's used will be fetched and installed.
 
@@ -377,9 +377,44 @@ The exception is the `patches` template flavor since it may refer to local patch
 
 ### Lockfile
 
-No explicit changes will be made to the `pnpm-lock.yaml` file. Any `importers` entries referencing a template will have their rendered result saved to the lockfile.
+The relevant sections of each template will be saved to `pnpm-lock.yaml` under a new `templates` key. This allows users to more easily review changes to templates and pnpm to perform faster up-to-date checks.
 
-This may be revisited if it affects pnpm's performance when performing up to date checks.
+```yaml
+lockfileVersion: next
+
+importers:
+  # ...
+
+templates:
+
+  /@example/frontend-catalog@0.1.0:
+    manifestResolution: {integrity: sha512...}
+    pnpm:
+      template: catalog
+    dependencies:
+      react: ^18.2.0
+      react-dom: ^18.2.0
+      redux: ^4.2.0
+      react-redux: ^8.0.0
+
+  /@example/patches@0.1.0:
+    resolution: {integrity: sha512...}
+    pnpm:
+      template: patches
+    packageExtensions:
+      react-redux:
+        peerDependencies:
+          react-dom: "*"
+    patchedDependencies:
+      express@4.18.1: patches/express@4.18.1.patch
+
+packages:
+  # ...
+```
+
+Since an integrity checksum of only the manifest is not provided by the registry, a new `manifestResolution.integrity` value will need to be computed locally.
+
+In the initial implementation, `importers` entries referencing a template will have their rendered result saved to the lockfile.
 
 ### Portability
 
