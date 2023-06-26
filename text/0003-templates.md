@@ -206,6 +206,11 @@ A package referencing the `@example/frontend-catalog` above will have the follow
 
 We expect the `pnpm.templates.catalog` flavor to very popular for monorepos. This allows dependency specifiers to be consistent between different in-repo packages.
 
+There are a few rules on how a catalog defines shared dependencies specifiers and how they can be consumed.
+
+- The `dependencies` block of a catalog can be used in the `dependencies`, `devDependencies`, and `optionalDependencies` of a consuming `package.json`.
+- The `peerDependencies` block of a catalog can only be used in the `peerDependencies` block of a consuming `package.json`.
+
 ### Compatibility and Patches
 
 The `compatibility` and `patches` template flavors apply to the root `package.json` of a pnpm workspace and allow modifications to the dependency graph.
