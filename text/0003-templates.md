@@ -22,6 +22,10 @@ While there are situations differing versions are intentional, this is more ofte
 
 Fields such as `author`, `license`, and `repository` are typically expected to be the same across all packages in a monorepo. It would be easier to set this in a singular source of truth rather than every package.
 
+### Workspace Configuration
+
+Workspace settings such as [`pnpm.packageExtensions`](https://pnpm.io/package_json#pnpmpackageextensions) can be shared across different repositories. For example, pnpm includes the [`@yarnpkg/extensions` database](https://github.com/yarnpkg/berry/blob/master/packages/yarnpkg-extensions/sources/index.ts) builtin. Templates allow users to create their own extensions database.
+
 ## Detailed Explanation
 
 A "*Template*" is defined as a normal `package.json` file with the `pnpm.template` field set.
