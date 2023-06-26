@@ -245,6 +245,58 @@ Templates can be specified through:
 2. The `name@workspace:` syntax to refer to a template that's also a workspace package.
 3. The `file:<path>` syntax to refer to an on-disk path.
 
+### Shared Workspace Configuration
+
+It can be tedious to set up the same template configurations for each package in a pnpm workspace. The `workspaceTemplateConfigs` option can be specified at the root `package.json` to simplify.
+
+```json5
+// packages.json
+{
+  "pnpm": {
+    "workspaceTemplateConfigs": {
+      // All packages in the workspace should use this configuration.
+      "default": {
+        "authoring": [
+          "@organization/authoring-metadata@0.1.0",
+          "@team/authoring-metadata@0.1.0"
+        ],
+        "catalog": ["@example/frontend-catalog@workspace:"],
+      },
+
+      // Applies to all packages in the workspace tagged as a "library"
+      "library": {
+        "scripts": ["@example/library-scripts@workspace:"]
+      },
+
+      // Other packages may be tagged as an "application". For this example,
+      // applications have a different set of scripts.
+      "application": {
+        "scripts": ["@example/application-scripts@workspace:"]
+      }
+
+    },
+  }
+}
+```
+
+A special `workspaceConfigs` key can be specified to determine which workspace template configs apply to a given package.
+
+```json5
+// packages/foo/package.json
+{
+  "name": "@example/foo",
+  "pnpm": {
+    "templates": {
+      "workspaceConfigs": ["default", "library"]
+    }
+  }
+}
+```
+
+The example above uses the `default` tag. There is no special treatment for this tag name; it is not applied to all workspace packages implicitly. From a design standpoint, all `package.json` files should specify `pnpm.templates` to communicate to pnpm and other tooling that the file alone is not enough to render its contents.
+
+Despite that, it's likely users will want to enforce that a template is applied to all packages in some manner. An optional `pnpm template check` command will be available to assert that all packages in the workspace configure `pnpm.templates` in a desired manner.
+
 ## Rationale and Alternatives
 
 ### Syncpack
