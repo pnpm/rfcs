@@ -28,39 +28,55 @@ Workspace settings such as [`pnpm.packageExtensions`](https://pnpm.io/package_js
 
 ## Detailed Explanation
 
-A "*Template*" is defined as a normal `package.json` file with the `pnpm.template` field set.
+A "*Template*" is a normal `package.json` file with the `pnpm.template` field set.
 
 ```json5
 {
-  "name": "@example/react-template",
+  "name": "@example/frontend-catalog",
   "pnpm": {
-    "template": true,
-  },
-  "version": "0.1.0",
-  "author": "Example Team <team@team.example>",
-  "license": "MIT",
-  "scripts": {
-    "compile": "tsc"
+    "template": "catalog"
   },
   "dependencies": {
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "redux": "^4.2.0",
+    "react-redux": "^8.0.0"
   }
 }
 ```
 
-Templates must opt into being a template by defining `pnpm.template`. This is a safety mechanism to:
+A package can then reference the template to populate different portions of its definition. Templates are available in different flavors that provide distinct features.
 
-1. Intentionally prevent existing packages from being referred to for that purpose. Templates have different obligations and usage than standard packages that authors of templates should be aware of.
+- `catalog` — templates that share dependency specifiers
+- `toolkit` — templates that share `devDependencies`
+- `authoring` — templates that share `author`, `license`, `funding`, `repository`, `bugs`, `contributors`
+- `scripts` — templates that share scripts
+- `compatibility` — templates that can modify the package manifest of other dependencies through `pnpm.packageExtensions`. (Alternative to the compatibility DB.)
+- `patches` — templates that can modify the package manifest and contents of dependencies through fields such as `pnpm.packageExtensions`, `pnpm.overrides`, `pnpm.patchedDependencies`, `pnpm.peerDependencyRules`, etc.
+
+Templates must opt into being a template by defining `pnpm.template` and the flavor. This is a safety mechanism to:
+
+1. Intentionally prevent existing packages from being referred to for this purpose. Templates have different obligations and usage than standard packages that authors of templates should be aware of.
 2. Allow checks to be performed on the template before publishing and during consumption. Not all `package.json` fields may be valid on a template.
 
-A package can reference the template to populate different portions of its definition. The specific feature is determined by `pnpm.templates`: `extends`, `toolkit`, and `catalog`.
+### Authoring
 
-### Extends
+The below shows an example of a simple `authoring` template.
 
-Using the `pnpm.templates.extends` mechanism, `package.json` fields from templates are copied with small exceptions. The `name`, `dist`, and underscore prefixed fields (e.g. `_npmUser`) are not copied since they're typically specific to the template package itself.
+```json5
+{
+  "name": "@example/authoring-template",
+  "version": "0.1.0",
+  "pnpm": {
+    "template": "authoring"
+  },
+  "author": "Example Organization <team@organization.example>",
+  "license": "MIT",
+  "repository": "git@organization.example/example/project"
+}
+```
 
-A package referencing the `@example/react-template` above will have the following on-disk and in-memory representations.
+A package referencing the `@example/authoring-template` above will have the following on-disk and in-memory representations.
 
 **On-Disk**
 
@@ -69,7 +85,7 @@ A package referencing the `@example/react-template` above will have the followin
   "name": "@example/react-components",
   "pnpm": {
     "templates": {
-      "extends": ["@example/react-template@0.1.0"],
+      "authoring": ["@example/authoring-template@0.1.0"],
     }
   }
 }
@@ -80,24 +96,31 @@ A package referencing the `@example/react-template` above will have the followin
 ```json5
 {
   "name": "@example/react-components",
-  "version": "0.1.0",
-  "author": "Example Team <team@team.example>",
+  "author": "Example Organization <team@organization.example>",
   "license": "MIT",
-  "scripts": {
-    "compile": "tsc"
-  },
+  "repository": "git@organization.example/example/project"
+}
+```
+
+### Toolkit
+
+The `pnpm.templates.toolkit` flavor copies the `dependencies` block of the template and spreads it into the `devDependencies` of the referencing package.
+
+Given the following template:
+
+```json5
+{
+  "name": "@example/react-toolkit",
   "dependencies": {
+    "jest": "^29.4.3",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "redux": "^4.2.1"
   }
 }
 ```
 
-Note that non-standard `package.json` fields such as `eslintConfig` will also be copied. Although these fields have no meaning to package managers, they will appear in the published manifest.
-
-### Toolkit
-
-The `pnpm.templates.toolkit` field copies the `dependencies` block of the template and spreads it into the `devDependencies` of the referencing package.
+A package referencing the `@example/react-toolkit` above will have the following on-disk and in-memory representations.
 
 **On-Disk**
 
@@ -106,11 +129,8 @@ The `pnpm.templates.toolkit` field copies the `dependencies` block of the templa
   "name": "@example/react-components",
   "pnpm": {
     "templates": {
-      "toolkit": ["@example/react-template@0.1.0"],
+      "toolkit": ["@example/react-toolkit@0.1.0"],
     }
-  },
-  "devDependencies": {
-    "jest": "^29.4.3"
   }
 }
 ```
@@ -127,15 +147,33 @@ The `pnpm.templates.toolkit` field copies the `dependencies` block of the templa
     "jest": "^29.4.3",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "redux": "^4.2.1"
   }
 }
 ```
 
-This allows package authors to share a reusable set of tools that can be imported or required in the referencing package. Dependencies of dependencies are not normally visible in this manner since pnpm sets up a semi-strict `node_modules` structure by default.
+This allows package authors to share a reusable set of dependencies that can be imported or required in the referencing package. Dependencies of dependencies are not normally visible in this manner since pnpm sets up a semi-strict `node_modules` structure by default.
 
 ### Catalog
 
-The `pnpm.templates.catalog` feature allows packages to declare a dependency using a version specifier from the referenced template. The `dependencies` block of the template will be available to reference through the `catalog:` version specifier protocol.
+The `pnpm.templates.catalog` flavor allows packages to declare a dependency using a version specifier from the referenced template. The `dependencies` block of the template will be available to reference through the `catalog:` version specifier protocol.
+
+```json5
+{
+  "name": "@example/frontend-catalog",
+  "pnpm": {
+    "template": "catalog"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "redux": "^4.2.0",
+    "react-redux": "^8.0.0"
+  }
+}
+```
+
+A package referencing the `@example/frontend-catalog` above will have the following on-disk and in-memory representations.
 
 **On-Disk**
 
@@ -144,11 +182,12 @@ The `pnpm.templates.catalog` feature allows packages to declare a dependency usi
   "name": "@example/react-components",
   "pnpm": {
     "templates": {
-      "catalog": ["@example/react-template@0.1.0"],
+      "catalog": ["@example/frontend-catalog@0.1.0"],
     }
   },
   "dependencies": {
-    "react": "catalog:"
+    "react": "catalog:",
+    "redux": "catalog:"
   }
 }
 ```
@@ -159,16 +198,17 @@ The `pnpm.templates.catalog` feature allows packages to declare a dependency usi
 {
   "name": "@example/react-components",
   "dependencies": {
-    "react": "^18.2.0"
+    "react": "^18.2.0",
+    "redux": "^4.2.0",
   }
 }
 ```
 
-We expect most monorepos to use this feature to keep dependency specifiers consistent between different in-repo packages.
+We expect the `pnpm.templates.catalog` flavor to very popular for monorepos. This allows dependency specifiers to be consistent between different in-repo packages.
 
 ### Combining Templates
 
-Templates may not refer to other templates. Instead of an inheritance hierarchy, a package may refer to multiple templates with later entries in the list taking precedence.
+Templates may not be templated from other templates. Instead of an inheritance hierarchy, a package may refer to multiple templates with later entries in the list taking precedence.
 
 For example, if both `@organization/authoring-metadata` and `@team/authoring-metadata` have an `author` field, the value from `@team/authoring-metadata` will be used.
 
@@ -177,7 +217,7 @@ For example, if both `@organization/authoring-metadata` and `@team/authoring-met
   "name": "@example/simple",
   "pnpm": {
     "templates": {
-      "extends": [
+      "authoring": [
         "@organization/authoring-metadata@0.1.0",
         "@team/authoring-metadata@0.1.0"
       ],
@@ -224,6 +264,16 @@ https://github.com/npm/rfcs/blob/main/accepted/0036-overrides.md
 
 The `catalog:` protocol is conversely intended for long-lived usage.
 
+### Copying all fields
+
+An earlier draft of this RFC considered a `pnpm.templates.extends` flavor. This would allow a child `package.json` to copy all fields from its parent. This won't be present in the initial version of pnpm templates for a few reasons.
+
+- **Security concerns**: An external template may initially provide dependencies to inherit, but maliciously override fields such as `license` or `funding` in an update. This introduces a new form of security vulnerability in the ecosystem. Authors of consuming packages would need to trust or review every update to an `extends` template, which is impractical to expect.
+- **Copying ambiguity**: Certain fields such as `version` may not be desirable to inherit from a parent `package.json`. The `extends` flavor would need to exclude copying for some fields. This makes a theoretical `extends` flavor difficult to understand and result in surprises at publish time.
+- **Merging ambiguity**: It's not always clear how to "_merge_" fields. For example, if a consuming package and template both define `pnpm.allowedDeprecatedVersions.express`, should pnpm replace the field from the template with the child package's value, or union the allowed deprecated versions? What should `extends` do for fields added in newer versions of pnpm that it doesn't know how to merge?
+
+A future version of pnpm templates may provide this flavor, but significant thoughtfulness around the above would be necessary. For now, we believe all use cases involving an `extends` flavor could be addressed through the introduction of new template flavors.
+
 ## Implementation
 
 ### Fetching
@@ -259,4 +309,3 @@ A command to view the rendered result will be available to assist debugging.
 ## Unresolved Questions and Bikeshedding
 
 - In prior discussions, this feature was referred to as "_Environments_". The initial draft proposes "_Templates_" to make it more clear that this feature is simply a `package.json` authoring mechanism. Templates/environments are not themselves installed.
-- Should the `version` field be extended by `pnpm.templates.extends`? One on hand, this allows monorepo packages to be single-versioned easily. On the other hand, it can be very surprising when packages are published with the version from a template. Previously forgetting to specify a `version` results in a helpful error.
