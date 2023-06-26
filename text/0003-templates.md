@@ -294,7 +294,15 @@ Usage of an template package is localized to a monorepo. When a package within t
 
 This allows the published `package.json` to be portable and consumed by other package managers.
 
-A command to view the rendered result will be available to assist debugging.
+### Debugging and Tracing
+
+A command to view the rendered result will be available to assist debugging. When `pnpm template view` is ran, the `package.json` file in the current working directory will be rendered. The `--trace` flag will show which template a field value was chosen from.
+
+```
+❯ pnpm template view --trace
+```
+
+<img width="1050" alt="Screenshot of pnpm view template command" src="https://github.com/pnpm/rfcs/assets/906558/7350f337-5b5a-4725-aa1a-e65bb367f31d">
 
 ## Prior Art
 
