@@ -336,7 +336,7 @@ importers:
 templates:
 
   /@example/frontend-catalog@0.1.0:
-    manifestResolution: {integrity: sha512...}
+    resolution: {integrity: sha512...}
     pnpm:
       template: catalog
     dependencies:
@@ -360,7 +360,7 @@ packages:
   # ...
 ```
 
-Since an integrity checksum of only the manifest is not provided by the registry, a new `manifestResolution.integrity` value will need to be computed locally.
+Similar to external dependencies under the `packages` block, external templates will store the `resolution.integrity` field provided from the registry in its lockfile entry. Note that only the `patches` template flavor actually uses the tarball associated with the integrity hash. The other template flavors will store the tarball integrity for consistency.
 
 In the initial implementation, `importers` entries referencing a template will have their rendered result saved to the lockfile.
 
