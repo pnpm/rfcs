@@ -182,12 +182,14 @@ A package referencing the `@example/frontend-catalog` above will have the follow
   "name": "@example/react-components",
   "pnpm": {
     "templates": {
-      "catalog": ["@example/frontend-catalog@0.1.0"],
+      "catalog": {
+        "example-frontend": "@example/frontend-catalog@0.1.0"
+      }
     }
   },
   "dependencies": {
-    "react": "catalog:",
-    "redux": "catalog:"
+    "react": "catalog:example-frontend",
+    "redux": "catalog:example-frontend"
   }
 }
 ```
