@@ -389,8 +389,3 @@ A command to view the rendered result will be available to assist debugging. Whe
 - [RFC: First-Class Support for Workspace Consistent Versions](https://github.com/pnpm/rfcs/pull/1)
 - [RFC for parent package.json npm/rfcs#165](https://github.com/npm/rfcs/pull/165)
 - [[RRFC] Accepting version references within dependencies and devDependencies](https://github.com/npm/rfcs/issues/677)
-
-## Unresolved Questions and Bikeshedding
-
-- In prior discussions, this feature was referred to as "_Environments_". The initial draft proposes "_Templates_" to make it more clear that this feature is simply a `package.json` authoring mechanism. Templates/environments are not themselves installed.
-- It can be tedious to set up the same template configurations for each package in a pnpm workspace. An earlier version of this RFC described a `pnpm.workspaceTemplateConfigs` option can be specified at the root `package.json`. Some version of this is desirable, but the exact solution will be discussed in a separate RFC.
