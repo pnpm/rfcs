@@ -4,18 +4,26 @@
 
 "_Catalogs_" allow multiple `package.json` files to share the same version specifier of a dependency through a new `catalog:` protocol.
 
-A catalog may be defined through JSON, JSON5, or YAML:
+A catalog may be defined at the root `package.json`:
 
-```yaml
-# The schema version of the catalog file itself.
-catalog-definition-version: 1
+```json5
+// package.json
+{
+  "name": "monorepo-root",
+  "pnpm": {
+    "catalogs": {
 
-# Version specifiers that catalog consumers may reference.
-versions:
-  react: ^18.2.0
-  react-dom: ^18.2.0
-  redux: ^4.2.0
-  react-redux: ^8.0.0
+      // Version specifiers that catalog consumers may reference.
+      "default": {
+        "react": "^18.2.0",
+        "react-dom": "^18.2.0",
+        "redux": "^4.2.0",
+        "react-redux": "^8.0.0"
+      }
+
+    }
+  }
+}
 ```
 
 A package referencing the catalog above will have the following on-disk and in-memory representations.
@@ -92,26 +100,40 @@ In addition to reducing the likelihood of multiple versions of the same dependen
 
 Catalogs are configured on the root `package.json` of a workspace and available to all workspace packages.
 
+The keys of the `pnpm.catalogs` map will be available for reference through `catalog:<name>`.
+
 ```json
+// package.json
 {
-  "name": "example-monorepo",
+  "name": "monorepo-root",
   "pnpm": {
     "catalogs": {
-      "default": "file:catalog.yaml",
-      "@example/frontend-catalog": "0.1.0"
+
+      // Can be referenced through "catalog:default" or "catalog:"
+      "default": {
+        "jest": "^29.6.1",
+        "redux": "^4.2.0",
+        "react-redux": "^8.0.0"
+      },
+
+      // Can be referenced through "catalog:react17"
+      "react17": {
+        "react": "^17.0.2",
+        "react-dom": "^17.0.2"
+      },
+
+      // Can be referenced through "catalog:react18"
+      "react18": {
+        "react": "^18.2.0",
+        "react-dom": "^18.2.0"
+      },
+
     }
   }
 }
 ```
 
-The keys of the `pnpm.catalogs` map will be available for reference through `catalog:<name>`. The above example configures a catalog using the `default` name. This name has special treatment; package authors can specify `catalog:` as a shorthand for `catalog:default`.
-
-When configuring a catalog, the map values may use any of the following syntax:
-
-1. The `file:<path>` syntax to refer to an on-disk path.
-2. The `name@version` syntax to refer to an external catalog fetched from a registry. The version will need to be exact and not a semver range.
-3. The `name@workspace:` syntax to refer to a catalog that's also a workspace package.
-4. Or simply `version`/`workspace:` when the package name does not need to be aliased.
+The above example configures a catalog using the `default` name. This name has special treatment; package authors can specify `catalog:` as a shorthand for `catalog:default`.
 
 ### What kinds of merge conflicts are avoided?
 
@@ -168,23 +190,6 @@ The `catalog:` protocol makes it more clear from just reading `package.json` whe
 
 ## Implementation
 
-### Fetching
-
-Catalogs can be shared through standard NPM packages. The `pnpm-catalog-v1` key in `exports` will be used when referencing an external catalog.
-
-```json
-{
-  "name": "@example/frontend-catalog",
-  "exports": {
-    "pnpm-catalog-v1": "./catalog.yaml"
-  }
-}
-```
-
-The schema of a catalog may be extended in the future. In this hypothetical, the `-v1` portion of the exports key enables a package to publish catalogs for multiple versions of pnpm that understand different schema versions.
-
-Only the subset of the version catalog that's used will be fetched and installed.
-
 ### Lockfile
 
 Catalogs will be saved to `pnpm-lock.yaml` under a new `catalogs` key. This allows users to more easily review changes to catalogs and pnpm to perform faster up-to-date checks.
@@ -197,22 +202,20 @@ importers:
   packages/foo:
     dependencies:
       react:
-        specifier: 'catalog:@example/frontend-catalog'
+        specifier: 'catalog:'
         version: ^18.2.0
 
 catalogs:
 
-  /@example/frontend-catalog@0.1.0:
-    resolution: {integrity: sha512...}
-    versions:
-      react:
-        specifier: ^18.2.0
-      react-dom:
-        specifier: ^18.2.0
-      redux:
-        specifier: ^4.2.0
-      react-redux:
-        specifier: ^8.0.0
+  default:
+    react:
+      specifier: ^18.2.0
+    react-dom:
+      specifier: ^18.2.0
+    redux:
+      specifier: ^4.2.0
+    react-redux:
+      specifier: ^8.0.0
 
 packages:
   # ...
@@ -246,10 +249,8 @@ importers:
 catalogs:
 
   default:
-    resolution: {integrity: sha512...}
-    versions:
-      react:
-        specifier: ^18.2.0
+    react:
+      specifier: ^18.2.0
 
 packages:
 ```
@@ -278,10 +279,8 @@ This means it's still possible for the `pnpm-lock.yaml` file to end up in an inc
  catalogs:
  
    default:
-     resolution: {integrity: sha512...}
-     versions:
-       react:
-         specifier: ^18.2.0
+      react:
+        specifier: ^18.2.0
  
  packages:
 ```
