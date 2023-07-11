@@ -338,3 +338,9 @@ An alternative mechanism for the version catalog is the [`pnpm.overrides` featur
 https://github.com/npm/rfcs/blob/main/accepted/0036-overrides.md
 
 The `catalog:` protocol is conversely intended for long-lived usage.
+
+## Prior Art
+
+- The Gradle build tool has a [similar concept called _version catalogs_](https://docs.gradle.org/current/userguide/platforms.html#sub:central-declaration-of-dependencies). This RFC's name was [directly chosen as inspiration](https://github.com/pnpm/pnpm/issues/2713#issuecomment-1341476866).
+- Syncpack as mentioned above in the [alternatives section](#syncpack).
+- Rush has a ["Preferred versions" concept](https://rushjs.io/pages/advanced/preferred_versions/) that works similarly.
