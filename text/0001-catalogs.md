@@ -102,7 +102,7 @@ Catalogs are configured on the root `package.json` of a workspace and available 
 
 The keys of the `pnpm.catalogs` map will be available for reference through `catalog:<name>`.
 
-```json
+```json5
 // package.json
 {
   "name": "monorepo-root",
