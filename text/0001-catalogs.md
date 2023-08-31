@@ -344,3 +344,4 @@ The `catalog:` protocol is conversely intended for long-lived usage.
 - The Gradle build tool has a [similar concept called _version catalogs_](https://docs.gradle.org/current/userguide/platforms.html#sub:central-declaration-of-dependencies). This RFC's name was [directly chosen as inspiration](https://github.com/pnpm/pnpm/issues/2713#issuecomment-1341476866).
 - Syncpack as mentioned above in the [alternatives section](#syncpack).
 - Rush has a ["Preferred versions" concept](https://rushjs.io/pages/advanced/preferred_versions/) that works similarly.
+- Rust allows users to define a [`[workspace.dependencies]` "_table_"](https://doc.rust-lang.org/cargo/reference/workspaces.html#the-dependencies-table). Members of the workspace can then [inherit its entries](https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#inheriting-a-dependency-from-a-workspace).
