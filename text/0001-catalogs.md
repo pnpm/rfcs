@@ -97,7 +97,24 @@ In addition to reducing the likelihood of multiple versions of the same dependen
 
 Catalogs are configured on the root `package.json` of a workspace and available to all workspace packages.
 
-A default or unnamed catalog can be specified using `pnpm.catalog`. The keys of the `pnpm.namedCatalog` map will be available for reference through `catalog:<name>`.
+A default or unnamed catalog can be specified using `pnpm.catalog`.
+
+```json5
+// package.json
+{
+  "name": "monorepo-root",
+  "pnpm": {
+    // Can be referenced through "catalog:default" or "catalog:"
+    "catalog": {
+      "jest": "^29.6.1",
+      "redux": "^4.2.0",
+      "react-redux": "^8.0.0",
+    }
+  }
+}
+```
+
+Additionally, named catalogs can be created by adding an object nested under `pnpm.catalog.<name>`. The named catalog will be available for reference through the `catalog:<name>` version specifier protocol.
 
 ```json5
 // package.json
@@ -105,14 +122,12 @@ A default or unnamed catalog can be specified using `pnpm.catalog`. The keys of 
   "name": "monorepo-root",
   "pnpm": {
 
-    // Can be referenced through "catalog:default" or "catalog:"
     "catalog": {
+      // Can be referenced through "catalog:default" or "catalog:"
       "jest": "^29.6.1",
       "redux": "^4.2.0",
-      "react-redux": "^8.0.0"
-    },
+      "react-redux": "^8.0.0",
 
-    "namedCatalogs": {
       // Can be referenced through "catalog:react17"
       "react17": {
         "react": "^17.0.2",
@@ -130,7 +145,7 @@ A default or unnamed catalog can be specified using `pnpm.catalog`. The keys of 
 }
 ```
 
-The default catalog specified through `pnpm.catalog` has special treatment; package authors can specify `catalog:` if they prefer conciseness, or `catalog:default` for explicitness. Attempting to create a named catalog of `default` under the `pnpm.catalogs` config will throw an error.
+The default catalog specified directly under `pnpm.catalog` has special treatment; package authors can specify `catalog:` if they prefer conciseness, or `catalog:default` for explicitness. Attempting to create a named catalog of `default` under at `pnpm.catalogs.default` will throw an error.
 
 ### What kinds of merge conflicts are avoided?
 
