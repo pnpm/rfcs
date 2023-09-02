@@ -147,6 +147,31 @@ Additionally, named catalogs can be created by adding an object nested under `pn
 
 The default catalog specified directly under `pnpm.catalog` has special treatment; package authors can specify `catalog:` if they prefer conciseness, or `catalog:default` for explicitness. Attempting to create a named catalog of `default` under at `pnpm.catalogs.default` will throw an error.
 
+In the case both a default/unnamed catalog entry of `react` needs to be configured alongside a separate catalog named `react`, the special `.` syntax can be used. This is inspired by the [syntax for npm `overrides`](https://docs.npmjs.com/cli/v8/configuring-npm/package-json#overrides).
+
+```json5
+// package.json
+{
+  "name": "monorepo-root",
+  "pnpm": {
+
+    "catalog": {
+      // Can be referenced through "catalog:default" or "catalog:"
+      "jest": "^29.6.1",
+
+      "react": {
+        // Can be referenced through "catalog:default" or "catalog:"
+        ".": "^16.14.0",
+
+        // Can be referenced through "catalog:react"
+        "react": "^17.0.2",
+        "react-dom": "^17.0.2"
+      },
+    }
+  }
+}
+```
+
 ### What kinds of merge conflicts are avoided?
 
 Suppose a git commit upgrades the version of a commonly used dependency for all workspace packages. Suppose another git commit at the same time is attempting to:
