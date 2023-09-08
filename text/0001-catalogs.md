@@ -83,7 +83,7 @@ While there are situations differing versions are intentional, this is more ofte
 
 In addition to reducing the likelihood of multiple versions of the same dependency in a monorepo, the new `catalog:` protocol reduces merge conflicts. Any `package.json` files using the catalog protocol to declare a dependency do not need to be edited when changing the version of that dependency. This side steps `package.json` merge conflicts by avoiding edits to them in the first place.
 
-**Merge conflict resistance is the a primary motivator for introducing catalogs as a first-class feature to pnpm.** This is only possible through a new specifier protocol. See [_What kinds of merge conflicts are avoided?_](#what-kinds-of-merge-conflicts-are-avoided) for details.
+**Merge conflict resistance is a primary motivator for introducing catalogs as a first-class feature to pnpm.** This is only possible through a new specifier protocol. See [_What kinds of merge conflicts are avoided?_](#what-kinds-of-merge-conflicts-are-avoided) for details.
 
 ## Detailed Explanation
 
@@ -132,7 +132,7 @@ The default catalog specified directly under `catalog` has special treatment; pa
 
 ### What kinds of merge conflicts are avoided?
 
-Suppose a git commit upgrades the version of a commonly used dependency for all workspace packages. Suppose another git commit at the same time is attempting to:
+Suppose a git commit upgrades the version of a commonly used dependency for all workspace packages. Suppose another git commit at the same time is attempting to perform any of the following:
 
 1. Change the version of a dependency line-adjacent to the upgraded dependency.
 2. Add or remove a dependency line-adjacent to the upgraded dependency.
@@ -181,7 +181,7 @@ There might be a tight relationship between `foo` and `bar`.
 
 A developer working primarily in `@monorepo/bar` may not realize the implied coupling and upgrade `@monorepo/bar` to `react@18` without realizing an edit to `@monorepo/foo` was also required.
 
-The `catalog:` protocol makes it more clear from just reading `package.json` when a dependency is intended to be consistent across the monorepo. Ideally this person would search "catalog package.json` online and find pnpm.io docs.
+The `catalog:` protocol makes it more clear from just reading `package.json` when a dependency is intended to be consistent across the monorepo. Ideally this person would search "_catalog package.json_" online and find pnpm.io docs.
 
 ## Implementation
 
@@ -239,7 +239,7 @@ importers:
     dependencies:
       react:
         specifier: 'catalog:default'
-        version: ^18.2.0 # ← This field still needs to update
+        version: 18.2.0 # ← If a user changes the catalog entry for react, this field needs to change.
 
 catalogs:
 
@@ -263,13 +263,13 @@ This means it's still possible for the `pnpm-lock.yaml` file to end up in an inc
      dependencies:
        react:
          specifier: 'catalog:default'
-         version: ^18.2.0
+         version: 18.2.0
  
 +  packages/bar:
 +    dependencies:
 +      react:
 +        specifier: 'catalog:default'
-+        version: ^17.0.1 # ← This field is incorrect
++        version: 17.0.1 # ← This field is incorrect
 +
  catalogs:
  
