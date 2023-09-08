@@ -4,23 +4,17 @@
 
 "_Catalogs_" allow multiple `package.json` files to share the same version specifier of a dependency through a new `catalog:` protocol.
 
-A catalog may be defined at the root `package.json`:
+A catalog may be defined in `pnpm-workspace.yaml`:
 
-```json5
-// package.json
-{
-  "name": "monorepo-root",
-  "pnpm": {
+```yaml
+packages:
+  - packages/*
 
-    // Version specifiers that catalog consumers may reference.
-    "catalog": {
-      "react": "^18.2.0",
-      "react-dom": "^18.2.0",
-      "redux": "^4.2.0",
-      "react-redux": "^8.0.0"
-    }
-  }
-}
+catalog:
+  react: ^18.2.0
+  react-dom: ^18.2.0
+  redux: ^4.2.0
+  react-redux: ^8.0.0
 ```
 
 A package referencing the catalog above will have the following on-disk and in-memory representations.
@@ -95,82 +89,46 @@ In addition to reducing the likelihood of multiple versions of the same dependen
 
 ### Configuring Catalogs
 
-Catalogs are configured on the root `package.json` of a workspace and available to all workspace packages.
+Catalogs are configured in `pnpm-workspace.yaml` and available to all workspace packages.
 
-A default or unnamed catalog can be specified using `pnpm.catalog`.
+A default or unnamed catalog can be specified using the `catalog` config.
 
-```json5
-// package.json
-{
-  "name": "monorepo-root",
-  "pnpm": {
-    // Can be referenced through "catalog:default" or "catalog:"
-    "catalog": {
-      "jest": "^29.6.1",
-      "redux": "^4.2.0",
-      "react-redux": "^8.0.0",
-    }
-  }
-}
+```yaml
+packages:
+  - packages/*
+
+# These dependencies can be referenced through "catalog:default" or "catalog:"
+catalog:
+  jest: ^29.6.1
+  redux: ^4.2.0
+  react-redux: ^8.0.0
 ```
 
-Additionally, named catalogs can be created by adding an object nested under `pnpm.catalog.<name>`. The named catalog will be available for reference through the `catalog:<name>` version specifier protocol.
+Additionally, named catalogs can be created by adding a `namedCatalog` config. Any named catalog will be available for reference through the `catalog:<name>` version specifier protocol.
 
-```json5
-// package.json
-{
-  "name": "monorepo-root",
-  "pnpm": {
+```yaml
+packages:
+  - packages/*
 
-    "catalog": {
-      // Can be referenced through "catalog:default" or "catalog:"
-      "jest": "^29.6.1",
-      "redux": "^4.2.0",
-      "react-redux": "^8.0.0",
+# Can be referenced through "catalog:default" or "catalog:"
+catalog:
+  jest: ^29.6.1
+  redux: ^4.2.0
+  react-redux: ^8.0.0
 
-      // Can be referenced through "catalog:react17"
-      "react17": {
-        "react": "^17.0.2",
-        "react-dom": "^17.0.2"
-      },
+namedCatalogs:
+  # Can be referenced through "catalog:react17"
+  react17:
+    react: ^17.0.2
+    react-dom: ^17.0.2
 
-      // Can be referenced through "catalog:react18"
-      "react18": {
-        "react": "^18.2.0",
-        "react-dom": "^18.2.0"
-      },
-
-    }
-  }
-}
+  # Can be referenced through "catalog:react18"
+  react18:
+    react: ^18.2.0
+    react-dom: ^18.2.0
 ```
 
-The default catalog specified directly under `pnpm.catalog` has special treatment; package authors can specify `catalog:` if they prefer conciseness, or `catalog:default` for explicitness. Attempting to create a named catalog of `default` under at `pnpm.catalogs.default` will throw an error.
-
-In the case both a default/unnamed catalog entry of `react` needs to be configured alongside a separate catalog named `react`, the special `.` syntax can be used. This is inspired by the [syntax for npm `overrides`](https://docs.npmjs.com/cli/v8/configuring-npm/package-json#overrides).
-
-```json5
-// package.json
-{
-  "name": "monorepo-root",
-  "pnpm": {
-
-    "catalog": {
-      // Can be referenced through "catalog:default" or "catalog:"
-      "jest": "^29.6.1",
-
-      "react": {
-        // Can be referenced through "catalog:default" or "catalog:"
-        ".": "^16.14.0",
-
-        // Can be referenced through "catalog:react"
-        "react": "^17.0.2",
-        "react-dom": "^17.0.2"
-      },
-    }
-  }
-}
-```
+The default catalog specified directly under `catalog` has special treatment; package authors can specify `catalog:` if they prefer conciseness, or `catalog:default` for explicitness. Attempting to create a named catalog of `default` under `namedCatalogs` will throw an error.
 
 ### What kinds of merge conflicts are avoided?
 
