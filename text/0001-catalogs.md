@@ -282,6 +282,70 @@ This means it's still possible for the `pnpm-lock.yaml` file to end up in an inc
 
 The RFC in its current state describes how `catalog:` significantly reduces merge conflicts to `package.json` files. There are ways to reduce merge conflicts and churn in `pnpm-lock.yaml`, but not in a known way that's simple.
 
+One option that may be explored is further normalization by the recording resolved concrete versions to the `catalogs` portion of the lockfile.
+
+```yaml
+lockfileVersion: next
+
+importers:
+
+  packages/foo:
+    dependencies:
+      react:
+        specifier: 'catalog:default'
+        version: 'catalog:default'
+
+  packages/bar:
+    dependencies:
+      react:
+        specifier: 'catalog:default'
+        version: 'catalog:default'
+
+catalogs:
+
+  default:
+    react:
+      specifier: ^18.2.0
+      version: 18.2.0
+
+packages:
+```
+
+The problem with the format above is that it does not represent [peer dependencies](https://nodejs.org/en/blog/npm/peer-dependencies#using-peer-dependencies) well:
+
+```yaml
+lockfileVersion: next
+
+importers:
+
+  packages/foo:
+    dependencies:
+      chai:
+        specifier: 'catalog:default'
+        version: 'catalog:default'
+      chai-as-promised:
+        specifier: 'catalog:default'
+         # Replacing ↓ with catalog:default would remove valuable information.
+        version: 7.1.1(chai@4.3.8)
+
+catalogs:
+
+  default:
+    chai:
+      specifier: ^4.3.8
+      version: 4.3.8
+    chai-as-promised:
+      specifier: ^7.1.1
+      version: 7.1.1
+
+packages:
+  /chai-as-promised@7.1.1(chai@4.3.8):
+    # ...
+
+  /chai@4.3.8:
+    # ...
+```
+
 ### Constraints
 
 Catalog versions alone are insufficient to completely prevent multiple versions of the same dependency. Dependencies of dependencies (transitive dependencies) may pull in a package that already exists elsewhere in the dependency graph, but on a different version.
