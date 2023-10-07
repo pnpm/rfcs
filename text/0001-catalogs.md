@@ -389,7 +389,7 @@ The proposed solution allows metadata to be defined in a singular file without c
 
 ### Comparison to overrides/resolutions
 
-An alternative mechanism for the version catalog is the [`pnpm.overrides` feature](https://pnpm.io/package_json#pnpmoverrides). While mechanically this allows you to set the version of a dependency across all workspace packages, it can be a bit unexpected when if `pnpm.overrides` rewrites a dependency's dependency to an incompatible version silently.
+An alternative mechanism for the version catalog is the [`pnpm.overrides` feature](https://pnpm.io/package_json#pnpmoverrides). While mechanically this allows you to set the version of a dependency across all workspace packages, it can be a bit unexpected if `pnpm.overrides` rewrites a dependency's dependency to an incompatible version silently.
 
 `pnpm.overrides` is ultimately intended for a different purpose. The NPM RFC for a similar feature explicitly states that it should be used as a short-term hack to fix vendor problems.
 
