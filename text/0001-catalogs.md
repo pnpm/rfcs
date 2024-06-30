@@ -377,7 +377,7 @@ flowchart LR
   end
 ```
 
-This scenario requires human intervention and is outside of the scope of this RFC. It's may be important to note that Yarn allows users to detect these sorts of situations and fail installation through a mechanism called [Constraints](https://yarnpkg.com/features/constraints).
+This scenario currently requires human intervention and is outside of the scope of this RFC. It's possible a future RFC proposal would address this. Such a new proposal would need to propose a configuration syntax for enforcing a single version throughout the full dependency graph.
 
 ## Alternatives
 
