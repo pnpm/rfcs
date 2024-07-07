@@ -104,7 +104,7 @@ catalog:
   react-redux: ^8.0.0
 ```
 
-Additionally, named catalogs can be created by adding a `namedCatalog` config. Any named catalog will be available for reference through the `catalog:<name>` version specifier protocol.
+Additionally, named catalogs can be created by adding a `catalogs` config. Any named catalog will be available for reference through the `catalog:<name>` version specifier protocol.
 
 ```yaml
 packages:
@@ -116,7 +116,7 @@ catalog:
   redux: ^4.2.0
   react-redux: ^8.0.0
 
-namedCatalogs:
+catalogs:
   # Can be referenced through "catalog:react17"
   react17:
     react: ^17.0.2
@@ -128,7 +128,7 @@ namedCatalogs:
     react-dom: ^18.2.0
 ```
 
-The default catalog specified directly under `catalog` has special treatment; package authors can specify `catalog:` if they prefer conciseness, or `catalog:default` for explicitness. Attempting to create a named catalog of `default` under `namedCatalogs` will throw an error.
+The default catalog specified directly under `catalog` has special treatment; package authors can specify `catalog:` if they prefer conciseness, or `catalog:default` for explicitness. Attempting to create a named catalog of `default` under `catalogs` will throw an error.
 
 ### What kinds of merge conflicts are avoided?
 
