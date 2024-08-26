@@ -74,6 +74,8 @@ If we don't want to control the execution env of the published package, set the 
 
 In this case, pnpm will remove the `executionEnv` setting from the `package.json` file on publish and the binary of the package will be executed with whatever runtime will be installed globally on the target machine.
 
+Some environments might not want to allow pnpm to control the js runtime. For thes cases we need to support a setting that will instruct pnpm to ignore all the execution env settings: `ignore-execution-env=true`.
+
 ## Rationale and Alternatives
 
 The alternative would be to use a third party tool for this (like Volta) but then we would have one more prerequisite for using pnpm.
