@@ -20,7 +20,7 @@ We will support a new field in `package.json`: `pnpm.executionEnv.js`. This fiel
 {
   "pnpm": {
     "executionEnv": {
-      "js": "node@20.16.0"
+      "jsRuntime": "node@20.16.0"
     }
   }
 }
@@ -32,7 +32,7 @@ or
 {
   "pnpm": {
     "executionEnv": {
-      "js": "bun@1.1.26"
+      "jsRuntime": "bun@1.1.26"
     }
   }
 }
@@ -44,7 +44,7 @@ or
 {
   "pnpm": {
     "executionEnv": {
-      "js": "deno@1.46.1"
+      "jsRuntime": "deno@1.46.1"
     }
   }
 }
@@ -65,7 +65,7 @@ If we don't want to control the execution env of the published package, set the 
   "bin": "bin.js",
   "pnpm": {
     "executionEnv": {
-      "js": "node@20.16.0",
+      "jsRuntime": "node@20.16.0",
       "localOnly": true
     }
   }
