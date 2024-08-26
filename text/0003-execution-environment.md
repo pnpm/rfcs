@@ -14,7 +14,7 @@ Running multiple versions of Node.js on the same computer isn't easy. Also, ther
 
 ## Detailed Explanation
 
-We will support a new field in `package.json`: `pnpm.executionEnv.js`. This field will be similar to the `packageManager` field introduced by Corepack but will feature `<js runtime>@<version>` instead. For example:
+We will support a new field in `package.json`: `pnpm.executionEnv.jsRuntime`. This field will be similar to the `packageManager` field introduced by Corepack but will feature `<js runtime>@<version>` instead. For example:
 
 ```json
 {
