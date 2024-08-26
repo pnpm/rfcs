@@ -80,6 +80,8 @@ Some environments might not want to allow pnpm to control the js runtime. For th
 
 The alternative would be to use a third party tool for this (like Volta) but then we would have one more prerequisite for using pnpm.
 
+Instead of introducing a new field, we could use the `engines` field for detecting what Node.js version should be used for running the bin file or building the package. However, the `engines` field is already used by other package managers and it is usually just sets a range with the lowest supported Node.js version. If we will use it for specifying exact versions, installations of the package with other package managers will fail, when `engine-strict` is set to `true`.
+
 ## Implementation
 
 The implementation can leverage the logic that is already present in pnpm for the `pnpm env` command, the `pnpm.executionEnv.nodeVersion` setting, the `use-node-version` setting.
