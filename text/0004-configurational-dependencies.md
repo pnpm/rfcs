@@ -41,7 +41,7 @@ These dependencies will be installed into a new directory (name to be decided), 
 
 ## Rationale and Alternatives
 
-For the list of "onlyBuiltDependencies" currently we can load them from `node_modules`. However, that does introduce some "works on my machine" issues as we don't have list during the linking from store stage. As a result, if the dependency is not allowed to be built, we still might load it from the side-effects cache.
+For the list of "onlyBuiltDependencies" currently we can load them from `node_modules`. However, that does introduce some "works on my machine" issues as we don't have the list during the linking from store stage. As a result, if the dependency is not allowed to be built, we still might load it from the side-effects cache.
 
 ## Implementation
 
