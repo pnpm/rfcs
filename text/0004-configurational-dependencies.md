@@ -49,6 +49,8 @@ These dependencies will be installed as early as possible in order to be able to
 
 ## Prior Art
 
+There was a big RFC by Brandon Cheng about a much more powerful system using [templates](https://github.com/pnpm/rfcs/pull/3), which was rejected.
+
 ## Unresolved Questions and Bikeshedding
 
 {{Write about any arbitrary decisions that need to be made (syntax, colors, formatting, minor UX decisions), and any questions for the proposal that have not been answered.}}
