@@ -37,7 +37,7 @@ These new type of "configurational" dependencies will be npm packages with a lot
 * They will not have lifecycle scripts.
 * They will only be installable via exact versions.
 
-These dependencies will be installed into a new directory (name to be decided), not into `node_modules`.
+These dependencies will be installed into a new hidden directory inside `node_modules`: `node_modules/.pnpm-config`.
 
 ## Rationale and Alternatives
 
