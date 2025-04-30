@@ -1,4 +1,4 @@
-# Configurational dependencies
+# Config dependencies
 
 ## Summary
 
@@ -6,7 +6,7 @@ A new type of dependencies for installing configuration and hooks.
 
 ## Motivation
 
-We want to make it possible to share some configurations between projects. Storing the configuration in regular dependencies is not an option as we might need the configuration during installation of the "regular" dependencies ("dependencies", "devDependencies", and "optionalDependencies"). Hence, we need to install these configurational dependencies before other types of dependencies.
+We want to make it possible to share some configurations between projects. Storing the configuration in regular dependencies is not an option as we might need the configuration during installation of the "regular" dependencies ("dependencies", "devDependencies", and "optionalDependencies"). Hence, we need to install these config dependencies before other types of dependencies.
 
 Some examples of usage:
 
@@ -31,7 +31,7 @@ There will be a new field in `package.json` called `pnpm.configDependencies`. Fo
 }
 ```
 
-These new type of "configurational" dependencies will be npm packages with a lot of limitations:
+These new type of "config" dependencies will be npm packages with a lot of limitations:
 
 * They won't have any dependencies. Even if they will have dependencies, pnpm will ignore them during installation.
 * They will not have lifecycle scripts.
