@@ -41,68 +41,63 @@ versions, tarballs, and integrity hashes for all config dependencies (including 
 - **Committed** to version control (provides reproducibility and auditability across the team).
 - **Read early** at process startup, before `pnpm-lock.yaml`, so pnpm's own version and
   integrity can be verified before the correct binary is executed.
-- **Minimalistic** — only config dependency resolutions, no full dependency graph.
+- **Uses the same format as `pnpm-lock.yaml`** — the same `packages` and `snapshots`
+  structure, so existing parsing and tooling can be reused.
 - **Updated** by `pnpm install` and `pnpm self-update`.
 
 ```yaml
 # pnpm-config-lock.yaml
-lockfileVersion: '1'
+lockfileVersion: '9.0'
 
-# Resolved from devEngines.packageManager in package.json
-pnpm:
-  version: 10.6.0
-  resolution:
-    linux-x64:
-      integrity: sha512-def...
-      tarball: https://github.com/pnpm/pnpm/releases/download/v10.6.0/pnpm-linux-x64
-    linux-arm64:
-      integrity: sha512-efg...
-      tarball: https://github.com/pnpm/pnpm/releases/download/v10.6.0/pnpm-linux-arm64
-    darwin-x64:
-      integrity: sha512-hij...
-      tarball: https://github.com/pnpm/pnpm/releases/download/v10.6.0/pnpm-macos-x64
-    darwin-arm64:
-      integrity: sha512-klm...
-      tarball: https://github.com/pnpm/pnpm/releases/download/v10.6.0/pnpm-macos-arm64
-    win32-x64:
-      integrity: sha512-nop...
-      tarball: https://github.com/pnpm/pnpm/releases/download/v10.6.0/pnpm-win-x64.exe
+importers:
+  .:
+    configDependencies:
+      pnpm:
+        specifier: 10.6.0
+        version: 10.6.0
+      '@my-org/pnpm-config':
+        specifier: ^2.0.0
+        version: 2.1.0
 
-# Resolved from configDependencies in pnpm-workspace.yaml
-configDependencies:
+packages:
+  '@my-org/pnpm-config@2.1.0':
+    resolution: {integrity: sha512-abc...}
 
-  '@my-org/pnpm-config':
-    version: 2.1.0
-    resolution:
-      integrity: sha512-abc...
-      tarball: https://registry.npmjs.org/@my-org/pnpm-config/-/@my-org/pnpm-config-2.1.0.tgz
+  pnpm@10.6.0:
+    resolution: {integrity: sha512-xyz...}
+
+  '@pnpm/exe@10.6.0':
+    resolution: {integrity: sha512-def...}
+    optionalDependencies:
+      '@pnpm/exe-linux-x64': 10.6.0
+      '@pnpm/exe-linux-arm64': 10.6.0
+      '@pnpm/exe-darwin-x64': 10.6.0
+      '@pnpm/exe-darwin-arm64': 10.6.0
+      '@pnpm/exe-win32-x64': 10.6.0
+
+  '@pnpm/exe-darwin-arm64@10.6.0':
+    resolution: {integrity: sha512-klm...}
+    os: [darwin]
+    cpu: [arm64]
+
+  # ... other platform packages ...
+
+snapshots:
+  '@my-org/pnpm-config@2.1.0': {}
+  pnpm@10.6.0: {}
+  '@pnpm/exe@10.6.0':
+    optionalDependencies:
+      '@pnpm/exe-darwin-arm64': 10.6.0
 ```
+
+The format is exactly the same as `pnpm-lock.yaml` — no special sections. Both `pnpm`
+(JS) and `@pnpm/exe` (standalone) are recorded in the lockfile so the project works for
+all team members regardless of their environment. Platform-specific binaries for
+`@pnpm/exe` are resolved through the standard `optionalDependencies` mechanism, the same
+way packages like `esbuild` or `turbo` handle platform variants.
 
 Platform entries accumulate over time as developers on different operating systems run
-`pnpm install` or `pnpm self-update` — exactly the pattern used for `node@runtime:` entries
-in `pnpm-lock.yaml`.
-
-For a pure-JS package (no platform-specific binaries) the resolution is flat:
-
-```yaml
-  '@my-org/pnpm-config':
-    version: 2.1.0
-    resolution:
-      integrity: sha512-abc...
-      tarball: https://registry.npmjs.org/...
-```
-
-For a package that ships platform-specific binaries (executables), the resolution is
-keyed by `{os}-{arch}`:
-
-```yaml
-  pnpm:
-    version: 10.6.0
-    resolution:
-      darwin-arm64:
-        integrity: sha512-...
-        tarball: https://...
-```
+`pnpm install` or `pnpm self-update` — exactly the pattern used in `pnpm-lock.yaml`.
 
 ### 2. Clean declaration in `pnpm-workspace.yaml`
 
@@ -119,51 +114,57 @@ configDependencies:
 version + integrity to `pnpm-config-lock.yaml`, and writes the specifier (without the inline
 hash) to `pnpm-workspace.yaml`.
 
-### 3. pnpm version via `devEngines.packageManager`
+### 3. pnpm as a config dependency
 
-The required pnpm version is declared in `package.json` using the standard
-`devEngines.packageManager` field — not in `configDependencies`, since pnpm is a tool/engine,
-not a configuration plugin:
+The pnpm binary is declared as a config dependency in `pnpm-workspace.yaml`, just like
+any other config dep. There are two packages that provide pnpm:
 
-```json
-{
-  "devEngines": {
-    "packageManager": {
-      "name": "pnpm",
-      "version": "10.6.0"
-    }
-  }
-}
+| Package | Description |
+|---|---|
+| `@pnpm/exe` | Standalone executable per platform (no Node.js required) |
+| `pnpm` | JS npm package (needs Node.js) |
+
+The lockfile always contains **both** packages, so the project works regardless of which
+variant a given developer uses. At runtime, pnpm picks whichever package is appropriate
+for the current environment.
+
+```yaml
+# pnpm-workspace.yaml
+configDependencies:
+  pnpm: '10.6.0'
+  '@my-org/pnpm-config': '^2.0.0'
 ```
 
-> **Migration**: the existing `packageManager: "pnpm@x.y.z"` field continues to be
-> recognised for backwards compatibility. If both are present, `devEngines.packageManager`
-> takes precedence.
+Only one specifier is needed in `pnpm-workspace.yaml` — `pnpm install` resolves both the
+`pnpm` JS package and the `@pnpm/exe` standalone binary for the declared version and
+writes both into `pnpm-config-lock.yaml`.
 
-`pnpm install` (and `pnpm self-update`) resolve the declared version specifier and write
-the resulting integrity into the `pnpm` entry of `pnpm-config-lock.yaml`. The lockfile
-records which binary source was actually resolved, not which rule selected it:
+`@pnpm/exe` uses `optionalDependencies` to ship platform-specific binaries (e.g.
+`@pnpm/exe-darwin-arm64`, `@pnpm/exe-linux-x64`), which are resolved through the
+standard lockfile mechanism. Platform entries accumulate as developers on different
+operating systems run `pnpm install`.
 
-pnpm binary sources, selected automatically at resolution time:
+`pnpm install` and `pnpm self-update` resolve the declared version and write the result
+into `pnpm-config-lock.yaml` using the standard lockfile format.
 
-| pnpm version | Source package |
-|---|---|
-| ≥ 11.0.0-alpha | `pnpm` (npm package, JS, needs Node.js) |
-| < 11.0.0-alpha | `@pnpm/exe` (standalone executable per platform) |
+> **Migration**: the existing `packageManager: "pnpm@x.y.z"` field in `package.json`
+> and `devEngines.packageManager` continue to be recognised for backwards compatibility.
+> They trigger a deprecation notice suggesting the user add pnpm to `configDependencies`.
 
 ### 4. Startup sequence
 
 ```
 process start
   │
-  ├── read pnpm-config-lock.yaml (fast — small file, no full YAML parsing needed)
-  │     ├── find pnpm entry (written from devEngines.packageManager)
-  │     ├── resolve current platform key (e.g. darwin-arm64)
-  │     └── get { version, integrity, tarball }
+  ├── read pnpm-config-lock.yaml (fast — small file)
+  │     ├── find pnpm in configDependencies
+  │     ├── pick @pnpm/exe (standalone) or pnpm (JS) based on environment
+  │     ├── resolve platform-specific optional dep if using @pnpm/exe
+  │     └── get { version, integrity }
   │
   ├── check $PNPM_HOME/.tools/pnpm/
   │     ├── if version matches and hash matches → use it
-  │     └── if not → install from store (fast) or fetch from tarball (slow, first time)
+  │     └── if not → install from store (fast) or fetch from registry (slow, first time)
   │
   ├── switchCliVersion → spawn correct pnpm binary
   │
@@ -180,14 +181,16 @@ without a network request; only a first-time use requires a download.
 Removing the inline integrity constraint opens the door to richer config dependency
 capabilities:
 
-- **Transitive dependencies**: config deps can declare their own `dependencies`. They are
-  resolved into a small, separate install rooted at
-  `node_modules/.pnpm-config/{packageName}/`. Their transitive deps go into the global
-  store; their integrities appear in `pnpm-config-lock.yaml`.
+- **Transitive dependencies**: config deps can declare their own `dependencies`. All
+  packages (config deps and their transitive deps) are stored in the global content-
+  addressable store and linked via the global virtual store (`<store-path>/links/`),
+  the same mechanism used when `enableGlobalVirtualStore` is enabled for regular
+  dependencies. Their resolutions are recorded in the `packages` and `snapshots`
+  sections of `pnpm-config-lock.yaml`, using the same format as `pnpm-lock.yaml`.
 
 - **Platform-specific config deps**: any config dep that ships OS/arch-specific binaries
-  (e.g. a custom fetcher that wraps a native binary) can be expressed with per-platform
-  resolution entries in `pnpm-config-lock.yaml`, exactly like pnpm itself.
+  (e.g. a custom fetcher that wraps a native binary) can use `optionalDependencies` with
+  per-platform packages, the same way `@pnpm/exe`, `esbuild`, and `turbo` do.
 
 - **Richer plugin discovery**: lifting the `pnpm-plugin-*` naming restriction; any package
   listed in `configDependencies` may export a pnpmfile via its `main` entry point.
@@ -199,29 +202,36 @@ capabilities:
 ```
 project-root/
   pnpm-workspace.yaml          # declarations (specifiers only, no hashes)
-  pnpm-config-lock.yaml             # committed lockfile for config deps + pnpm itself
+  pnpm-config-lock.yaml        # committed lockfile for config deps + pnpm itself
   pnpm-lock.yaml               # unchanged — project dependency lockfile
   node_modules/
-    .pnpm-config/              # installed config deps (unchanged location)
+    .pnpm-config/
       @my-org/
-        pnpm-config/
-          ...
+        pnpm-config → <store-path>/links/<hash>  # symlink to global virtual store
 
-$PNPM_HOME/
-  .tools/
-    pnpm/                      # single active pnpm installation
-      bin/pnpm                 # → store entry via node_modules symlink
+<store-path>/                  # global pnpm store (pnpm store path)
+  v3/                          # content-addressable store (unchanged)
+  links/                       # global virtual store
+    <hash>/                    # dependency-graph-hash-based directory
       node_modules/
-        pnpm/ or @pnpm/exe/
-  store/                       # content-addressed store (unchanged)
+        @my-org/
+          pnpm-config/         # hard-linked from content-addressable store
 ```
+
+Config dependencies always use the global virtual store (`<store-path>/links/`), the same
+mechanism as `enableGlobalVirtualStore`. The project-local `node_modules/.pnpm-config/`
+directory contains only symlinks into the global virtual store — no hard links or copies.
+This means multiple projects sharing the same config dep version share a single copy on
+disk.
 
 ---
 
 ## What stays the same
 
 - `pnpm-lock.yaml` is unchanged. Project dependencies are unaffected.
-- `node_modules/.pnpm-config/` installation location is unchanged.
+- Config deps are installed via the global virtual store (`<store-path>/links/`), with
+  `node_modules/.pnpm-config/` containing only symlinks — the same mechanism as
+  `enableGlobalVirtualStore`.
 - `configDependencies` can still reference private registries and custom tarballs.
 - `pnpm add --config <pkg>` is the user-facing command to add a config dep.
 
@@ -235,6 +245,7 @@ $PNPM_HOME/
 
 2. Projects without `pnpm-config-lock.yaml` and without `configDependencies` are unaffected.
 
-3. The `packageManager` field is still read for backwards compatibility but triggers a
-   deprecation notice suggesting the user migrate to `configDependencies.pnpm`.
+3. The `packageManager` and `devEngines.packageManager` fields are still read for backwards
+   compatibility but trigger a deprecation notice suggesting the user add `pnpm` to
+   `configDependencies`.
 
