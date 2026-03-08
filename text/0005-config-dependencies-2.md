@@ -11,19 +11,12 @@ as the scope grows:
    a `version+sha512-…` convention (`"@my-org/cfg": "1.2.0+sha512-XYZ"`). This makes
    `pnpm-workspace.yaml` noisy and forces a non-standard value format that surprises users.
 
-2. **No platform-specific variants.** Config dependencies are always pure-JS npm packages.
-   There is no mechanism to express that a dependency has a platform-specific binary
-   (like `@pnpm/exe`) with different tarballs and integrity hashes per OS/arch.
-
-3. **No transitive dependencies.** Each config dep must be fully self-contained; it cannot
-   depend on other packages.
-
-4. **pnpm's own version is not a config dependency.** The `packageManager` field in
+2. **pnpm's own version is not a config dependency.** The `packageManager` field in
    `package.json` declares the required pnpm version, but the integrity of the pnpm binary
    is never recorded anywhere. There is no tamper-detection, no reproducibility guarantee
    for the toolchain itself.
 
-5. **The version switching bootstrapping problem.** `switchCliVersion` runs at process
+3. **The version switching bootstrapping problem.** `switchCliVersion` runs at process
    startup, before the project's `pnpm-lock.yaml` is read. Even if we stored pnpm's
    integrity in the main lockfile, we could not use it to verify or locate the right
    pnpm binary before executing it.
@@ -176,25 +169,6 @@ The pnpm store (content-addressed) provides fast re-linking when switching betwe
 versions that have already been downloaded. A version already in the store is re-linked
 without a network request; only a first-time use requires a download.
 
-### 5. More powerful config dependencies
-
-Removing the inline integrity constraint opens the door to richer config dependency
-capabilities:
-
-- **Transitive dependencies**: config deps can declare their own `dependencies`. All
-  packages (config deps and their transitive deps) are stored in the global content-
-  addressable store and linked via the global virtual store (`<store-path>/links/`),
-  the same mechanism used when `enableGlobalVirtualStore` is enabled for regular
-  dependencies. Their resolutions are recorded in the `packages` and `snapshots`
-  sections of `pnpm-config-lock.yaml`, using the same format as `pnpm-lock.yaml`.
-
-- **Platform-specific config deps**: any config dep that ships OS/arch-specific binaries
-  (e.g. a custom fetcher that wraps a native binary) can use `optionalDependencies` with
-  per-platform packages, the same way `@pnpm/exe`, `esbuild`, and `turbo` do.
-
-- **Richer plugin discovery**: lifting the `pnpm-plugin-*` naming restriction; any package
-  listed in `configDependencies` may export a pnpmfile via its `main` entry point.
-
 ---
 
 ## File layout summary
@@ -212,26 +186,29 @@ project-root/
 <store-path>/                  # global pnpm store (pnpm store path)
   v3/                          # content-addressable store (unchanged)
   links/                       # global virtual store
-    <hash>/                    # dependency-graph-hash-based directory
-      node_modules/
-        @my-org/
-          pnpm-config/         # hard-linked from content-addressable store
+    @/
+      @my-org/
+        pnpm-config/
+          2.1.0/<hash>/
+            node_modules/
+              @my-org/
+                pnpm-config/   # hard-linked from content-addressable store
 ```
 
-Config dependencies always use the global virtual store (`<store-path>/links/`), the same
+Config dependencies use the global virtual store (`<store-path>/links/`), the same
 mechanism as `enableGlobalVirtualStore`. The project-local `node_modules/.pnpm-config/`
 directory contains only symlinks into the global virtual store — no hard links or copies.
 This means multiple projects sharing the same config dep version share a single copy on
-disk.
+disk. Config deps remain single packages without transitive dependencies or build scripts.
 
 ---
 
 ## What stays the same
 
 - `pnpm-lock.yaml` is unchanged. Project dependencies are unaffected.
-- Config deps are installed via the global virtual store (`<store-path>/links/`), with
-  `node_modules/.pnpm-config/` containing only symlinks — the same mechanism as
-  `enableGlobalVirtualStore`.
+- Config deps are installed into `node_modules/.pnpm-config/` via symlinks to the global
+  virtual store (`<store-path>/links/`).
+- Config deps remain single packages without transitive dependencies or build scripts.
 - `configDependencies` can still reference private registries and custom tarballs.
 - `pnpm add --config <pkg>` is the user-facing command to add a config dep.
 
