@@ -5,11 +5,13 @@
 pnpr disables its resolution cache for any request that forwards upstream
 credentials, which makes authenticated installs ~2.8× slower than anonymous
 ones even when every dependency is public. This RFC proposes making the cache
-*authorization-aware* instead of all-or-nothing: a resolution is classified by
-the set of non-public registries it touched (its **private footprint**), public
-resolutions are shared globally, and private resolutions are keyed by the
-credential that produced them so an invalid or absent credential can never
-unlock them.
+*authorization-aware* instead of all-or-nothing: each fetch route is classified
+once, before the request is sent. Known-public routes (notably unscoped packages
+on the public npm registry) are fetched anonymously and shared globally. Routes
+that match configured private/auth rules are fetched with the selected
+credential and added to the resolution's **private footprint**; private
+resolutions are then keyed by the credential that produced them so an invalid or
+absent credential can never unlock them.
 
 ## Motivation
 
@@ -60,11 +62,12 @@ The design has two independent parts: deciding **what is private** in a
 resolution (classification), and deciding **who may read** a cached entry
 (keying/gating).
 
-### Part 1 — Classify by registry, fail-safe to private
+### Part 1 — Classify by fetch route, no double requests
 
-Privacy is a property of the **registry a package is served from**, not of the
-package name and not of whether the name is scoped. This matters in both
-directions:
+Privacy is a property of the **fetch route that serves a package**, not of
+whether the install request happened to contain any credential. The route is the
+registry URL plus the package name/scope and the configured auth/private rules.
+This matters in both directions:
 
 - **Scoped names can be public** — `@babel/core` from the public registry is
   public.
@@ -72,30 +75,43 @@ directions:
   a self-hosted/corporate one (Verdaccio, Artifactory, GitHub Packages, a
   private proxy), then unscoped packages served from it can be fully private.
 
-Therefore classification is done **per registry against a known-public
-allowlist**, and the default is private:
+The base design must not probe every package twice. Classification therefore
+chooses **one** request shape for each metadata or resolve-time tarball fetch:
 
-- A registry is treated as **public only if it is known-public** — a built-in
-  entry for `registry.npmjs.org`, plus any registries an operator explicitly
-  declares public in pnpr config.
-- **Every other registry is treated as private** — scoped or unscoped, default
-  or named — unless proven public.
+- **Built-in public npm route:** unscoped packages served from the official npm
+  registry (`registry.npmjs.org`) are always public. The npm docs state that
+  [unscoped packages are always public](https://docs.npmjs.com/about-scopes/)
+  and that private packages are user- or organization-scoped, so pnpr should
+  deliberately omit forwarded auth for these metadata requests even if the
+  client sent a registry-wide npm token.
+- **Configured public routes:** an operator may explicitly declare additional
+  registries, scopes, or package patterns public. These are fetched without
+  forwarded auth and can participate in the global public cache.
+- **Private/auth routes:** if a route matches a configured private rule or the
+  auth lookup selects a credential for its registry/scope/package, pnpr sends
+  that credential and treats the route as private. There is no anonymous
+  preflight; the credentialed request is the only request.
+- **Unknown routes:** default to private unless explicitly declared public. If
+  no credential is available for an unknown/private route, pnpr may resolve it
+  anonymously, but the resulting resolution must not be stored in the global
+  public cache.
 
-A resolution's **private footprint** is the set of non-public `(registry,
-scope)` pairs whose metadata was actually fetched during that resolve. This is
+A resolution's **private footprint** is the set of private route identities
+whose metadata or resolve-time tarball data was actually fetched during that
+resolve, paired with the exact credential selected for each route. This is
 derived from information pnpr already has during the single resolve it already
 performs — **no per-package probing and no extra requests.** During resolution
-pnpr knows, for every metadata fetch, which registry/scope it targeted; the
-footprint is the subset of those not on the public allowlist.
+pnpr knows, for every fetch, which route it targeted and whether the route was
+sent anonymously or with a credential.
 
 A footprint that is **empty** means the resolution is fully public.
 
 > Note on over-counting: because pnpm forwards the npm token even to the public
 > registry, "an `Authorization` header was attached" is *not* a privacy signal —
-> it would mark ordinary public installs as private. Classification is by
-> registry identity against the allowlist, never by the presence of a forwarded
-> header. The public registry is public because it is on the allowlist, not
-> because it is the request's default.
+> it would mark ordinary public installs as private. Classification is by route
+> policy and the credential actually selected for that route. In particular,
+> unscoped packages on the official npm registry are fetched without auth, so a
+> broad npm token does not pessimize the common unscoped public path.
 
 ### Part 2 — Key public entries globally, private entries by credential
 
@@ -106,7 +122,7 @@ The cache key behavior depends on the footprint:
   ~2.8×.*
 - **Non-empty footprint (private):** the key additionally incorporates an HMAC
   (keyed with a server secret, so the key is not correlatable offline) of the
-  credentials for the private `(registry, scope)` pairs in the footprint.
+  exact credentials selected for the private routes in the footprint.
 
 Why HMAC-of-credential rather than "does the caller have a token for this
 scope?" — because the latter is an authorization bypass. A caller could send a
@@ -132,14 +148,19 @@ fetch. It can never leak beyond that credential.
 ### Consequences for sharing
 
 - Public installs: shared globally — full cache benefit, even for authenticated
-  clients.
+  clients, as long as the packages route through public/anonymous fetch rules.
 - CI / teams using the same token: shared — repeated installs hit the cache.
 - Two users with *different* valid tokens to the same private registry: do **not**
   share each other's private entries (different HMACs). This is a small,
   deliberate loss of sharing in exchange for the invariant.
-- Self-hosted deployments whose *public* default registry is not on the
-  allowlist: treated as private until the operator declares it public — a
-  one-line config change recovers global sharing.
+- Scoped public packages on npmjs with a broad registry token: if the route
+  policy selects that token, pnpr treats the route as private and does not share
+  globally. Operators can recover sharing for known-public scopes/package
+  patterns by declaring them public, which also makes pnpr omit auth for those
+  fetches.
+- Self-hosted deployments whose *public* default registry is not covered by a
+  public route rule: treated as private until the operator declares it public —
+  a one-line config change recovers global sharing.
 
 ### Revocation window
 
@@ -165,8 +186,8 @@ design is config-driven with no probing.
 
 **Alternative A — Per-package anonymous probing.** Classify each package by
 fetching it both anonymously and authenticated. Rejected: it roughly doubles
-metadata requests, defeating the performance goal, and privacy is a per-registry
-property so per-package probing is the wrong granularity anyway.
+metadata requests, defeating the performance goal. This RFC instead uses a
+single route-policy decision per fetch.
 
 **Alternative B — Always hash auth into the cache key.** Simple and safe, but it
 gives *every* authenticated request its own cache namespace, so the dominant
@@ -199,26 +220,45 @@ whether a credential vault is later added.
 
 ## Implementation
 
-All changes are in `pnpr/` (the registry server). No pnpm/pacquet CLI changes
-are required; the wire protocol is unchanged.
+No pnpm wire-protocol change is required. The implementation does need changes
+in pnpr's resolver integration and in the pacquet fetch path that chooses
+metadata/tarball auth.
 
-- **Record the per-fetch registry/scope during resolution.** The resolve path
-  (`pnpr/crates/pnpr/src/resolver/resolve.rs` and the `pacquet-package-manager`
-  resolution observer) must surface, for each metadata fetch, the `(registry,
-  scope)` it targeted, so the footprint can be assembled. This is the only piece
-  that reaches into the shared pacquet resolver; it can likely ride on the
-  existing `ResolutionObserver` rather than changing resolution logic.
-- **Known-public allowlist config.** Add a registry classification to pnpr's
-  config (`pnpr/crates/pnpr/src/config.rs`): a built-in `registry.npmjs.org`
-  entry plus an operator list of registries declared public. Default unknown →
-  private.
+- **Route policy + auth selection.** Add route classification to pnpr config
+  (`pnpr/crates/pnpr/src/config.rs`): built-in anonymous-public handling for
+  unscoped packages on `registry.npmjs.org`, plus operator rules for public and
+  private registries/scopes/package patterns. The fetch path must choose the
+  route policy and selected auth together, using the same package-aware lookup
+  that will set the `Authorization` header. Public routes suppress forwarded
+  auth; private/auth routes send the selected credential and record it for the
+  footprint.
+- **Record the per-fetch route during resolution.** The resolve path
+  (`pnpr/crates/pnpr/src/resolver/resolve.rs`) and the pacquet npm/tarball
+  fetchers must surface, for each metadata fetch and resolve-time tarball fetch,
+  the route identity, whether it was public or private, and the selected
+  credential digest. The existing `ResolutionObserver` reports resolved tarball
+  packages after a resolver result, so it is not sufficient by itself; the hook
+  needs to sit at the actual fetch/auth-selection layer.
+- **Make lower metadata caches respect the same classification.** Pacquet's
+  shared metadata mirror is currently keyed by registry/package, not by auth.
+  Private/auth metadata must not be loaded from or written to a global
+  auth-blind mirror in a way that lets a later invalid credential reuse it. The
+  same route policy should either key private metadata by credential digest or
+  bypass/fail closed for private metadata cache hits.
 - **Footprint + keying in the cache layer**
   (`pnpr/crates/pnpr/src/resolver.rs`):
   - Replace the `auth_headers.is_empty()` gate so a cache key is always
     computed.
-  - After a resolve, compute the footprint from the recorded registries; if
-    empty, store/lookup under the current public key; if non-empty, fold an
-    HMAC of the relevant credentials into the key.
+  - Keep the current resolution-input key as the base cache key, but store one
+    or more candidate entries under it. Each candidate carries its private
+    footprint and the HMAC digest of the credentials that produced it. A public
+    candidate has an empty footprint and matches every caller; a private
+    candidate matches only when the current request can reproduce the same
+    HMACs for that stored footprint. This avoids knowing the footprint before
+    the first resolve and avoids a second resolve or anonymous probe.
+  - After a resolve, compute the footprint from the recorded routes; store an
+    empty-footprint candidate for public resolutions, or a credential-keyed
+    candidate for private resolutions.
   - The HMAC server secret is generated/configured at startup; reuse existing
     config plumbing.
   - `CachedResolution` may need to carry its footprint so lookups can apply the
@@ -229,10 +269,12 @@ are required; the wire protocol is unchanged.
 
 Risk areas: the footprint must be complete (a missed private fetch would
 mis-classify a resolution as public), so the recording must cover every metadata
-fetch path including uplink fallback ordering. Tests should cover: public-only
-authenticated install hits the shared cache; private install is isolated by
-credential; invalid credential misses; same-token reuse hits; custom private
-default registry is not treated as public.
+fetch path, resolve-time tarball fetches, auth-blind metadata mirror fast paths,
+and uplink fallback ordering. Tests should cover: unscoped npmjs packages are
+fetched without auth and hit the shared cache even when a registry-wide npm token
+is forwarded; private install is isolated by credential; invalid credential
+misses and does not reuse private metadata mirrors; same-token reuse hits; custom
+private default registry is not treated as public.
 
 ## Prior Art
 
@@ -256,9 +298,10 @@ default registry is not treated as public.
   the identical private credential set) vs. per-`(registry, scope)` sub-keys
   (more sharing across callers who overlap on some but not all private scopes,
   at higher complexity). Start with the union.
-- **Config surface for declaring public registries:** a list of URLs, a per-
-  uplink `public: true` flag, or both. Should `registry.npmjs.org` be the only
-  built-in, or should other well-known public mirrors be included?
+- **Config surface for declaring route policy:** a list of public/private URLs,
+  per-scope/package patterns, a per-uplink `public: true` flag, or a combination.
+  Should `registry.npmjs.org` unscoped packages be the only built-in public
+  route, or should other well-known public mirrors be included?
 - **Default for revocation validation:** rely on the short TTL (proposed) vs.
   validate-on-private-hit by default. The latter is safer but adds a round trip
   to every private hit.
