@@ -107,8 +107,10 @@ chooses **one** request shape for each metadata or resolve-time tarball fetch:
   [npm scope docs](https://docs.npmjs.com/about-scopes/) describe unscoped
   packages as public and private packages as user- or organization-scoped, so
   pnpr should deliberately select the anonymous upstream fetch shape for these
-  metadata requests even when the caller is authenticated to pnpr. Operators may
-  disable or override this built-in route if npm's policy changes or if they
+  metadata requests. The caller's pnpr identity is irrelevant to this public
+  upstream route; it is used later only for pnpr-hosted package access and for
+  deciding whether the caller may use a pnpr-managed upstream alias. Operators
+  may disable or override this built-in route if npm's policy changes or if they
   want a conservative deployment.
 - **Configured public routes:** an operator may explicitly declare additional
   registries, scopes, or package patterns public. These are fetched without
@@ -159,13 +161,13 @@ policy and private access descriptor were selected.
 
 A footprint that is **empty** means the resolution is fully public.
 
-> Note on over-counting: because a client may authenticate to pnpr even for a
-> fully public install, "the client was authenticated" is *not* a privacy signal
-> and must not mark ordinary public installs as private. Classification is by
-> route policy and the private access descriptor actually selected for that
-> route. In particular, unscoped packages on the official npm registry are
-> fetched without upstream auth, so a pnpr-authenticated request does not
-> pessimize the common unscoped public path.
+> Note on over-counting: a request can have a pnpr caller identity even when the
+> install is fully public. That caller identity is *not* a privacy signal and
+> must not mark ordinary public installs as private. Classification is by route
+> policy and the private access descriptor actually selected for that route. In
+> particular, unscoped packages on the official npm registry are fetched without
+> upstream auth, so pnpr caller identity does not pessimize the common unscoped
+> public path.
 
 ### Part 2 — Key public entries globally, private entries by access descriptor
 
@@ -587,8 +589,8 @@ mis-classify a resolution as public), so the recording must cover every metadata
 fetch path, resolve-time tarball fetches (including direct HTTP tarball
 dependencies fetched for manifest/integrity), auth-blind metadata mirror fast
 paths, and uplink fallback ordering. Tests should cover: unscoped npmjs packages are
-fetched without upstream auth and hit the shared cache even when the client is
-authenticated to pnpr; private pnpr-hosted packages require caller package
+fetched without upstream auth and hit the shared cache even when the request has
+a pnpr caller identity; private pnpr-hosted packages require caller package
 access, including when the client registry points at pnpr itself; private
 proxied packages require an authorized upstream alias and never use
 client-forwarded upstream auth; mixed public/private resolves use the correct
