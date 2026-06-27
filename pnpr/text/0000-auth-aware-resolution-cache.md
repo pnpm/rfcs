@@ -146,13 +146,18 @@ pnpr server.
 A resolution's **private footprint** is the set of private route identities
 whose metadata or resolve-time tarball data was actually fetched during that
 resolve, including direct HTTP tarball dependencies fetched during resolution to
-read their manifest and integrity. Each route is paired with the exact private
-access descriptor selected for it:
+read their manifest and integrity. Each route is paired with the exact
+**private access descriptor** selected for it. A descriptor is the cache
+namespace input plus the authorization predicate for that private route:
 
-- **Proxied upstream descriptor:** the selected pnpr-managed upstream alias plus
-  generation.
-- **Hosted package descriptor:** the pnpr-hosted route/access-policy identity,
-  not the caller's bearer token.
+- proxied routes derive the descriptor from the selected pnpr-managed upstream
+  alias plus generation, and its gate is "the caller may still use this alias";
+- pnpr-hosted routes derive the descriptor from the hosted route/access-policy
+  identity, and its gate is "the caller still satisfies this package policy".
+
+The descriptor abstraction is shared; the difference is only how the descriptor
+is derived and checked. Hosted descriptors are not keyed per caller, and they are
+not keyed by a bearer token.
 
 This is derived from information pnpr already has during the single resolve it
 already performs — **no per-package probing and no extra requests.** During
@@ -181,21 +186,20 @@ The cache key behavior depends on the footprint:
   exact private access descriptors selected for the private routes in the
   footprint.
 
-Private access descriptors have two shapes:
+A private access descriptor is one abstraction with two derivation sources:
 
-- **Proxied:** key contribution = HMAC of `upstream-alias + generation`; gate =
-  the caller can still select that alias for the route.
-- **Hosted:** key contribution = HMAC of the hosted route/access-policy
-  identity; gate = pnpr re-runs package access policy for the caller. Hosted
-  entries are not keyed per caller, and they are not keyed by a bearer token.
+- **Proxied route:** descriptor key input = `upstream-alias + generation`; gate
+  = the caller can still select that alias for the route.
+- **pnpr-hosted route:** descriptor key input = hosted route/access-policy
+  identity; gate = pnpr re-runs package access policy for the caller.
 
 Lookup still happens before resolution. pnpr first computes the normal
 resolution-input key, then reads the candidate list stored under that base key.
 Each candidate is matched against the private access descriptors the current
 request can select or satisfy for that candidate's private footprint. Public
 candidates match every caller. Private candidates match only when the current
-request can reproduce the same proxied alias descriptors and satisfy the same
-pnpr-hosted route policies.
+request can reproduce the same descriptor key inputs and satisfy each
+descriptor's authorization gate.
 The footprint discovered during resolution is used only when writing a new
 candidate after a miss, not for finding the first candidate set.
 
@@ -215,10 +219,11 @@ Proxied packages therefore do not use client-forwarded upstream auth at all:
   is not the upstream cache credential.
 
 The cache key requires the current request to reproduce the exact private access
-descriptor that produced the entry. For proxied entries that means selecting the
-same authorized alias generation. For pnpr-hosted entries that means satisfying
-the same package route policy at lookup time. An invalid, absent, or
-unauthorized credential cannot match.
+descriptor that produced the entry and pass that descriptor's authorization
+gate. For proxied entries that means selecting the same authorized alias
+generation. For pnpr-hosted entries that means satisfying the same package route
+policy at lookup time. An invalid, absent, or unauthorized credential cannot
+match.
 
 **Safety invariant:** a private-footprint entry is keyed by the same private
 access descriptor that produced it. pnpr-managed alias entries are gated by
@@ -485,16 +490,15 @@ URLs from registry config.
   available, pnpr cannot select a team credential; it fails closed for private
   proxied routes unless anonymous access is explicitly permitted as a
   non-shareable private miss.
-- **Define private access descriptor inputs.** For proxied packages, the private
-  access descriptor is the configured upstream alias plus generation, HMACed
-  with the server secret. It is not derived from
+- **Define private access descriptor inputs.** A descriptor has a key input and
+  an authorization gate. Proxied routes use `upstream-alias + generation` as the
+  key input and alias authorization as the gate. pnpr-hosted routes use the
+  hosted route/access-policy identity as the key input and package policy as the
+  gate. Descriptor key inputs are HMACed with the server secret before they are
+  used in cache keys or metadata namespaces. They are not derived from
   `AuthHeaders::for_url_with_package`, request `Authorization` headers,
   registry/scope config entries, or inline `user:pass@host` URL auth. URL and
-  package normalization still matter for route-policy and alias selection, but
-  once a proxied alias is selected, the cache descriptor is the alias identity
-  plus generation. For pnpr-hosted packages, the footprint stores the hosted
-  route/access-policy identity and cache hits re-run pnpr authorization for the
-  caller.
+  package normalization still matter for route-policy and descriptor selection.
 - **Reject inline URL auth before fetch.** The resolver must reject dependency
   URLs and resolved tarball URLs whose parsed URL contains username/password
   credentials. This avoids accidentally following pacquet's default
@@ -552,9 +556,9 @@ URLs from registry config.
     or more candidate entries under it. Each candidate carries its private
     footprint and the HMAC digest of the private access descriptors that
     produced it. A public candidate has an empty footprint and matches every
-    caller; a private candidate matches only when the current request can select
-    the same proxied alias descriptors and the caller is still authorized for
-    any pnpr-managed aliases or pnpr-hosted package policies in the footprint.
+    caller; a private candidate matches only when the current request can
+    reproduce the same descriptor key inputs and pass every descriptor
+    authorization gate in the footprint.
     This avoids knowing the footprint before the first resolve and avoids a
     second resolve or anonymous probe.
   - After a resolve, compute the footprint from the recorded routes; store an
