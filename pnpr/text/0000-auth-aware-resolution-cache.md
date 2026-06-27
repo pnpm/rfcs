@@ -2,17 +2,17 @@
 
 ## Summary
 
-pnpr disables its resolution cache for any request that forwards upstream
-credentials, which makes authenticated installs ~2.8× slower than anonymous
-ones even when every dependency is public. This RFC proposes making the cache
-*authorization-aware* instead of all-or-nothing: each fetch route is classified
-once, before the request is sent. Known-public routes (including the default
-unscoped npmjs public route) are fetched anonymously and shared globally. Routes
-that match configured private/auth rules are fetched with the selected
-credential or hosted-package policy and added to the resolution's **private
-footprint**; private resolutions and private metadata are then keyed by the
-private access descriptor that produced them. For proxied upstream packages, that
-descriptor is always a pnpr-managed upstream credential alias, not a
+pnpr currently disables its resolution cache for any request that carries
+client-provided upstream credentials, which makes authenticated installs ~2.8×
+slower than anonymous ones even when every dependency is public. This RFC
+proposes making the cache *authorization-aware* instead of all-or-nothing: each
+fetch route is classified once, before the request is sent. Known-public routes
+(including the default unscoped npmjs public route) are fetched anonymously and
+shared globally. Routes that match configured private/auth rules are fetched
+with the selected credential or hosted-package policy and added to the
+resolution's **private footprint**; private resolutions and private metadata are
+then keyed by the private access descriptor that produced them. For proxied
+upstream packages, that descriptor is always a pnpr-managed upstream credential alias, not a
 client-forwarded token. For pnpr-hosted packages, the descriptor is the hosted
 route/access-policy identity and hits re-run package authorization for the
 caller. Client auth identifies the caller to pnpr and may authorize packages
@@ -31,8 +31,8 @@ manifests, lockfile, trust policy, …). On a cache hit it returns the resolved
 lockfile without re-running resolution, which is the single biggest speedup pnpr
 offers over resolving locally.
 
-The cache is **disabled the moment any credential is forwarded** with the
-request (`pnpr/crates/pnpr/src/resolver.rs`):
+The cache is **disabled the moment the client sends any upstream auth entry** in
+the resolve request (`pnpr/crates/pnpr/src/resolver.rs`):
 
 ```rust
 let resolution_cache_key = if request.auth_headers.is_empty() && request.lockfile.is_none() {
@@ -42,21 +42,22 @@ let resolution_cache_key = if request.auth_headers.is_empty() && request.lockfil
 };
 ```
 
-This RFC removes both broad bypasses from the resolution-cache path. Forwarded
-auth and lockfile presence are inputs to auth-aware cache lookup, not reasons to
-skip it. Lockfile-seeded update resolves must still participate in the cache:
-the base resolution-input key includes the input lockfile and the lockfile mode
-flags (`frozenLockfile`, `preferFrozenLockfile`, `trustLockfile`, manifest
-checks, and trust policy), so a hit is scoped to the exact lockfile-seeded
-request shape. A proven-fresh frozen lockfile may keep its existing
-short-circuit before cache lookup because it does not run resolution at all; any
-request that needs a real resolve should be cacheable.
+This RFC removes both broad bypasses from the resolution-cache path. Caller
+identity, selected pnpr-managed upstream aliases, and lockfile presence are
+inputs to auth-aware cache lookup, not reasons to skip it. Lockfile-seeded
+update resolves must still participate in the cache: the base resolution-input
+key includes the input lockfile and the lockfile mode flags (`frozenLockfile`,
+`preferFrozenLockfile`, `trustLockfile`, manifest checks, and trust policy), so
+a hit is scoped to the exact lockfile-seeded request shape. A proven-fresh
+frozen lockfile may keep its existing short-circuit before cache lookup because
+it does not run resolution at all; any request that needs a real resolve should
+be cacheable.
 
-The reason is correct: a resolution computed with a token that can see a private
-package *contains* that package's versions and tarball URLs, and the cache key
-deliberately omits auth, so caching it globally could serve one user's private
-resolution to another. Skipping the cache is the only safe behavior given the
-current key.
+The reason is correct: a resolution computed with an upstream credential that
+can see a private package *contains* that package's versions and tarball URLs,
+and the current cache key deliberately omits auth, so caching it globally could
+serve one user's private resolution to another. Skipping the cache is the only
+safe behavior given the current key.
 
 But it is far too blunt. The measured impact (from
 [pnpm/pnpm#12604](https://github.com/pnpm/pnpm/issues/12604)):
@@ -67,10 +68,13 @@ But it is far too blunt. The measured impact (from
 | Authenticated resolve | 1.484 s | ~1.0× (no speedup) |
 
 The crucial observation is that **most authenticated installs are 100% public.**
-A pnpm client forwards the user's npm token even when every dependency comes
-from the public registry, so the request "looks authenticated" and loses the
-cache despite touching nothing private. We are paying the full cost of the
-privacy guarantee on requests that have no private data at all.
+Today a pnpm client may send npmrc-derived upstream auth entries even when every
+dependency comes from the public registry, so the request "looks authenticated"
+and loses the cache despite touching nothing private. In the proposed model,
+client auth only identifies the caller to pnpr; third-party upstream credentials
+are pnpr-managed aliases selected by route policy. Either way, caller
+authentication alone is not a privacy signal. We should not pay the full cost of
+the privacy guarantee on requests that have no private data at all.
 
 The goal: keep the guarantee — one user's private resolution must never be
 served to another — while restoring the cache for the dominant public path and
@@ -102,9 +106,10 @@ chooses **one** request shape for each metadata or resolve-time tarball fetch:
   exact official npm registry (`registry.npmjs.org`) are treated as public. The
   [npm scope docs](https://docs.npmjs.com/about-scopes/) describe unscoped
   packages as public and private packages as user- or organization-scoped, so
-  pnpr should deliberately omit upstream auth for these metadata requests even
-  if the client sent pnpr auth. Operators may disable or override this built-in
-  route if npm's policy changes or if they want a conservative deployment.
+  pnpr should deliberately select the anonymous upstream fetch shape for these
+  metadata requests even when the caller is authenticated to pnpr. Operators may
+  disable or override this built-in route if npm's policy changes or if they
+  want a conservative deployment.
 - **Configured public routes:** an operator may explicitly declare additional
   registries, scopes, or package patterns public. These are fetched without
   upstream auth and can participate in the global public cache.
@@ -390,17 +395,18 @@ later refinement; the base design is config-driven with no probing.
 ## Rationale and Alternatives
 
 **Alternative A — Per-package anonymous probing.** Classify each package by
-fetching it both anonymously and authenticated. Rejected: it roughly doubles
-metadata requests, defeating the performance goal. This RFC instead uses a
-single route-policy decision per fetch.
+fetching it both anonymously and with the selected upstream credential.
+Rejected: it roughly doubles metadata requests, defeating the performance goal.
+This RFC instead uses a single route-policy decision per fetch.
 
-**Alternative B — Always hash auth into the cache key.** Simple and safe, but it
-gives *every* authenticated request its own cache namespace, so the dominant
-public case never shares across users — it only helps repeat installs by the
-same caller. It also hashes the wrong thing for this design: client auth is a
-caller identity for pnpr-hosted packages, not an upstream credential for proxied
-packages. This RFC's footprint split keeps public resolutions globally shared
-while applying private-descriptor keying only where it is actually needed.
+**Alternative B — Always vary by auth or credential.** Simple and safe, but it
+gives *every* authenticated caller or selected upstream credential its own cache
+namespace, so the dominant public case never shares across users — it only helps
+repeat installs by the same caller or alias. It also hashes the wrong thing for
+this design: client auth is a caller identity for pnpr-hosted packages, not an
+upstream credential for proxied packages. This RFC's footprint split keeps
+public resolutions globally shared while applying private-descriptor keying only
+where it is actually needed.
 
 **Alternative C — "Caller has a token for the scope" gate.** Share a private
 entry with any authenticated caller or any caller that presents some credential
