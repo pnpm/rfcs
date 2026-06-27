@@ -266,6 +266,11 @@ per-credential package glob. The same scope can therefore resolve through
 different uplinks for different clients depending on each client's registry
 config, and a single uplink can serve whatever packages its upstream serves.
 
+A credential is attached **only** to fetches whose origin matches the uplink's
+own configured origin. A tarball host taken from a packument's `dist.tarball` is
+untrusted input and never causes pnpr to send the packument-serving uplink's
+credential to that host; see [Split-domain registries](#split-domain-registries-separate-tarball-host).
+
 - callers authenticate to pnpr as they already can with pnpr bearer tokens;
 - pnpr, not the client, supplies the uplink's upstream credential when the caller
   is authorized for that origin, and records the uplink identity in the private
@@ -366,6 +371,57 @@ than letting the client fetch a private or unknown upstream URL directly.
 Lockfile-seeded update resolves still use the resolution cache; their cache key
 includes the input lockfile and lockfile mode flags, and the cached value is the
 routed output lockfile for that exact input.
+
+### Split-domain registries (separate tarball host)
+
+Some private registries serve package documents on one origin and the
+`dist.tarball` on another (GitHub Packages, AWS CodeArtifact, Artifactory/Azure
+with a separate asset CDN). Because pnpr's uplink endpoint rewrites every
+`dist.tarball` onto its own host before serving the packument, the
+**client-facing** tarball URL stays canonical for the configured registry and
+the lockfile entry stays integrity-only — the cross-domain split is invisible to
+the client and parity is preserved. (A direct, non-pnpr resolve, by contrast,
+records the cross-domain URL as an explicit tarball resolution, so this is one
+more case the endpoint normalizes that a host-swap could not.)
+
+The split constrains pnpr's **outbound** behavior, and the constraint is a
+security boundary, not just a routing detail:
+
+- **Credentials are sent only to explicitly configured origins.** A packument's
+  `dist.tarball` domain is untrusted data: a compromised, misconfigured, or
+  malicious upstream could point it at an attacker-controlled host. pnpr must
+  **never** infer "this tarball belongs to the uplink that served the packument,
+  so attach that uplink's credential." An uplink's credential is attached only to
+  fetches whose origin matches that uplink's own configured origin.
+- **The operator configures a differing tarball origin explicitly.** When a
+  registry's tarball host differs from its packument host, the operator must
+  declare that tarball origin — as a separate uplink, or as an additional origin
+  on the same uplink — with whatever auth it needs (often none, for
+  pre-signed/time-limited asset URLs). pnpr selects the credential for the tarball
+  fetch by the tarball's **own** origin against that explicit config.
+- **Unconfigured tarball origins get no credential and fail closed if they need
+  one.** If the tarball origin is not covered by explicit configuration, pnpr
+  fetches it without any uplink credential; if that origin then returns
+  `401`/`403`, the fetch fails closed and the operator is expected to configure
+  it. pnpr does not retry with the packument uplink's credential. pnpr should
+  also refuse to proxy tarball origins that are neither the registry origin nor an
+  explicitly configured/allowlisted origin, so a malicious packument cannot turn
+  the endpoint into an open relay to arbitrary or internal hosts.
+- **Footprint attribution follows the fetch's own origin.** A cross-domain
+  tarball fetch contributes the configured uplink's descriptor when one matches,
+  or no private descriptor when it is an anonymous asset fetch. An anonymous
+  tarball fetch does not make the resolution public — the packument fetch already
+  recorded the private route that makes the resolution private.
+
+Time-limited/signed asset URLs (CodeArtifact, Artifactory) must not be pinned in
+the mirror past their validity: serving a split-domain tarball honors metadata
+freshness and re-derives the asset URL from a fresh packument when needed.
+
+As with any non-canonical upstream URL, the only residual divergence is a
+**mixed** deployment where some clients go through pnpr and some resolve directly
+against the upstream: pnpr clients get integrity-only entries while direct
+clients get the explicit cross-domain URL. A homogeneous "everyone through pnpr"
+deployment is fully consistent.
 
 ### Private metadata cache
 
@@ -539,6 +595,14 @@ how pnpr exposes uplinks as registry endpoints.
   Match an uplink to a fetch by **registry origin**, not by a per-credential
   package glob. The package-pattern routing remains the operator's existing
   `packages`/route-policy concern.
+- **Never send credentials to an inferred origin.** Credential selection is by
+  the fetch's own origin against explicit uplink config. A tarball origin
+  discovered from a packument's `dist.tarball` that does not match a configured
+  origin is fetched without any uplink credential, and is refused outright unless
+  it is the registry origin or an explicitly allowlisted/configured origin.
+  Split-domain registries (separate tarball host) therefore require the operator
+  to configure the tarball origin explicitly; pnpr must not attach the packument
+  uplink's credential to a different host.
 - **Thread pnpr caller identity into resolution.** The HTTP request's resolved
   pnpr identity (`AuthedCaller` / `Identity`) must be passed into
   `serve_resolve`, `handle_resolve`, cache lookup, cache write, route selection,
@@ -678,6 +742,9 @@ upstream auth; mixed public/private resolves use the correct metadata namespace
 per package fetch; invalid or unauthorized access misses and does not reuse
 private metadata mirrors; `401`/`403` and private-route `404` responses do not
 fall back to broader mirrors; inline URL credentials are rejected before fetch;
+a tarball host that differs from its packument host never receives the packument
+uplink's credential, and an unconfigured private tarball host fails closed rather
+than leaking a credential or being proxied as an open relay;
 verifier metadata fetches cannot read or populate the wrong cache scope;
 different pnpr users authorized for the same uplink share resolution and metadata
 cache entries; revoked uplink/package access stops matching private hits; public
