@@ -122,6 +122,14 @@ chooses **one** request shape for each metadata or resolve-time tarball fetch:
   a non-shareable private miss when the route permits anonymous access; it must
   not write the result to the global public cache.
 
+A route is **pnpr-hosted** when the normalized request registry points at this
+pnpr service, or at an operator-declared hosted registry alias, and the package
+matches pnpr's hosted package policy. Hosted classification wins before proxied
+uplink selection. This avoids treating pnpr itself as a third-party upstream,
+forwarding client tokens back to pnpr as upstream auth, or double-applying the
+registry proxy's uplink policy when a client's default or named registry is the
+pnpr server.
+
 A resolution's **private footprint** is the set of private route identities
 whose metadata or resolve-time tarball data was actually fetched during that
 resolve, including direct HTTP tarball dependencies fetched during resolution to
@@ -311,11 +319,23 @@ auth-blind. Private metadata must follow the same route policy:
   sharing or store only in a request-local cache. Never write it to the global
   public mirror.
 
+The metadata cache scope is **per metadata fetch**, not per resolve. A single
+workspace resolve may read public npmjs metadata from the global mirror, private
+metadata for alias A from alias A's descriptor namespace, private metadata for
+alias B from alias B's namespace, and pnpr-hosted metadata from a hosted-policy
+namespace. Implementations must not approximate this by swapping the whole
+`cache_dir` for a request. The chosen scope has to flow into every packument
+fast path: persistent mirror path, in-memory metadata key, fetch-lock key,
+conditional request headers, prefer-offline reads, maturity/published-by
+shortcuts, and disk fallback after a failed fetch.
+
 On `401`/`403` from the upstream registry, pnpr must fail closed: do not fall
 back to a stale global mirror and do not use a descriptor-scoped mirror from a
 different private access descriptor. For transport failures (`5xx`, timeout,
 network failure), pnpr may fall back only to metadata in the same public or
 descriptor-scoped namespace and only within the normal freshness policy.
+Registries that hide private packages as `404` must be treated the same way for
+private routes: do not satisfy the miss from a broader or auth-blind mirror.
 
 ### Consequences for sharing
 
@@ -437,7 +457,9 @@ URLs from registry config.
   must choose the route policy and selected upstream auth together. Public routes
   send no upstream auth; private proxied routes send only the selected
   pnpr-managed upstream alias; pnpr-hosted routes use client auth only to
-  authorize the caller against pnpr package policy.
+  authorize the caller against pnpr package policy. Hosted-route detection must
+  normalize request registry URLs against the pnpr service's own public base URL
+  and any configured hosted aliases before considering proxied uplinks.
 - **Authorize pnpr-managed upstream credentials.** Reuse pnpr's existing caller
   identity (bearer-token-backed users), uplink auth configuration concepts, and
   registry package permission policy shape where possible to decide whether a
@@ -469,7 +491,10 @@ URLs from registry config.
   route identity, whether it was public or private, and the selected private
   access descriptor digest. The existing `ResolutionObserver` reports resolved
   tarball packages after a resolver result, so it is not sufficient by itself;
-  the hook needs to sit at the actual fetch/auth-selection layer.
+  the hook needs to sit at the actual fetch/auth-selection layer. If a fast path
+  serves metadata from memory or disk without making an HTTP request, it must
+  still use and record the route/cache scope that would have been used for the
+  fetch.
 - **Route emitted tarball URLs.** When emitting streamed package frames and the
   returned lockfile, use the same route decision: public/anonymous routes may
   keep upstream `dist.tarball` URLs; private proxied and unknown routes must use
@@ -488,7 +513,10 @@ URLs from registry config.
   Private/auth metadata must not be loaded from or written to a global auth-blind
   mirror in a way that lets a later invalid credential reuse it. Upstream
   `401`/`403` must fail closed; only transport failures may fall back to stale
-  metadata, and only within the same cache scope.
+  metadata, and only within the same cache scope. This scope must be computed per
+  `(registry, package)` fetch and threaded through `pick_package`,
+  `fetch_full_metadata_cached`, `get_pkg_mirror_path`, in-memory cache keys,
+  fetch-lock keys, verifier paths, and every disk fallback path.
 - **Apply metadata cache scope to verification fetches too.** Lockfile
   verification and trust checks do not add packages to the resolution footprint,
   but their packument fetches still read and populate metadata mirrors. They must
@@ -541,17 +569,20 @@ dependencies fetched for manifest/integrity), auth-blind metadata mirror fast
 paths, and uplink fallback ordering. Tests should cover: unscoped npmjs packages are
 fetched without upstream auth and hit the shared cache even when the client is
 authenticated to pnpr; private pnpr-hosted packages require caller package
-access; private proxied packages require an authorized upstream alias and never
-use client-forwarded upstream auth; invalid or unauthorized access misses and
-does not reuse private metadata mirrors; inline URL credentials are rejected
-before fetch; verifier metadata fetches cannot read or populate the wrong cache
-scope; different pnpr users authorized for the same upstream credential alias
-share resolution and metadata cache entries; revoked alias/package access stops
-matching private hits; public tarballs can keep upstream URLs while private and
-unknown tarballs are emitted as pnpr gateway URLs; cached private resolutions do
-not replay private upstream tarball URLs; lockfile/frozen paths do not bypass
-tarball route policy; custom private default registry is not treated as public;
-per-base-key candidate lists stay bounded.
+access, including when the client registry points at pnpr itself; private
+proxied packages require an authorized upstream alias and never use
+client-forwarded upstream auth; mixed public/private resolves use the correct
+metadata namespace per package fetch; invalid or unauthorized access misses and
+does not reuse private metadata mirrors; `401`/`403` and private-route `404`
+responses do not fall back to broader mirrors; inline URL credentials are
+rejected before fetch; verifier metadata fetches cannot read or populate the
+wrong cache scope; different pnpr users authorized for the same upstream
+credential alias share resolution and metadata cache entries; revoked
+alias/package access stops matching private hits; public tarballs can keep
+upstream URLs while private and unknown tarballs are emitted as pnpr gateway
+URLs; cached private resolutions do not replay private upstream tarball URLs;
+lockfile/frozen paths do not bypass tarball route policy; custom private default
+registry is not treated as public; per-base-key candidate lists stay bounded.
 
 ## Prior Art
 
@@ -593,6 +624,3 @@ per-base-key candidate lists stay bounded.
 - **Metrics:** should pnpr expose cache hit/miss split by public vs. private
   footprint and tarball routing decisions so operators can see the recovered hit
   rate and gateway load?
-
----
-Written by an agent (Claude Code, claude-opus-4-8).
