@@ -232,10 +232,10 @@ policy. Private data can never leak beyond the alias authorization or package
 access policy that produced it. The design does not rely on hiding whether a
 base resolution key has private candidates; unauthorized callers always observe
 a miss/fail-closed resolve, candidate counts and footprint details must not be
-returned to clients, and private hit/miss metrics should be operator-only. This
-leaves only a low-bandwidth existence/timing oracle over non-secret base inputs;
-deployments that treat that as sensitive can normalize miss/hit timing or
-disable private candidate lookup for unauthorized callers at a performance cost.
+returned to clients, and private hit/miss metrics should be operator-only. If a
+deployment wants to hide even cache-existence timing, it can configure a uniform
+minimum delay for all resolution-cache misses. That is optional hardening and
+does not affect the public cache-hit fast path.
 
 ### Team-owned upstream credentials
 
