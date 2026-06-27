@@ -365,11 +365,21 @@ include upstream `Authorization` values, upstream tokens, or a raw private
 upstream URL solely because pnpr fetched it successfully with server-owned
 credentials.
 
-Frozen and lockfile-seeded paths must preserve this routing. A private scope is
-expected to be configured to a pnpr uplink endpoint; if an existing lockfile
-contains raw private/unknown upstream tarball URLs that the client cannot
-authenticate to, pnpr should return a freshly routed lockfile or reject it rather
-than letting the client fetch a private or unknown upstream URL directly.
+Routing therefore depends on the caller having pointed each private scope at the
+matching `/~<uplink>/` endpoint. When a fresh resolve hits a private route whose
+scope is instead configured directly at the raw upstream, the resolver cannot
+emit a usable credential-free URL for it: it must **fail closed with an
+actionable error** naming the scope and the uplink endpoint it should point at,
+rather than emitting an upstream URL the credential-less client cannot fetch or
+silently forwarding the client's own upstream auth. How clients are provisioned
+that scope→endpoint mapping (operator-pushed `.npmrc`, a discovery handshake, …)
+is an open question below.
+
+Frozen and lockfile-seeded paths must preserve this routing the same way: if an
+existing lockfile contains raw private/unknown upstream tarball URLs that the
+client cannot authenticate to, pnpr should return a freshly routed lockfile or
+reject it rather than letting the client fetch a private or unknown upstream URL
+directly.
 Lockfile-seeded update resolves still use the resolution cache; their cache key
 includes the input lockfile and lockfile mode flags, and the cached value is the
 routed output lockfile for that exact input.
@@ -590,6 +600,14 @@ how pnpr exposes uplinks as registry endpoints.
   the same registry surface that backs client-side resolution when a scope is
   pointed at the endpoint, so both `/resolve` and direct installs share one code
   path and produce identical, integrity-only lockfile entries.
+- **Recognize own `/~<uplink>/` endpoints during resolution.** When a request's
+  registry/named-registry config points a scope at `https://<self>/~<uplink>/`,
+  the resolver must normalize that to "resolve through the `<uplink>` uplink"
+  (its credential, access policy, and footprint descriptor) rather than treating
+  the endpoint as an opaque third-party upstream or recursively issuing HTTP
+  requests to its own endpoint. This is the uplink-endpoint analogue of the
+  hosted-route normalization against pnpr's own base URL, and it is what lets
+  `/resolve` emit URLs already canonical for the client's configured endpoint.
 - **Merge upstream credentials into uplink config.** Rather than a separate
   credential-alias block, extend pnpr's existing `uplinks` config
   (`pnpr/crates/pnpr/src/config.rs`) with an access policy (which pnpr
@@ -811,6 +829,14 @@ per-base-key candidate lists stay bounded.
 - **Default for revocation validation:** rely on the short TTL (proposed) vs.
   validate-on-private-hit by default. The latter is safer but adds a round trip
   to every private hit.
+- **Split-domain tarball-origin config:** when a registry serves tarballs on a
+  different origin than its packuments, is that origin declared as a **separate
+  uplink** (its own credential + access policy) or as an **additional allowlisted
+  origin on the same uplink** (sharing or explicitly overriding its auth)? Lean
+  toward an additional origin for the common pre-signed/no-auth asset host, with
+  a separate uplink when the asset host needs its own credential. Either way the
+  credential rule holds: an origin receives an uplink credential only when that
+  exact origin is explicitly configured.
 - **Metrics:** should pnpr expose cache hit/miss split by public vs. private
   footprint and tarball routing decisions so operators can see the recovered hit
   rate and uplink-endpoint load?
