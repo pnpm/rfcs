@@ -12,16 +12,24 @@ shared globally. Routes that match configured private/auth rules are fetched
 with the selected credential or hosted-package policy and added to the
 resolution's **private footprint**; private resolutions and private metadata are
 then keyed by the private access descriptor that produced them. For proxied
-upstream packages, that descriptor is always a pnpr-managed upstream credential alias, not a
+upstream packages, that descriptor is always a pnpr-managed uplink, not a
 client-forwarded token. For pnpr-hosted packages, the descriptor is the hosted
 route/access-policy identity and hits re-run package authorization for the
 caller. Client auth identifies the caller to pnpr and may authorize packages
 hosted by pnpr itself, but it is not forwarded to third-party registries and is
-not digested as an upstream cache credential. The same route decision governs
-tarball URLs returned by resolution: public routes may keep direct upstream
-tarball URLs, while private or unknown routes are rewritten to pnpr read-only
-install gateway URLs so resolver responses and cached lockfiles never expose
-upstream credentials or unusable private upstream URLs.
+not digested as an upstream cache credential.
+
+The same route decision governs the tarball URLs in resolver output: public
+routes keep their direct upstream (CDN) tarball URLs, while private and unknown
+routes are served through pnpr's **per-uplink registry endpoints**
+(`https://<pnpr>/<uplink>`) that the client points the corresponding scope at.
+Because those URLs are canonical for the configured registry, lockfile entries
+collapse to integrity-only registry resolutions whose host lives in client
+config, not in the lockfile — so a project produces the **same lockfile whether
+it is resolved server-side through `/resolve` or client-side directly against
+the same registry configuration**. Server-side resolution becomes a pure
+accelerator, never a fork in the lockfile, and upstream credentials and unusable
+private upstream URLs never reach clients.
 
 ## Motivation
 
@@ -43,10 +51,10 @@ let resolution_cache_key = if request.auth_headers.is_empty() && request.lockfil
 ```
 
 This RFC removes both broad bypasses from the resolution-cache path. Caller
-identity, selected pnpr-managed upstream aliases, and lockfile presence are
-inputs to auth-aware cache lookup, not reasons to skip it. Lockfile-seeded
-update resolves must still participate in the cache: the base resolution-input
-key includes the input lockfile and the lockfile mode flags (`frozenLockfile`,
+identity, selected pnpr-managed uplinks, and lockfile presence are inputs to
+auth-aware cache lookup, not reasons to skip it. Lockfile-seeded update resolves
+must still participate in the cache: the base resolution-input key includes the
+input lockfile and the lockfile mode flags (`frozenLockfile`,
 `preferFrozenLockfile`, `trustLockfile`, manifest checks, and trust policy), so
 a hit is scoped to the exact lockfile-seeded request shape. A proven-fresh
 frozen lockfile may keep its existing short-circuit before cache lookup because
@@ -72,7 +80,7 @@ Today a pnpm client may send npmrc-derived upstream auth entries even when every
 dependency comes from the public registry, so the request "looks authenticated"
 and loses the cache despite touching nothing private. In the proposed model,
 client auth only identifies the caller to pnpr; third-party upstream credentials
-are pnpr-managed aliases selected by route policy. Either way, caller
+are pnpr-managed uplinks selected by route policy. Either way, caller
 authentication alone is not a privacy signal. We should not pay the full cost of
 the privacy guarantee on requests that have no private data at all.
 
@@ -109,16 +117,16 @@ chooses **one** request shape for each metadata or resolve-time tarball fetch:
   pnpr should deliberately select the anonymous upstream fetch shape for these
   metadata requests. The caller's pnpr identity is irrelevant to this public
   upstream route; it is used later only for pnpr-hosted package access and for
-  deciding whether the caller may use a pnpr-managed upstream alias. Operators
-  may disable or override this built-in route if npm's policy changes or if they
+  deciding whether the caller may use a pnpr-managed uplink. Operators may
+  disable or override this built-in route if npm's policy changes or if they
   want a conservative deployment.
 - **Configured public routes:** an operator may explicitly declare additional
   registries, scopes, or package patterns public. These are fetched without
   upstream auth and can participate in the global public cache.
 - **Private proxied routes:** if a proxied route matches a configured private
-  rule, pnpr may send only a pnpr-managed upstream credential alias selected for
-  that route and authorized for the caller. There is no anonymous preflight and
-  no fallback to a client-forwarded upstream credential.
+  rule, pnpr may send only the credential of a pnpr-managed uplink selected for
+  that route by registry origin and authorized for the caller. There is no
+  anonymous preflight and no fallback to a client-forwarded upstream credential.
 - **Private pnpr-hosted routes:** if the package is hosted by pnpr itself, the
   client auth identifies the caller to pnpr and is checked against pnpr's package
   access policy. It is not forwarded upstream and is not used as the cache
@@ -127,13 +135,12 @@ chooses **one** request shape for each metadata or resolve-time tarball fetch:
   contain `user:pass@host` credentials are rejected by the resolver. They must
   not be converted into Basic auth, used as an upstream credential identity, or
   stored in any shared cache. Operators that need authenticated direct tarball
-  URLs should model that host with a pnpr-managed upstream credential alias
-  instead.
+  URLs should model that host with a pnpr-managed uplink instead.
 - **Unknown routes:** default to private unless explicitly declared public. If
-  no pnpr-managed upstream credential alias or pnpr-hosted authorization is
-  available for an unknown/private route, pnpr may resolve it anonymously only as
-  a non-shareable private miss when the route permits anonymous access; it must
-  not write the result to the global public cache.
+  no pnpr-managed uplink or pnpr-hosted authorization is available for an
+  unknown/private route, pnpr may resolve it anonymously only as a non-shareable
+  private miss when the route permits anonymous access; it must not write the
+  result to the global public cache.
 
 A route is **pnpr-hosted** when the normalized request registry points at this
 pnpr service, or at an operator-declared hosted registry alias, and the package
@@ -150,8 +157,8 @@ read their manifest and integrity. Each route is paired with the exact
 **private access descriptor** selected for it. A descriptor is the cache
 namespace input plus the authorization predicate for that private route:
 
-- proxied routes derive the descriptor from the selected pnpr-managed upstream
-  alias plus generation, and its gate is "the caller may still use this alias";
+- proxied routes derive the descriptor from the selected pnpr-managed uplink
+  plus generation, and its gate is "the caller may still use this uplink";
 - pnpr-hosted routes derive the descriptor from the hosted route/access-policy
   identity, and its gate is "the caller still satisfies this package policy".
 
@@ -188,8 +195,8 @@ The cache key behavior depends on the footprint:
 
 A private access descriptor is one abstraction with two derivation sources:
 
-- **Proxied route:** descriptor key input = `upstream-alias + generation`; gate
-  = the caller can still select that alias for the route.
+- **Proxied route:** descriptor key input = `uplink + generation`; gate
+  = the caller can still select that uplink for the route.
 - **pnpr-hosted route:** descriptor key input = hosted route/access-policy
   identity; gate = pnpr re-runs package access policy for the caller.
 
@@ -208,11 +215,10 @@ some auth for this scope?" — because the latter is an authorization bypass. A
 bogus client token for `@acme` must never unlock a private proxied resolution.
 Proxied packages therefore do not use client-forwarded upstream auth at all:
 
-- If the caller is authorized for a **pnpr-managed upstream credential alias**,
-  the request selects that alias identity and can match entries produced by the
-  same alias.
-- If the caller is not authorized for the alias, the request cannot select that
-  alias identity, so it cannot match the alias's private entries.
+- If the caller is authorized for a **pnpr-managed uplink**, the request selects
+  that uplink identity and can match entries produced by the same uplink.
+- If the caller is not authorized for the uplink, the request cannot select that
+  uplink identity, so it cannot match the uplink's private entries.
 - If the package is **hosted by pnpr itself**, the request is matched by
   re-running pnpr package access policy for the caller against the hosted package
   routes in the footprint. The client's bearer token authenticates the caller; it
@@ -220,49 +226,59 @@ Proxied packages therefore do not use client-forwarded upstream auth at all:
 
 The cache key requires the current request to reproduce the exact private access
 descriptor that produced the entry and pass that descriptor's authorization
-gate. For proxied entries that means selecting the same authorized alias
+gate. For proxied entries that means selecting the same authorized uplink
 generation. For pnpr-hosted entries that means satisfying the same package route
 policy at lookup time. An invalid, absent, or unauthorized credential cannot
 match.
 
 **Safety invariant:** a private-footprint entry is keyed by the same private
-access descriptor that produced it. pnpr-managed alias entries are gated by
-alias access policy, and pnpr-hosted entries are gated by pnpr package access
-policy. Private data can never leak beyond the alias authorization or package
+access descriptor that produced it. pnpr-managed uplink entries are gated by
+uplink access policy, and pnpr-hosted entries are gated by pnpr package access
+policy. Private data can never leak beyond the uplink authorization or package
 access policy that produced it. The design does not rely on hiding whether a
 base resolution key has private candidates; unauthorized callers always observe
 a miss/fail-closed resolve, candidate counts and footprint details must not be
 returned to clients, and private hit/miss metrics should be operator-only.
 
-### Team-owned upstream credentials
+### Team-owned upstream credentials (pnpr-managed uplinks)
 
 For third-party/proxied packages, pnpr should not forward arbitrary client auth
 to the upstream registry. The resolver should use the same proxy shape as the
 registry server: clients authenticate to pnpr, and pnpr uses operator-managed
-upstream credentials when the caller is allowed to use them. pnpr already has
-server-owned uplink auth for the registry proxy and package access policies for
-callers; this RFC extends that model to resolver-managed third-party
-credentials.
+upstream credentials when the caller is allowed to use them. This RFC unifies
+that with Verdaccio's existing **uplink** concept rather than introducing a
+separate credential-alias config block: an uplink already names an upstream
+registry and its credential; this RFC adds an access policy and a rotation
+generation to it, and exposes it as a registry endpoint.
 
-An operator can configure **upstream credential aliases** for third-party
-registries:
+A **pnpr-managed uplink** has:
 
-- each alias has a registry/scope/package route policy, the upstream credential
-  material (for example from an environment variable or secret store), and an
-  access policy saying which pnpr users may use it;
+- a backing upstream registry URL and the upstream credential material (for
+  example from an environment variable or secret store);
+- an **access policy** saying which pnpr users/teams may use it;
+- a **generation** for credential rotation;
+- a **registry endpoint path** (`https://<pnpr>/<uplink>`) clients can point a
+  scope at.
+
+Routing to an uplink is by the **registry origin** a package resolves to, taken
+from the request's registry/named-registry configuration — not by a
+per-credential package glob. The same scope can therefore resolve through
+different uplinks for different clients depending on each client's registry
+config, and a single uplink can serve whatever packages its upstream serves.
+
 - callers authenticate to pnpr as they already can with pnpr bearer tokens;
-- pnpr, not the client, selects the alias when the caller is authorized for that
-  route, sends the alias's upstream credential, and records the alias identity
-  in the private footprint;
-- cache keys and metadata mirrors use a stable proxied descriptor such as
-  `credential-alias + generation`, HMACed with the server secret. The raw token
-  is never written to cache keys or exposed to clients.
+- pnpr, not the client, supplies the uplink's upstream credential when the caller
+  is authorized for that origin, and records the uplink identity in the private
+  footprint;
+- cache keys and metadata mirrors use a stable proxied descriptor `uplink +
+  generation`, HMACed with the server secret. The raw token is never written to
+  cache keys, embedded in any client-visible URL, or exposed to clients.
 
 This gives teams the fast path without allowing client-supplied third-party
-tokens to affect proxied resolution. Everyone authorized for the same alias
+tokens to affect proxied resolution. Everyone authorized for the same uplink
 shares private resolution entries and private metadata entries. A caller who is
-not authorized for the alias cannot select that alias and therefore cannot
-match its cache entries.
+not authorized for the uplink cannot select it and therefore cannot match its
+cache entries.
 
 Route selection precedence:
 
@@ -270,54 +286,83 @@ Route selection precedence:
 2. A pnpr-hosted private route uses a shared hosted access descriptor, such as
    a team or package access-policy identity, and re-runs that policy for the
    caller at lookup time; no upstream credential is involved.
-3. A proxied private route selects an authorized pnpr-managed upstream credential
-   alias.
-4. If the route is private/unknown and no hosted-package authorization or
-   upstream alias is available, resolve anonymously only as a non-shareable
-   private miss when the route permits anonymous access; otherwise fail closed.
-   Never forward client auth to the proxied upstream registry and never write a
-   global public cache entry for this path.
+3. A proxied private route selects an authorized pnpr-managed uplink by registry
+   origin.
+4. If the route is private/unknown and no hosted-package authorization or uplink
+   is available, resolve anonymously only as a non-shareable private miss when
+   the route permits anonymous access; otherwise fail closed. Never forward
+   client auth to the proxied upstream registry and never write a global public
+   cache entry for this path.
 
-When an upstream credential is rotated, the alias generation changes, so new
-resolves populate a new private namespace. Old entries age out by TTL. If a
-user's team access is revoked, pnpr re-evaluates alias authorization before
-serving private hits, so the caller stops matching those private entries even
-while the shared upstream token itself remains valid for other team members.
+When an upstream credential is rotated, the uplink generation changes, so new
+resolves populate a new private namespace. Old entries age out by TTL.
+Generation is a server-side cache-namespacing detail and is never embedded in a
+client-visible URL. If a user's team access is revoked, pnpr re-evaluates uplink
+authorization before serving private hits, so the caller stops matching those
+private entries even while the shared upstream token itself remains valid for
+other team members.
 
-### Tarball URL routing
+### Tarball URL routing and lockfile parity
 
-Resolution cache entries include tarball URLs, so the URL routing decision must
-be part of the same route policy. A private cached resolution is safe to replay
-only if replaying it does not hand a client an upstream URL that requires
-server-owned credentials or reveal those credentials.
+Resolution cache entries include tarball URLs, so the URL routing decision is
+part of the same route policy. But the routing must not make the lockfile depend
+on *how* it was produced: a project must resolve to the same lockfile whether it
+went through pnpr's `/resolve` accelerator or was resolved client-side directly
+against the same registry configuration. Otherwise server-side resolution forks
+the lockfile, and a `pnpm add` performed without the accelerator rewrites every
+private entry.
+
+The design achieves this by routing private packages through **per-uplink
+registry endpoints** rather than opaque per-tarball gateway URLs:
+
+- Each pnpr-managed uplink is exposed as a registry endpoint at a stable path,
+  `https://<pnpr>/<uplink>`. It behaves as a normal npm registry: it serves
+  packuments (rewriting `dist.tarball` to canonical
+  `https://<pnpr>/<uplink>/<pkg>/-/<file>` URLs, as Verdaccio does) and proxies
+  tarball bytes from the backing upstream using the server-owned credential,
+  after re-checking caller access to the uplink.
+- Clients reach a private route by pointing the corresponding scope's registry
+  at that endpoint — `@acme:registry=https://<pnpr>/<uplink>` — exactly the
+  mechanism npm already provides for scoped private registries. This works
+  **without** the resolver: ordinary client-side resolution against the endpoint
+  yields correctly-routed, credential-free tarball URLs.
+- Because the emitted tarball URL is canonical for the configured registry, the
+  lockfile entry collapses to an **integrity-only registry resolution**. The
+  registry host lives in client `.npmrc`, never in the lockfile. The same
+  `{integrity}` entry reconstructs to the pnpr endpoint for a client configured
+  to use pnpr, and to the upstream for a client with direct access — so the
+  lockfile is identical across both, the same way a project already shares one
+  lockfile across a public registry and an internal mirror.
 
 For each selected package, pnpr applies the same route classification when it
 emits streamed package frames and the returned lockfile:
 
-- **Public/anonymous route:** pnpr may emit the upstream `dist.tarball` URL.
-  Known-public and configured-public routes do not need an anonymous tarball
-  probe on the hot path; the route policy is the proof.
-- **Private proxied route:** pnpr emits a pnpr read-only install gateway URL.
-  The gateway fetches from the upstream registry with the selected
-  pnpr-managed upstream alias after re-checking caller access to that alias.
-- **Private pnpr-hosted route:** pnpr emits a pnpr-hosted tarball URL and
-  re-checks the caller against pnpr package access policy before serving it.
-- **Unknown route:** pnpr emits a pnpr gateway URL unless the operator has
-  explicitly classified the route as public or opted into a successful
-  public-route detection path.
+- **Public/anonymous route:** emit the upstream `dist.tarball` URL (canonical for
+  the public registry → integrity-only). Public tarballs download directly from
+  the upstream CDN and never traverse pnpr; the route policy is the proof, with
+  no anonymous tarball probe on the hot path.
+- **Private proxied route:** emit a URL canonical for the uplink's registry
+  endpoint, integrity-only relative to the scope's configured
+  `https://<pnpr>/<uplink>` registry. The endpoint fetches from the upstream with
+  the server-owned uplink credential after re-checking caller access.
+- **Private pnpr-hosted route:** emit a pnpr-hosted tarball URL (canonical for the
+  pnpr registry) and re-check the caller against pnpr package access policy before
+  serving it.
+- **Unknown route:** there is no uplink and therefore no credential or endpoint to
+  route through. Resolve anonymously only as a non-shareable private miss when the
+  route permits anonymous access; otherwise fail closed and require the operator
+  to configure an uplink. pnpr does not mint per-tarball opaque gateway URLs.
 
 Resolver responses, streamed package frames, and returned lockfiles must never
-include upstream `Authorization` values, upstream tokens, or a private upstream
-URL solely because pnpr fetched it successfully with server-owned credentials.
-Cached resolutions store already-routed tarball URLs, and clients must consume
-those URLs instead of reconstructing private upstream URLs from local registry
-config.
+include upstream `Authorization` values, upstream tokens, or a raw private
+upstream URL solely because pnpr fetched it successfully with server-owned
+credentials.
 
-Frozen and lockfile-seeded paths must preserve this routing decision. If an
-existing lockfile contains registry-shaped entries or tarball URLs that do not
-match the current route policy, pnpr should return a freshly routed lockfile or
-force the client through the pnpr gateway rather than letting the client fetch a
-private or unknown upstream URL directly.
+Frozen and lockfile-seeded paths must preserve this routing. A private scope is
+expected to be configured to a pnpr uplink endpoint; if an existing lockfile
+contains raw private/unknown upstream tarball URLs that the client cannot
+authenticate to, pnpr should return a freshly routed lockfile or reject it rather
+than letting the client fetch a private or unknown upstream URL directly.
 Lockfile-seeded update resolves still use the resolution cache; their cache key
 includes the input lockfile and lockfile mode flags, and the cached value is the
 routed output lockfile for that exact input.
@@ -340,8 +385,8 @@ auth-blind. Private metadata must follow the same route policy:
 
 The metadata cache scope is **per metadata fetch**, not per resolve. A single
 workspace resolve may read public npmjs metadata from the global mirror, private
-metadata for alias A from alias A's descriptor namespace, private metadata for
-alias B from alias B's namespace, and pnpr-hosted metadata from a hosted-policy
+metadata for uplink A from uplink A's descriptor namespace, private metadata for
+uplink B from uplink B's namespace, and pnpr-hosted metadata from a hosted-policy
 namespace. Implementations must not approximate this by swapping the whole
 `cache_dir` for a request. The chosen scope has to flow into every packument
 fast path: persistent mirror path, in-memory metadata key, fetch-lock key,
@@ -360,11 +405,14 @@ private routes: do not satisfy the miss from a broader or auth-blind mirror.
 
 - Public installs: shared globally — full cache benefit, even for authenticated
   clients, as long as the packages route through public/anonymous fetch rules.
-  Public tarballs may still download directly from upstream URLs.
-- CI / teams using a pnpr-managed upstream credential alias: shared across every
-  pnpr user authorized for that alias, without exposing the raw upstream token to
-  clients. Private tarballs are served through pnpr gateway URLs, not by sending
-  upstream tokens or private upstream URLs to clients.
+  Public tarballs download directly from upstream CDN URLs and never traverse
+  pnpr.
+- CI / teams using a pnpr-managed uplink: shared across every pnpr user
+  authorized for that uplink, without exposing the raw upstream token to clients.
+  Private tarballs are served through the uplink's registry endpoint, not by
+  sending upstream tokens or raw private upstream URLs to clients. Lockfile
+  entries stay integrity-only, so they are identical with or without server-side
+  resolution.
 - pnpr-hosted private packages: shared across callers who currently satisfy the
   hosted access descriptor recorded in the footprint. The descriptor should be
   policy- or team-scoped where possible so a team shares cache entries; client
@@ -378,25 +426,24 @@ private routes: do not satisfy the miss from a broader or auth-blind mirror.
 
 ### Revocation window
 
-For pnpr-managed upstream credential aliases, rotating the alias generation
-immediately moves future hits and writes to a new namespace; the old namespace
-ages out. pnpr-hosted package access is re-evaluated before serving a
-pnpr-hosted private hit. For deployments that want zero upstream revocation
-window, an **opt-in** lightweight validation — a single authenticated request
-(one round trip, not a full re-resolve) — can run before serving an upstream
-private hit. The default relies on the short TTL plus per-hit alias/package
-authorization checks.
+For pnpr-managed uplinks, rotating the uplink generation immediately moves future
+hits and writes to a new namespace; the old namespace ages out. pnpr-hosted
+package access is re-evaluated before serving a pnpr-hosted private hit. For
+deployments that want zero upstream revocation window, an **opt-in** lightweight
+validation — a single authenticated request (one round trip, not a full
+re-resolve) — can run before serving an upstream private hit. The default relies
+on the short TTL plus per-hit uplink/package authorization checks.
 
 ### Optional: auto-detecting public custom registries
 
 Operators who do not want to declare a public self-hosted registry can opt into
 lazy classification **at the registry/scope granularity** (never per package):
 attempt the first fetch to an unknown registry anonymously. If the route later
-needs auth, use only a configured pnpr-managed upstream alias, never a
-client-forwarded upstream credential. Cache the `(registry, scope) →
-requires-auth` verdict with a TTL. Cost: at most one extra round trip per new
-private registry-scope per TTL window, and zero for the public path. This is a
-later refinement; the base design is config-driven with no probing.
+needs auth, use only a configured pnpr-managed uplink, never a client-forwarded
+upstream credential. Cache the `(registry, scope) → requires-auth` verdict with a
+TTL. Cost: at most one extra round trip per new private registry-scope per TTL
+window, and zero for the public path. This is a later refinement; the base
+design is config-driven with no probing.
 
 ## Rationale and Alternatives
 
@@ -408,7 +455,7 @@ This RFC instead uses a single route-policy decision per fetch.
 **Alternative B — Always vary by auth or credential.** Simple and safe, but it
 gives *every* authenticated caller or selected upstream credential its own cache
 namespace, so the dominant public case never shares across users — it only helps
-repeat installs by the same caller or alias. It also hashes the wrong thing for
+repeat installs by the same caller or uplink. It also hashes the wrong thing for
 this design: client auth is a caller identity for pnpr-hosted packages, not an
 upstream credential for proxied packages. This RFC's footprint split keeps
 public resolutions globally shared while applying private-descriptor keying only
@@ -418,26 +465,26 @@ where it is actually needed.
 entry with any authenticated caller or any caller that presents some credential
 for the registry. Rejected: it is an authorization bypass. Client auth to pnpr
 authorizes only pnpr-hosted package access; proxied package access requires the
-caller to be authorized for the selected upstream alias. Keying by credential
-alias identity plus access-policy checks closes this.
+caller to be authorized for the selected uplink. Keying by uplink identity plus
+access-policy checks closes this.
 
 **Alternative D — Server-side encrypted credential vault.** Store upstream
 credentials in pnpr (clients authenticate only to pnpr) and encrypt them at
 rest. This is a worthwhile, separate feature for credential *management* and
 *transmission*, but it does **not** fix caching on its own: the cache still has
-to be gated by the selected upstream alias identity and caller access.
-Encrypting the cached resolutions themselves would actively *defeat* sharing.
-The server-managed alias feature in this RFC is the minimal useful slice of that
-vault idea for performance: it supplies a stable proxied descriptor and an
-access policy, while full credential lifecycle management can remain a later
-extension.
+to be gated by the selected uplink identity and caller access. Encrypting the
+cached resolutions themselves would actively *defeat* sharing. The pnpr-managed
+uplink feature in this RFC is the minimal useful slice of that vault idea for
+performance: it supplies a stable proxied descriptor and an access policy, while
+full credential lifecycle management can remain a later extension.
 
-**Alternative E — Proxy all tarballs through pnpr.** This is the simplest
-tarball-routing rule: clients never receive upstream credentials or private
-upstream URLs. Rejected as the default because public packages dominate many
-installs, and proxying all public tarball bytes through pnpr increases
-bandwidth, CPU, storage, and latency on the path this RFC is trying to keep
-fast. Private and unknown tarballs still use this path.
+**Alternative E — Proxy all tarballs through pnpr.** Route *every* tarball,
+public and private, through a pnpr endpoint. Rejected as the default because
+public packages dominate many installs, and proxying all public tarball bytes
+through pnpr increases bandwidth, CPU, storage, and latency on the path this RFC
+is trying to keep fast — and forfeits direct upstream-CDN downloads. Only private
+and unknown tarballs route through a pnpr uplink endpoint; public tarballs keep
+their upstream CDN URLs.
 
 **Alternative F — Return upstream auth tokens to clients.** This keeps pnpr out
 of the tarball byte path, but it turns pnpr into a credential broker. Generic
@@ -451,6 +498,20 @@ that cannot be the baseline for npm-compatible registries.
 that clients commonly authenticate even when resolving public packages, this
 penalizes the common case for no privacy benefit.
 
+**Alternative H — Opaque per-tarball gateway URLs in the lockfile.** Have
+`/resolve` rewrite each private/unknown tarball into a bespoke pnpr gateway URL
+(for example `/-/pnpr/v0/tarballs/<uplink>/<generation>/<pkg>/-/<file>`, or an
+opaque server-keyed token for unknown routes). Rejected: those URLs are
+*non-canonical*, so they are written verbatim into the lockfile as explicit
+tarball resolutions. That forks the lockfile — a project resolved through
+`/resolve` gets gateway URLs while the same project resolved client-side gets
+upstream URLs — breaks `pnpm add`/update performed without the accelerator,
+bakes the rotation generation into committed URLs, and requires a stateful
+key→URL map on the server for the unknown case. The chosen design instead
+exposes each uplink as a *canonical* registry endpoint and keeps lockfile entries
+integrity-only, so the lockfile is identical across modes, rotation stays
+server-side, and no per-tarball gateway state is needed.
+
 This proposal is the minimal change that recovers the common-case performance
 without weakening the privacy guarantee, and it stands alone regardless of
 whether a credential vault is later added.
@@ -458,43 +519,56 @@ whether a credential vault is later added.
 ## Implementation
 
 No pnpm wire-protocol change is required: route selection fits in the existing
-streamed package frames and returned lockfile URLs. The implementation does need
-changes in pnpr's server-side resolver integration, in the pacquet fetch path
-that chooses metadata/tarball auth, and in client lockfile materialization so
-clients consume routed tarball URLs instead of reconstructing private upstream
-URLs from registry config.
+streamed package frames and returned lockfile URLs, and private routing is driven
+by the client's existing scoped-registry configuration pointing at pnpr uplink
+endpoints. The implementation does need changes in pnpr's server-side resolver
+integration, in the pacquet fetch path that chooses metadata/tarball auth, and in
+how pnpr exposes uplinks as registry endpoints.
 
+- **Expose uplinks as registry endpoints.** Each pnpr-managed uplink is served
+  under a stable registry path (`https://<pnpr>/<uplink>`): packument reads
+  (with `dist.tarball` rewritten to canonical endpoint URLs) and tarball proxying
+  with the server-owned credential, gated by the uplink access policy. This is
+  the same registry surface that backs client-side resolution when a scope is
+  pointed at the endpoint, so both `/resolve` and direct installs share one code
+  path and produce identical, integrity-only lockfile entries.
+- **Merge upstream credentials into uplink config.** Rather than a separate
+  credential-alias block, extend pnpr's existing `uplinks` config
+  (`pnpr/crates/pnpr/src/config.rs`) with an access policy (which pnpr
+  users/teams may use it), a rotation generation, and its exposed endpoint path.
+  Match an uplink to a fetch by **registry origin**, not by a per-credential
+  package glob. The package-pattern routing remains the operator's existing
+  `packages`/route-policy concern.
 - **Thread pnpr caller identity into resolution.** The HTTP request's resolved
   pnpr identity (`AuthedCaller` / `Identity`) must be passed into
   `serve_resolve`, `handle_resolve`, cache lookup, cache write, route selection,
   and any pnpr-hosted package access checks. This is a server-internal API
   change, not a pnpm client wire-protocol change: the client already
   authenticates to pnpr with the request `Authorization` header.
-- **Route policy + auth selection.** Add route classification to pnpr config
-  (`pnpr/crates/pnpr/src/config.rs`): built-in anonymous-public handling for
-  unscoped packages on `registry.npmjs.org`, plus operator rules for public and
-  private registries/scopes/package patterns, plus optional server-managed
-  upstream credential aliases with per-alias access policies. The fetch path
-  must choose the route policy and selected upstream auth together. Public routes
-  send no upstream auth; private proxied routes send only the selected
-  pnpr-managed upstream alias; pnpr-hosted routes use client auth only to
-  authorize the caller against pnpr package policy. Hosted-route detection must
-  normalize request registry URLs against the pnpr service's own public base URL
-  and any configured hosted aliases before considering proxied uplinks.
-- **Authorize pnpr-managed upstream credentials.** Reuse pnpr's existing caller
-  identity (bearer-token-backed users), uplink auth configuration concepts, and
-  registry package permission policy shape where possible to decide whether a
-  request may use a configured upstream credential alias. Add an optional
-  named-group/team layer if operators need group reuse. If no pnpr identity is
-  available, pnpr cannot select a team credential; it fails closed for private
-  proxied routes unless anonymous access is explicitly permitted as a
-  non-shareable private miss.
+- **Route policy + auth selection.** Add route classification to pnpr config:
+  built-in anonymous-public handling for unscoped packages on
+  `registry.npmjs.org`, plus operator rules for public and private
+  registries/scopes/package patterns, plus the pnpr-managed uplinks with
+  per-uplink access policies. The fetch path must choose the route policy and
+  selected upstream auth together. Public routes send no upstream auth; private
+  proxied routes send only the selected uplink credential; pnpr-hosted routes use
+  client auth only to authorize the caller against pnpr package policy.
+  Hosted-route detection must normalize request registry URLs against the pnpr
+  service's own public base URL and any configured hosted aliases before
+  considering proxied uplinks.
+- **Authorize pnpr-managed uplinks.** Reuse pnpr's existing caller identity
+  (bearer-token-backed users), uplink auth configuration, and registry package
+  permission policy shape where possible to decide whether a request may use a
+  configured uplink. Add an optional named-group/team layer if operators need
+  group reuse. If no pnpr identity is available, pnpr cannot select a team
+  credential; it fails closed for private proxied routes unless anonymous access
+  is explicitly permitted as a non-shareable private miss.
 - **Define private access descriptor inputs.** A descriptor has a key input and
-  an authorization gate. Proxied routes use `upstream-alias + generation` as the
-  key input and alias authorization as the gate. pnpr-hosted routes use the
-  hosted route/access-policy identity as the key input and package policy as the
-  gate. Descriptor key inputs are HMACed with the server secret before they are
-  used in cache keys or metadata namespaces. They are not derived from
+  an authorization gate. Proxied routes use `uplink + generation` as the key
+  input and uplink authorization as the gate. pnpr-hosted routes use the hosted
+  route/access-policy identity as the key input and package policy as the gate.
+  Descriptor key inputs are HMACed with the server secret before they are used in
+  cache keys or metadata namespaces. They are not derived from
   `AuthHeaders::for_url_with_package`, request `Authorization` headers,
   registry/scope config entries, or inline `user:pass@host` URL auth. URL and
   package normalization still matter for route-policy and descriptor selection.
@@ -515,13 +589,16 @@ URLs from registry config.
   serves metadata from memory or disk without making an HTTP request, it must
   still use and record the route/cache scope that would have been used for the
   fetch.
-- **Route emitted tarball URLs.** When emitting streamed package frames and the
-  returned lockfile, use the same route decision: public/anonymous routes may
-  keep upstream `dist.tarball` URLs; private proxied and unknown routes must use
-  pnpr read-only install gateway URLs; pnpr-hosted packages use pnpr-hosted
-  tarball URLs. The resolver must not return upstream auth headers, upstream
-  tokens, or private upstream tarball URLs that are fetchable only with
-  server-owned credentials.
+- **Emit canonical, integrity-only tarball URLs.** When emitting streamed package
+  frames and the returned lockfile, use the same route decision: public/anonymous
+  routes keep upstream `dist.tarball` URLs; private proxied routes emit URLs
+  canonical for the scope's configured uplink endpoint; pnpr-hosted packages emit
+  pnpr-hosted tarball URLs. All three are canonical for the client's configured
+  registry, so the lockfile writer stores them as integrity-only registry
+  resolutions. The resolver must not return upstream auth headers, upstream
+  tokens, or raw private upstream tarball URLs that are fetchable only with
+  server-owned credentials, and must not emit non-canonical per-tarball gateway
+  URLs.
 - **Make lower metadata caches descriptor-scoped.** Pacquet's shared metadata
   mirror is currently keyed by registry/package, not by auth. Add a metadata
   cache scope to the npm resolver fetch context:
@@ -567,11 +644,11 @@ URLs from registry config.
     lockfile plus the lockfile behavior flags in the base key. A different input
     lockfile, update mode, freshness policy, or trust policy must not match a
     prior candidate.
-  - Store already-routed tarball URLs in cached resolutions. A private cache hit
-    must replay pnpr gateway URLs for private/unknown tarballs, not raw upstream
-    URLs that require the selected server-owned credential.
+  - Store already-routed, integrity-only tarball URLs in cached resolutions. A
+    private cache hit must replay the same canonical uplink-endpoint URLs, not
+    raw upstream URLs that require the selected server-owned credential.
   - Bound the number of candidates stored under one base key and evict expired
-    or least-recently-used private candidates first. Alias generation rotation,
+    or least-recently-used private candidates first. Uplink generation rotation,
     route-policy changes, and unusual workspaces must not make lookup cost grow
     without bound.
   - The HMAC server secret is generated/configured at startup; reuse existing
@@ -583,31 +660,34 @@ URLs from registry config.
   behind config, both addable after the base lands.
 - **Lockfile/frozen path routing.** Fresh frozen-lockfile reuse and verifier-only
   paths can avoid a full resolve, but pnpr and its clients must still honor
-  tarball route policy. A lockfile that contains private/unknown upstream URLs
-  should be rerouted through pnpr or rejected for a fresh server-routed
+  tarball route policy. A lockfile that contains raw private/unknown upstream
+  URLs the client cannot authenticate to should be rerouted through the
+  appropriate pnpr uplink endpoint or rejected for a fresh server-routed
   resolution instead of being materialized directly by the client.
 
 Risk areas: the footprint must be complete (a missed private fetch would
 mis-classify a resolution as public), so the recording must cover every metadata
 fetch path, resolve-time tarball fetches (including direct HTTP tarball
 dependencies fetched for manifest/integrity), auth-blind metadata mirror fast
-paths, and uplink fallback ordering. Tests should cover: unscoped npmjs packages are
-fetched without upstream auth and hit the shared cache even when the request has
-a pnpr caller identity; private pnpr-hosted packages require caller package
+paths, and uplink fallback ordering. Tests should cover: unscoped npmjs packages
+are fetched without upstream auth and hit the shared cache even when the request
+has a pnpr caller identity; private pnpr-hosted packages require caller package
 access, including when the client registry points at pnpr itself; private
-proxied packages require an authorized upstream alias and never use
-client-forwarded upstream auth; mixed public/private resolves use the correct
-metadata namespace per package fetch; invalid or unauthorized access misses and
-does not reuse private metadata mirrors; `401`/`403` and private-route `404`
-responses do not fall back to broader mirrors; inline URL credentials are
-rejected before fetch; verifier metadata fetches cannot read or populate the
-wrong cache scope; different pnpr users authorized for the same upstream
-credential alias share resolution and metadata cache entries; revoked
-alias/package access stops matching private hits; public tarballs can keep
-upstream URLs while private and unknown tarballs are emitted as pnpr gateway
-URLs; cached private resolutions do not replay private upstream tarball URLs;
-lockfile/frozen paths do not bypass tarball route policy; custom private default
-registry is not treated as public; per-base-key candidate lists stay bounded.
+proxied packages require an authorized uplink and never use client-forwarded
+upstream auth; mixed public/private resolves use the correct metadata namespace
+per package fetch; invalid or unauthorized access misses and does not reuse
+private metadata mirrors; `401`/`403` and private-route `404` responses do not
+fall back to broader mirrors; inline URL credentials are rejected before fetch;
+verifier metadata fetches cannot read or populate the wrong cache scope;
+different pnpr users authorized for the same uplink share resolution and metadata
+cache entries; revoked uplink/package access stops matching private hits; public
+tarballs keep upstream CDN URLs while private tarballs are emitted as canonical
+uplink-endpoint URLs; **resolving a project through `/resolve` and resolving the
+same project client-side against the same uplink-endpoint registry config produce
+byte-identical, integrity-only lockfiles**; cached private resolutions do not
+replay raw private upstream tarball URLs; lockfile/frozen paths do not bypass
+tarball route policy; custom private default registry is not treated as public;
+per-base-key candidate lists stay bounded.
 
 ## Prior Art
 
@@ -615,7 +695,9 @@ registry is not treated as public; per-base-key candidate lists stay bounded.
   credentials at the proxy and apply per-package access control, but they cache
   package *metadata and tarballs* per upstream rather than caching whole
   *resolutions*; pnpr's resolution cache is a higher-level artifact that needs
-  its own authorization model.
+  its own authorization model. This RFC reuses Verdaccio's **uplink** concept for
+  the credential/registry-endpoint surface and adds the resolution-level cache on
+  top.
 - **HTTP caching with `Vary`** expresses "this cached response depends on these
   request attributes." The footprint key is the same idea specialized to
   access descriptors: public responses do not vary by auth; private responses
@@ -623,6 +705,10 @@ registry is not treated as public; per-base-key candidate lists stay bounded.
 - **npm scopes** are often assumed to equal privacy; this RFC deliberately does
   not rely on that, because a private default registry makes unscoped packages
   private and a public registry makes scoped packages public.
+- **Scoped private registries** (`@scope:registry=…`) are the standard npm
+  mechanism this RFC leans on for private routing: pointing a scope at a pnpr
+  uplink endpoint keeps the lockfile host-agnostic and integrity-only, exactly as
+  it already is across a public registry and an internal mirror.
 
 ## Unresolved Questions and Bikeshedding
 
@@ -636,16 +722,16 @@ registry is not treated as public; per-base-key candidate lists stay bounded.
   per-scope/package patterns, a per-uplink `public: true` flag, or a combination.
   Should `registry.npmjs.org` unscoped packages be the only built-in public
   route, or should other well-known public mirrors be included?
-- **Config surface for team credentials:** upstream credential aliases need
-  route policy, secret source, generation/rotation metadata, and caller access
-  policy. Should access be inline user lists, named groups/teams, reused package
+- **Uplink access + rotation config:** uplinks need a caller access policy and
+  generation/rotation metadata in addition to their existing url/credential.
+  Should access be inline user lists, named groups/teams, reused package
   permissions, or all of the above?
+- **Uplink registry endpoint shape:** the URL path under which each uplink is
+  exposed (`/<uplink-name>` vs an operator-set path), and how clients discover or
+  are provisioned the scope→endpoint mapping in their `.npmrc`.
 - **Default for revocation validation:** rely on the short TTL (proposed) vs.
   validate-on-private-hit by default. The latter is safer but adds a round trip
   to every private hit.
-- **Read-only install gateway shape:** exact pnpr tarball URL shape, cache
-  headers, and feature flags for enabling the resolver's read-only gateway
-  without enabling the full npm registry API.
 - **Metrics:** should pnpr expose cache hit/miss split by public vs. private
   footprint and tarball routing decisions so operators can see the recovered hit
-  rate and gateway load?
+  rate and uplink-endpoint load?
