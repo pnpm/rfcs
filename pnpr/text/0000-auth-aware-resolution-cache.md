@@ -99,6 +99,11 @@ chooses **one** request shape for each metadata or resolve-time tarball fetch:
   client auth identifies the caller to pnpr and is checked against pnpr's package
   access policy. It is not forwarded upstream and is not used as the cache
   credential digest.
+- **Inline URL credentials:** dependency URLs or resolved tarball URLs that
+  contain `user:pass@host` credentials are rejected by the resolver. They must
+  not be converted into Basic auth, used as a credential identity, or stored in
+  any shared cache. Operators that need authenticated direct tarball URLs should
+  model that host with a pnpr-managed upstream credential alias instead.
 - **Unknown routes:** default to private unless explicitly declared public. If
   no pnpr-managed upstream credential alias or pnpr-hosted authorization is
   available for an unknown/private route, pnpr may resolve it anonymously only as
@@ -327,9 +332,15 @@ whether a credential vault is later added.
 ## Implementation
 
 No pnpm wire-protocol change is required. The implementation does need changes
-in pnpr's resolver integration and in the pacquet fetch path that chooses
-metadata/tarball auth.
+in pnpr's server-side resolver integration and in the pacquet fetch path that
+chooses metadata/tarball auth.
 
+- **Thread pnpr caller identity into resolution.** The HTTP request's resolved
+  pnpr identity (`AuthedCaller` / `Identity`) must be passed into
+  `serve_resolve`, `handle_resolve`, cache lookup, cache write, route selection,
+  and any pnpr-hosted package access checks. This is a server-internal API
+  change, not a pnpm client wire-protocol change: the client already
+  authenticates to pnpr with the request `Authorization` header.
 - **Route policy + auth selection.** Add route classification to pnpr config
   (`pnpr/crates/pnpr/src/config.rs`): built-in anonymous-public handling for
   unscoped packages on `registry.npmjs.org`, plus operator rules for public and
@@ -356,6 +367,12 @@ metadata/tarball auth.
   once a proxied alias is selected, the cache identity is the alias identity. For
   pnpr-hosted packages, the footprint stores the hosted route/access-policy
   identity and cache hits re-run pnpr authorization for the caller.
+- **Reject inline URL auth before fetch.** The resolver must reject dependency
+  URLs and resolved tarball URLs whose parsed URL contains username/password
+  credentials. This avoids accidentally following pacquet's default
+  `AuthHeaders::for_url*` inline-Basic behavior on a path that has no
+  pnpr-managed credential identity. Rejection should happen before the HEAD/GET
+  request and before any resolution or metadata cache write.
 - **Record the per-fetch route during resolution.** The resolve path
   (`pnpr/crates/pnpr/src/resolver/resolve.rs`) and the pacquet npm/tarball
   fetchers must surface, for each metadata fetch and resolve-time tarball fetch,
@@ -376,6 +393,13 @@ metadata/tarball auth.
   mirror in a way that lets a later invalid credential reuse it. Upstream
   `401`/`403` must fail closed; only transport failures may fall back to stale
   metadata, and only within the same cache scope.
+- **Apply metadata cache scope to verification fetches too.** Lockfile
+  verification and trust checks do not add packages to the resolution footprint,
+  but their packument fetches still read and populate metadata mirrors. They must
+  use the same `Public` / `Private { credential_identity }` / `Bypass` metadata
+  scope as resolution fetches. Otherwise an unauthorized caller could use
+  verifier verdicts as a private-metadata oracle, or a verifier could
+  populate/read an auth-blind mirror that later affects resolution.
 - **Footprint + keying in the cache layer**
   (`pnpr/crates/pnpr/src/resolver.rs`):
   - Replace the `auth_headers.is_empty()` gate so a cache key is always
@@ -392,6 +416,10 @@ metadata/tarball auth.
   - After a resolve, compute the footprint from the recorded routes; store an
     empty-footprint candidate for public resolutions, or a credential-keyed
     candidate for private resolutions.
+  - Bound the number of candidates stored under one base key and evict expired
+    or least-recently-used private candidates first. Alias generation rotation,
+    route-policy changes, and unusual workspaces must not make lookup cost grow
+    without bound.
   - The HMAC server secret is generated/configured at startup; reuse existing
     config plumbing.
   - `CachedResolution` may need to carry its footprint so lookups can apply the
@@ -409,10 +437,12 @@ fetched without upstream auth and hit the shared cache even when the client is
 authenticated to pnpr; private pnpr-hosted packages require caller package
 access; private proxied packages require an authorized upstream alias and never
 use client-forwarded upstream auth; invalid or unauthorized access misses and
-does not reuse private metadata mirrors; different pnpr users authorized for the
-same upstream credential alias share resolution and metadata cache entries;
-revoked alias/package access stops matching private hits; custom private default
-registry is not treated as public.
+does not reuse private metadata mirrors; inline URL credentials are rejected
+before fetch; verifier metadata fetches cannot read or populate the wrong cache
+scope; different pnpr users authorized for the same upstream credential alias
+share resolution and metadata cache entries; revoked alias/package access stops
+matching private hits; custom private default registry is not treated as public;
+per-base-key candidate lists stay bounded.
 
 ## Prior Art
 
