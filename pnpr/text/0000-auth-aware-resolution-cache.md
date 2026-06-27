@@ -267,8 +267,9 @@ match its cache entries.
 Route selection precedence:
 
 1. Public route policy wins and suppresses auth.
-2. A pnpr-hosted private route uses the caller's pnpr identity and package
-   access policy; no upstream credential is involved.
+2. A pnpr-hosted private route uses a shared hosted access descriptor, such as
+   a team or package access-policy identity, and re-runs that policy for the
+   caller at lookup time; no upstream credential is involved.
 3. A proxied private route selects an authorized pnpr-managed upstream credential
    alias.
 4. If the route is private/unknown and no hosted-package authorization or
@@ -365,8 +366,9 @@ private routes: do not satisfy the miss from a broader or auth-blind mirror.
   clients. Private tarballs are served through pnpr gateway URLs, not by sending
   upstream tokens or private upstream URLs to clients.
 - pnpr-hosted private packages: shared across callers who currently satisfy the
-  package access policy recorded in the footprint. Client tokens authenticate
-  callers to pnpr; they are not cache keys.
+  hosted access descriptor recorded in the footprint. The descriptor should be
+  policy- or team-scoped where possible so a team shares cache entries; client
+  tokens authenticate callers to pnpr, but they are not cache keys.
 - Scoped public packages on npmjs with an authenticated pnpr request: still
   public if the route policy says public. Client auth to pnpr is not forwarded
   upstream and does not make the entry private.
