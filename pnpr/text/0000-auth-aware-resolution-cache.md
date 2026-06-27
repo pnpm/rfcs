@@ -127,6 +127,15 @@ The cache key behavior depends on the footprint:
   (keyed with a server secret, so the key is not correlatable offline) of the
   exact credential identities selected for the private routes in the footprint.
 
+Lookup still happens before resolution. pnpr first computes the normal
+resolution-input key, then reads the candidate list stored under that base key.
+Each candidate is matched against the credential identities the current request
+can select for that candidate's private footprint. Public candidates match every
+caller. Private candidates match only when the current request can reproduce the
+same credential identities and any required pnpr-managed alias authorization.
+The footprint discovered during resolution is used only when writing a new
+candidate after a miss, not for finding the first candidate set.
+
 Why key by credential identity rather than "does the caller have a token for
 this scope?" — because the latter is an authorization bypass. A caller could send a
 **bogus** token for `@acme` and be served a private resolution it cannot
