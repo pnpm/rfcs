@@ -17,7 +17,11 @@ client-forwarded token. For pnpr-hosted packages, the descriptor is the hosted
 route/access-policy identity and hits re-run package authorization for the
 caller. Client auth identifies the caller to pnpr and may authorize packages
 hosted by pnpr itself, but it is not forwarded to third-party registries and is
-not digested as an upstream cache credential.
+not digested as an upstream cache credential. The same route decision governs
+tarball URLs returned by resolution: public routes may keep direct upstream
+tarball URLs, while private or unknown routes are rewritten to pnpr read-only
+install gateway URLs so resolver responses and cached lockfiles never expose
+upstream credentials or unusable private upstream URLs.
 
 ## Motivation
 
@@ -256,6 +260,41 @@ user's team access is revoked, pnpr re-evaluates alias authorization before
 serving private hits, so the caller stops matching those private entries even
 while the shared upstream token itself remains valid for other team members.
 
+### Tarball URL routing
+
+Resolution cache entries include tarball URLs, so the URL routing decision must
+be part of the same route policy. A private cached resolution is safe to replay
+only if replaying it does not hand a client an upstream URL that requires
+server-owned credentials or reveal those credentials.
+
+For each selected package, pnpr applies the same route classification when it
+emits streamed package frames and the returned lockfile:
+
+- **Public/anonymous route:** pnpr may emit the upstream `dist.tarball` URL.
+  Known-public and configured-public routes do not need an anonymous tarball
+  probe on the hot path; the route policy is the proof.
+- **Private proxied route:** pnpr emits a pnpr read-only install gateway URL.
+  The gateway fetches from the upstream registry with the selected
+  pnpr-managed upstream alias after re-checking caller access to that alias.
+- **Private pnpr-hosted route:** pnpr emits a pnpr-hosted tarball URL and
+  re-checks the caller against pnpr package access policy before serving it.
+- **Unknown route:** pnpr emits a pnpr gateway URL unless the operator has
+  explicitly classified the route as public or opted into a successful
+  public-route detection path.
+
+Resolver responses, streamed package frames, and returned lockfiles must never
+include upstream `Authorization` values, upstream tokens, or a private upstream
+URL solely because pnpr fetched it successfully with server-owned credentials.
+Cached resolutions store already-routed tarball URLs, and clients must consume
+those URLs instead of reconstructing private upstream URLs from local registry
+config.
+
+Frozen and lockfile-seeded paths must preserve this routing decision. If an
+existing lockfile contains registry-shaped entries or tarball URLs that do not
+match the current route policy, pnpr should return a freshly routed lockfile or
+force the client through the pnpr gateway rather than letting the client fetch a
+private or unknown upstream URL directly.
+
 ### Private metadata cache
 
 The resolution cache cannot be safe if the lower packument mirror is still
@@ -282,9 +321,11 @@ descriptor-scoped namespace and only within the normal freshness policy.
 
 - Public installs: shared globally — full cache benefit, even for authenticated
   clients, as long as the packages route through public/anonymous fetch rules.
+  Public tarballs may still download directly from upstream URLs.
 - CI / teams using a pnpr-managed upstream credential alias: shared across every
   pnpr user authorized for that alias, without exposing the raw upstream token to
-  clients.
+  clients. Private tarballs are served through pnpr gateway URLs, not by sending
+  upstream tokens or private upstream URLs to clients.
 - pnpr-hosted private packages: shared across callers who currently satisfy the
   package access policy recorded in the footprint. Client tokens authenticate
   callers to pnpr; they are not cache keys.
@@ -350,7 +391,22 @@ vault idea for performance: it supplies a stable proxied descriptor and an
 access policy, while full credential lifecycle management can remain a later
 extension.
 
-**Alternative E — Do nothing.** Authenticated installs stay ~2.8× slower. Given
+**Alternative E — Proxy all tarballs through pnpr.** This is the simplest
+tarball-routing rule: clients never receive upstream credentials or private
+upstream URLs. Rejected as the default because public packages dominate many
+installs, and proxying all public tarball bytes through pnpr increases
+bandwidth, CPU, storage, and latency on the path this RFC is trying to keep
+fast. Private and unknown tarballs still use this path.
+
+**Alternative F — Return upstream auth tokens to clients.** This keeps pnpr out
+of the tarball byte path, but it turns pnpr into a credential broker. Generic
+npm registry credentials are reusable bearer or Basic tokens and may grant
+broader access than the resolved install. Rejected: pnpr must keep upstream
+credentials server-side. A future optimization could support non-reusable,
+audience-bound, package-scoped download URLs where an uplink provides them, but
+that cannot be the baseline for npm-compatible registries.
+
+**Alternative G — Do nothing.** Authenticated installs stay ~2.8× slower. Given
 that clients commonly authenticate even when resolving public packages, this
 penalizes the common case for no privacy benefit.
 
@@ -360,9 +416,12 @@ whether a credential vault is later added.
 
 ## Implementation
 
-No pnpm wire-protocol change is required. The implementation does need changes
-in pnpr's server-side resolver integration and in the pacquet fetch path that
-chooses metadata/tarball auth.
+No pnpm wire-protocol change is required: route selection fits in the existing
+streamed package frames and returned lockfile URLs. The implementation does need
+changes in pnpr's server-side resolver integration, in the pacquet fetch path
+that chooses metadata/tarball auth, and in client lockfile materialization so
+clients consume routed tarball URLs instead of reconstructing private upstream
+URLs from registry config.
 
 - **Thread pnpr caller identity into resolution.** The HTTP request's resolved
   pnpr identity (`AuthedCaller` / `Identity`) must be passed into
@@ -411,6 +470,13 @@ chooses metadata/tarball auth.
   access descriptor digest. The existing `ResolutionObserver` reports resolved
   tarball packages after a resolver result, so it is not sufficient by itself;
   the hook needs to sit at the actual fetch/auth-selection layer.
+- **Route emitted tarball URLs.** When emitting streamed package frames and the
+  returned lockfile, use the same route decision: public/anonymous routes may
+  keep upstream `dist.tarball` URLs; private proxied and unknown routes must use
+  pnpr read-only install gateway URLs; pnpr-hosted packages use pnpr-hosted
+  tarball URLs. The resolver must not return upstream auth headers, upstream
+  tokens, or private upstream tarball URLs that are fetchable only with
+  server-owned credentials.
 - **Make lower metadata caches descriptor-scoped.** Pacquet's shared metadata
   mirror is currently keyed by registry/package, not by auth. Add a metadata
   cache scope to the npm resolver fetch context:
@@ -448,6 +514,9 @@ chooses metadata/tarball auth.
   - After a resolve, compute the footprint from the recorded routes; store an
     empty-footprint candidate for public resolutions, or a descriptor-keyed
     candidate for private resolutions.
+  - Store already-routed tarball URLs in cached resolutions. A private cache hit
+    must replay pnpr gateway URLs for private/unknown tarballs, not raw upstream
+    URLs that require the selected server-owned credential.
   - Bound the number of candidates stored under one base key and evict expired
     or least-recently-used private candidates first. Alias generation rotation,
     route-policy changes, and unusual workspaces must not make lookup cost grow
@@ -459,6 +528,11 @@ chooses metadata/tarball auth.
 - **Optional opt-in validation** for zero revocation window, and **optional
   lazy per-registry probing** for auto-detecting public custom registries — both
   behind config, both addable after the base lands.
+- **Lockfile/frozen path routing.** Even when a request with a lockfile bypasses
+  the resolution cache, pnpr and its clients must honor tarball route policy. A
+  lockfile that contains private/unknown upstream URLs should be rerouted
+  through pnpr or rejected for a fresh server-routed resolution instead of being
+  materialized directly by the client.
 
 Risk areas: the footprint must be complete (a missed private fetch would
 mis-classify a resolution as public), so the recording must cover every metadata
@@ -473,7 +547,10 @@ does not reuse private metadata mirrors; inline URL credentials are rejected
 before fetch; verifier metadata fetches cannot read or populate the wrong cache
 scope; different pnpr users authorized for the same upstream credential alias
 share resolution and metadata cache entries; revoked alias/package access stops
-matching private hits; custom private default registry is not treated as public;
+matching private hits; public tarballs can keep upstream URLs while private and
+unknown tarballs are emitted as pnpr gateway URLs; cached private resolutions do
+not replay private upstream tarball URLs; lockfile/frozen paths do not bypass
+tarball route policy; custom private default registry is not treated as public;
 per-base-key candidate lists stay bounded.
 
 ## Prior Art
@@ -510,8 +587,12 @@ per-base-key candidate lists stay bounded.
 - **Default for revocation validation:** rely on the short TTL (proposed) vs.
   validate-on-private-hit by default. The latter is safer but adds a round trip
   to every private hit.
+- **Read-only install gateway shape:** exact pnpr tarball URL shape, cache
+  headers, and feature flags for enabling the resolver's read-only gateway
+  without enabling the full npm registry API.
 - **Metrics:** should pnpr expose cache hit/miss split by public vs. private
-  footprint so operators can see the recovered hit rate?
+  footprint and tarball routing decisions so operators can see the recovered hit
+  rate and gateway load?
 
 ---
 Written by an agent (Claude Code, claude-opus-4-8).
