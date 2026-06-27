@@ -6,16 +6,18 @@ pnpr disables its resolution cache for any request that forwards upstream
 credentials, which makes authenticated installs ~2.8× slower than anonymous
 ones even when every dependency is public. This RFC proposes making the cache
 *authorization-aware* instead of all-or-nothing: each fetch route is classified
-once, before the request is sent. Known-public routes (notably unscoped packages
-on the public npm registry) are fetched anonymously and shared globally. Routes
+once, before the request is sent. Known-public routes (including the default
+unscoped npmjs public route) are fetched anonymously and shared globally. Routes
 that match configured private/auth rules are fetched with the selected
-credential and added to the resolution's **private footprint**; private
-resolutions and private metadata are then keyed by the credential identity that
-produced them. For proxied upstream packages, that identity is always a
-pnpr-managed upstream credential alias, not a client-forwarded token. Client auth
-identifies the caller to pnpr and may authorize packages hosted by pnpr itself,
-but it is not forwarded to third-party registries and is not digested as an
-upstream cache credential.
+credential or hosted-package policy and added to the resolution's **private
+footprint**; private resolutions and private metadata are then keyed by the
+private access descriptor that produced them. For proxied upstream packages, that
+descriptor is always a pnpr-managed upstream credential alias, not a
+client-forwarded token. For pnpr-hosted packages, the descriptor is the hosted
+route/access-policy identity and hits re-run package authorization for the
+caller. Client auth identifies the caller to pnpr and may authorize packages
+hosted by pnpr itself, but it is not forwarded to third-party registries and is
+not digested as an upstream cache credential.
 
 ## Motivation
 
@@ -35,6 +37,10 @@ let resolution_cache_key = if request.auth_headers.is_empty() && request.lockfil
     None
 };
 ```
+
+This RFC changes only the auth half of that condition. Requests that include a
+lockfile continue to use the existing no-resolution-cache path unless a separate
+change analyzes and justifies caching lockfile-seeded resolves.
 
 The reason is correct: a resolution computed with a token that can see a private
 package *contains* that package's versions and tarball URLs, and the cache key
@@ -82,12 +88,13 @@ This matters in both directions:
 The base design must not probe every package twice. Classification therefore
 chooses **one** request shape for each metadata or resolve-time tarball fetch:
 
-- **Built-in public npm route:** unscoped packages served from the official npm
-  registry (`registry.npmjs.org`) are always public. The npm docs state that
-  [unscoped packages are always public](https://docs.npmjs.com/about-scopes/)
-  and that private packages are user- or organization-scoped, so pnpr should
-  deliberately omit upstream auth for these metadata requests even if the client
-  sent pnpr auth.
+- **Built-in public npm route:** by default, unscoped packages served from the
+  exact official npm registry (`registry.npmjs.org`) are treated as public. The
+  [npm scope docs](https://docs.npmjs.com/about-scopes/) describe unscoped
+  packages as public and private packages as user- or organization-scoped, so
+  pnpr should deliberately omit upstream auth for these metadata requests even
+  if the client sent pnpr auth. Operators may disable or override this built-in
+  route if npm's policy changes or if they want a conservative deployment.
 - **Configured public routes:** an operator may explicitly declare additional
   registries, scopes, or package patterns public. These are fetched without
   upstream auth and can participate in the global public cache.
@@ -101,9 +108,10 @@ chooses **one** request shape for each metadata or resolve-time tarball fetch:
   credential digest.
 - **Inline URL credentials:** dependency URLs or resolved tarball URLs that
   contain `user:pass@host` credentials are rejected by the resolver. They must
-  not be converted into Basic auth, used as a credential identity, or stored in
-  any shared cache. Operators that need authenticated direct tarball URLs should
-  model that host with a pnpr-managed upstream credential alias instead.
+  not be converted into Basic auth, used as an upstream credential identity, or
+  stored in any shared cache. Operators that need authenticated direct tarball
+  URLs should model that host with a pnpr-managed upstream credential alias
+  instead.
 - **Unknown routes:** default to private unless explicitly declared public. If
   no pnpr-managed upstream credential alias or pnpr-hosted authorization is
   available for an unknown/private route, pnpr may resolve it anonymously only as
@@ -113,25 +121,30 @@ chooses **one** request shape for each metadata or resolve-time tarball fetch:
 A resolution's **private footprint** is the set of private route identities
 whose metadata or resolve-time tarball data was actually fetched during that
 resolve, including direct HTTP tarball dependencies fetched during resolution to
-read their manifest and integrity. Each route is paired with the exact
-credential identity selected for it: a pnpr-managed upstream alias for proxied
-packages, or a pnpr-hosted access-policy identity for packages served by pnpr
-itself. This is derived from information pnpr already has during the single
-resolve it already performs — **no per-package probing and no extra requests.**
-During resolution pnpr knows, for every fetch, which route it targeted and which
-route policy and credential identity were selected.
+read their manifest and integrity. Each route is paired with the exact private
+access descriptor selected for it:
+
+- **Proxied upstream descriptor:** the selected pnpr-managed upstream alias plus
+  generation.
+- **Hosted package descriptor:** the pnpr-hosted route/access-policy identity,
+  not the caller's bearer token.
+
+This is derived from information pnpr already has during the single resolve it
+already performs — **no per-package probing and no extra requests.** During
+resolution pnpr knows, for every fetch, which route it targeted and which route
+policy and private access descriptor were selected.
 
 A footprint that is **empty** means the resolution is fully public.
 
 > Note on over-counting: because a client may authenticate to pnpr even for a
 > fully public install, "the client was authenticated" is *not* a privacy signal
 > and must not mark ordinary public installs as private. Classification is by
-> route policy and the credential identity actually selected for that route. In
-> particular, unscoped packages on the official npm registry are fetched without
-> upstream auth, so a pnpr-authenticated request does not pessimize the common
-> unscoped public path.
+> route policy and the private access descriptor actually selected for that
+> route. In particular, unscoped packages on the official npm registry are
+> fetched without upstream auth, so a pnpr-authenticated request does not
+> pessimize the common unscoped public path.
 
-### Part 2 — Key public entries globally, private entries by credential identity
+### Part 2 — Key public entries globally, private entries by access descriptor
 
 The cache key behavior depends on the footprint:
 
@@ -140,22 +153,31 @@ The cache key behavior depends on the footprint:
   ~2.8×.*
 - **Non-empty footprint (private):** the key additionally incorporates an HMAC
   (keyed with a server secret, so the key is not correlatable offline) of the
-  exact credential identities selected for the private routes in the footprint.
+  exact private access descriptors selected for the private routes in the
+  footprint.
+
+Private access descriptors have two shapes:
+
+- **Proxied:** key contribution = HMAC of `upstream-alias + generation`; gate =
+  the caller can still select that alias for the route.
+- **Hosted:** key contribution = HMAC of the hosted route/access-policy
+  identity; gate = pnpr re-runs package access policy for the caller. Hosted
+  entries are not keyed per caller, and they are not keyed by a bearer token.
 
 Lookup still happens before resolution. pnpr first computes the normal
 resolution-input key, then reads the candidate list stored under that base key.
-Each candidate is matched against the credential identities the current request
-can select for that candidate's private footprint. Public candidates match every
-caller. Private candidates match only when the current request can reproduce the
-same credential identities and any required pnpr-managed alias or pnpr-hosted
-package authorization.
+Each candidate is matched against the private access descriptors the current
+request can select or satisfy for that candidate's private footprint. Public
+candidates match every caller. Private candidates match only when the current
+request can reproduce the same proxied alias descriptors and satisfy the same
+pnpr-hosted route policies.
 The footprint discovered during resolution is used only when writing a new
 candidate after a miss, not for finding the first candidate set.
 
-Why key by credential identity rather than "does the caller have some auth for
-this scope?" — because the latter is an authorization bypass. A bogus client
-token for `@acme` must never unlock a private proxied resolution. Proxied
-packages therefore do not use client-forwarded upstream auth at all:
+Why key and gate by private access descriptor rather than "does the caller have
+some auth for this scope?" — because the latter is an authorization bypass. A
+bogus client token for `@acme` must never unlock a private proxied resolution.
+Proxied packages therefore do not use client-forwarded upstream auth at all:
 
 - If the caller is authorized for a **pnpr-managed upstream credential alias**,
   the request selects that alias identity and can match entries produced by the
@@ -167,16 +189,23 @@ packages therefore do not use client-forwarded upstream auth at all:
   routes in the footprint. The client's bearer token authenticates the caller; it
   is not the upstream cache credential.
 
-The cache key requires the current request to select the exact credential
-identity that produced the entry, and pnpr-hosted private entries additionally
-require the current caller to satisfy the relevant package access policy. An
-invalid, absent, or unauthorized credential cannot match.
+The cache key requires the current request to reproduce the exact private access
+descriptor that produced the entry. For proxied entries that means selecting the
+same authorized alias generation. For pnpr-hosted entries that means satisfying
+the same package route policy at lookup time. An invalid, absent, or
+unauthorized credential cannot match.
 
-**Safety invariant:** a private-footprint entry is keyed by the same credential
-identity that produced it. pnpr-managed alias entries are gated by alias access
-policy, and pnpr-hosted entries are gated by pnpr package access policy. Private
-data can never leak beyond the credential identity or access policy that
-produced it.
+**Safety invariant:** a private-footprint entry is keyed by the same private
+access descriptor that produced it. pnpr-managed alias entries are gated by
+alias access policy, and pnpr-hosted entries are gated by pnpr package access
+policy. Private data can never leak beyond the alias authorization or package
+access policy that produced it. The design does not rely on hiding whether a
+base resolution key has private candidates; unauthorized callers always observe
+a miss/fail-closed resolve, candidate counts and footprint details must not be
+returned to clients, and private hit/miss metrics should be operator-only. This
+leaves only a low-bandwidth existence/timing oracle over non-secret base inputs;
+deployments that treat that as sensitive can normalize miss/hit timing or
+disable private candidate lookup for unauthorized callers at a performance cost.
 
 ### Team-owned upstream credentials
 
@@ -198,14 +227,14 @@ registries:
 - pnpr, not the client, selects the alias when the caller is authorized for that
   route, sends the alias's upstream credential, and records the alias identity
   in the private footprint;
-- cache keys and metadata mirrors use a stable credential identity such as
+- cache keys and metadata mirrors use a stable proxied descriptor such as
   `credential-alias + generation`, HMACed with the server secret. The raw token
   is never written to cache keys or exposed to clients.
 
 This gives teams the fast path without allowing client-supplied third-party
 tokens to affect proxied resolution. Everyone authorized for the same alias
 shares private resolution entries and private metadata entries. A caller who is
-not authorized for the alias cannot select that credential and therefore cannot
+not authorized for the alias cannot select that alias and therefore cannot
 match its cache entries.
 
 Route selection precedence:
@@ -234,20 +263,20 @@ auth-blind. Private metadata must follow the same route policy:
 
 - **Public/anonymous route:** use the existing global metadata mirror unchanged.
   This keeps the dominant public path as fast as today.
-- **Private route with a credential identity:** use a credential-scoped metadata
-  namespace keyed by the same HMACed credential identity, for example
-  `metadata-private/<credential-id>/<registry>/<package>.jsonl`. The existing
-  disk fast paths, in-memory cache, request coalescing, and conditional GETs can
-  remain; only the namespace changes.
-- **Private/unknown route without a credential identity:** bypass persistent
+- **Private route with a private access descriptor:** use a descriptor-scoped
+  metadata namespace keyed by the same HMACed private access descriptor, for
+  example `metadata-private/<descriptor-id>/<registry>/<package>.jsonl`. The
+  existing disk fast paths, in-memory cache, request coalescing, and conditional
+  GETs can remain; only the namespace changes.
+- **Private/unknown route without a private access descriptor:** bypass persistent
   sharing or store only in a request-local cache. Never write it to the global
   public mirror.
 
 On `401`/`403` from the upstream registry, pnpr must fail closed: do not fall
-back to a stale global mirror and do not use a credential-scoped mirror from a
-different credential. For transport failures (`5xx`, timeout, network failure),
-pnpr may fall back only to metadata in the same public or credential-scoped
-namespace and only within the normal freshness policy.
+back to a stale global mirror and do not use a descriptor-scoped mirror from a
+different private access descriptor. For transport failures (`5xx`, timeout,
+network failure), pnpr may fall back only to metadata in the same public or
+descriptor-scoped namespace and only within the normal freshness policy.
 
 ### Consequences for sharing
 
@@ -301,23 +330,23 @@ public case never shares across users — it only helps repeat installs by the
 same caller. It also hashes the wrong thing for this design: client auth is a
 caller identity for pnpr-hosted packages, not an upstream credential for proxied
 packages. This RFC's footprint split keeps public resolutions globally shared
-while applying credential-identity keying only where it is actually needed.
+while applying private-descriptor keying only where it is actually needed.
 
 **Alternative C — "Caller has a token for the scope" gate.** Share a private
 entry with any authenticated caller or any caller that presents some credential
 for the registry. Rejected: it is an authorization bypass. Client auth to pnpr
 authorizes only pnpr-hosted package access; proxied package access requires the
 caller to be authorized for the selected upstream alias. Keying by credential
-identity plus access-policy checks closes this.
+alias identity plus access-policy checks closes this.
 
 **Alternative D — Server-side encrypted credential vault.** Store upstream
 credentials in pnpr (clients authenticate only to pnpr) and encrypt them at
 rest. This is a worthwhile, separate feature for credential *management* and
 *transmission*, but it does **not** fix caching on its own: the cache still has
-to be gated by the selected upstream credential identity and caller access.
+to be gated by the selected upstream alias identity and caller access.
 Encrypting the cached resolutions themselves would actively *defeat* sharing.
 The server-managed alias feature in this RFC is the minimal useful slice of that
-vault idea for performance: it supplies a stable credential identity and an
+vault idea for performance: it supplies a stable proxied descriptor and an
 access policy, while full credential lifecycle management can remain a later
 extension.
 
@@ -358,36 +387,37 @@ chooses metadata/tarball auth.
   available, pnpr cannot select a team credential; it fails closed for private
   proxied routes unless anonymous access is explicitly permitted as a
   non-shareable private miss.
-- **Define credential identity inputs.** For proxied packages, the private
-  credential identity is the configured upstream alias plus generation, HMACed
+- **Define private access descriptor inputs.** For proxied packages, the private
+  access descriptor is the configured upstream alias plus generation, HMACed
   with the server secret. It is not derived from
   `AuthHeaders::for_url_with_package`, request `Authorization` headers,
   registry/scope config entries, or inline `user:pass@host` URL auth. URL and
   package normalization still matter for route-policy and alias selection, but
-  once a proxied alias is selected, the cache identity is the alias identity. For
-  pnpr-hosted packages, the footprint stores the hosted route/access-policy
-  identity and cache hits re-run pnpr authorization for the caller.
+  once a proxied alias is selected, the cache descriptor is the alias identity
+  plus generation. For pnpr-hosted packages, the footprint stores the hosted
+  route/access-policy identity and cache hits re-run pnpr authorization for the
+  caller.
 - **Reject inline URL auth before fetch.** The resolver must reject dependency
   URLs and resolved tarball URLs whose parsed URL contains username/password
   credentials. This avoids accidentally following pacquet's default
   `AuthHeaders::for_url*` inline-Basic behavior on a path that has no
-  pnpr-managed credential identity. Rejection should happen before the HEAD/GET
-  request and before any resolution or metadata cache write.
+  pnpr-managed private access descriptor. Rejection should happen before the
+  HEAD/GET request and before any resolution or metadata cache write.
 - **Record the per-fetch route during resolution.** The resolve path
   (`pnpr/crates/pnpr/src/resolver/resolve.rs`) and the pacquet npm/tarball
   fetchers must surface, for each metadata fetch and resolve-time tarball fetch,
   including direct HTTP tarball dependencies fetched for manifest/integrity, the
-  route identity, whether it was public or private, and the selected credential
-  identity digest. The existing `ResolutionObserver` reports resolved tarball
-  packages after a resolver result, so it is not sufficient by itself; the hook
-  needs to sit at the actual fetch/auth-selection layer.
-- **Make lower metadata caches credential-scoped.** Pacquet's shared metadata
+  route identity, whether it was public or private, and the selected private
+  access descriptor digest. The existing `ResolutionObserver` reports resolved
+  tarball packages after a resolver result, so it is not sufficient by itself;
+  the hook needs to sit at the actual fetch/auth-selection layer.
+- **Make lower metadata caches descriptor-scoped.** Pacquet's shared metadata
   mirror is currently keyed by registry/package, not by auth. Add a metadata
   cache scope to the npm resolver fetch context:
   - `Public` uses the current global mirror path unchanged.
-  - `Private { credential_identity }` uses a credential-scoped mirror path and
+  - `Private { access_descriptor }` uses a descriptor-scoped mirror path and
     matching in-memory key/fetch-lock key, preserving the current fast disk and
-    request-coalescing paths without cross-credential sharing.
+    request-coalescing paths without cross-descriptor sharing.
   - `Bypass` uses only request-local caching.
   Private/auth metadata must not be loaded from or written to a global auth-blind
   mirror in a way that lets a later invalid credential reuse it. Upstream
@@ -396,25 +426,27 @@ chooses metadata/tarball auth.
 - **Apply metadata cache scope to verification fetches too.** Lockfile
   verification and trust checks do not add packages to the resolution footprint,
   but their packument fetches still read and populate metadata mirrors. They must
-  use the same `Public` / `Private { credential_identity }` / `Bypass` metadata
+  use the same `Public` / `Private { access_descriptor }` / `Bypass` metadata
   scope as resolution fetches. Otherwise an unauthorized caller could use
   verifier verdicts as a private-metadata oracle, or a verifier could
   populate/read an auth-blind mirror that later affects resolution.
 - **Footprint + keying in the cache layer**
   (`pnpr/crates/pnpr/src/resolver.rs`):
-  - Replace the `auth_headers.is_empty()` gate so a cache key is always
-    computed.
+  - Preserve the `request.lockfile.is_none()` half of the current gate. This RFC
+    only removes forwarded auth as a reason to skip resolution-cache lookup.
+    Requests with a lockfile continue to bypass the resolution cache unless a
+    separate design covers lockfile-seeded caching.
   - Keep the current resolution-input key as the base cache key, but store one
     or more candidate entries under it. Each candidate carries its private
-    footprint and the HMAC digest of the credential identities that produced it.
-    A public candidate has an empty footprint and matches every caller; a
-    private candidate matches only when the current request can select the same
-    credential identities and the caller is still authorized for any
-    pnpr-managed aliases or pnpr-hosted package policies in the footprint. This
-    avoids knowing the footprint before the first resolve and avoids a second
-    resolve or anonymous probe.
+    footprint and the HMAC digest of the private access descriptors that
+    produced it. A public candidate has an empty footprint and matches every
+    caller; a private candidate matches only when the current request can select
+    the same proxied alias descriptors and the caller is still authorized for
+    any pnpr-managed aliases or pnpr-hosted package policies in the footprint.
+    This avoids knowing the footprint before the first resolve and avoids a
+    second resolve or anonymous probe.
   - After a resolve, compute the footprint from the recorded routes; store an
-    empty-footprint candidate for public resolutions, or a credential-keyed
+    empty-footprint candidate for public resolutions, or a descriptor-keyed
     candidate for private resolutions.
   - Bound the number of candidates stored under one base key and evict expired
     or least-recently-used private candidates first. Alias generation rotation,
@@ -453,17 +485,17 @@ per-base-key candidate lists stay bounded.
   its own authorization model.
 - **HTTP caching with `Vary`** expresses "this cached response depends on these
   request attributes." The footprint key is the same idea specialized to
-  credentials: public responses do not vary by auth; private responses vary by
-  the credential that can read them.
+  access descriptors: public responses do not vary by auth; private responses
+  vary by the descriptor and policy that can read them.
 - **npm scopes** are often assumed to equal privacy; this RFC deliberately does
   not rely on that, because a private default registry makes unscoped packages
   private and a public registry makes scoped packages public.
 
 ## Unresolved Questions and Bikeshedding
 
-- **Granularity of the private key:** HMAC over the union of all private
-  credential identities in the footprint (simple; an entry is shared only by
-  callers that select the identical private credential identities) vs.
+- **Granularity of the private key:** HMAC over the union of all private access
+  descriptors in the footprint (simple; an entry is shared only by callers that
+  select or satisfy the identical private descriptors) vs.
   per-`(registry, scope)` sub-keys
   (more sharing across callers who overlap on some but not all private scopes,
   at higher complexity). Start with the union.
