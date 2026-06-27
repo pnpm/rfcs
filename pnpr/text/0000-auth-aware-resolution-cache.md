@@ -22,7 +22,7 @@ not digested as an upstream cache credential.
 The same route decision governs the tarball URLs in resolver output: public
 routes keep their direct upstream (CDN) tarball URLs, while private and unknown
 routes are served through pnpr's **per-uplink registry endpoints**
-(`https://<pnpr>/<uplink>`) that the client points the corresponding scope at.
+(`https://<pnpr>/~<uplink>`) that the client points the corresponding scope at.
 Because those URLs are canonical for the configured registry, lockfile entries
 collapse to integrity-only registry resolutions whose host lives in client
 config, not in the lockfile — so a project produces the **same lockfile whether
@@ -257,7 +257,7 @@ A **pnpr-managed uplink** has:
   example from an environment variable or secret store);
 - an **access policy** saying which pnpr users/teams may use it;
 - a **generation** for credential rotation;
-- a **registry endpoint path** (`https://<pnpr>/<uplink>`) clients can point a
+- a **registry endpoint path** (`https://<pnpr>/~<uplink>`) clients can point a
   scope at.
 
 Routing to an uplink is by the **registry origin** a package resolves to, taken
@@ -321,13 +321,15 @@ The design achieves this by routing private packages through **per-uplink
 registry endpoints** rather than opaque per-tarball gateway URLs:
 
 - Each pnpr-managed uplink is exposed as a registry endpoint at a stable path,
-  `https://<pnpr>/<uplink>`. It behaves as a normal npm registry: it serves
+  `https://<pnpr>/~<uplink>`. The `~` prefix keeps the endpoint out of the
+  package-name path namespace (`/<name>` is a packument), since `~` cannot begin
+  an npm package name. It behaves as a normal npm registry: it serves
   packuments (rewriting `dist.tarball` to canonical
-  `https://<pnpr>/<uplink>/<pkg>/-/<file>` URLs, as Verdaccio does) and proxies
+  `https://<pnpr>/~<uplink>/<pkg>/-/<file>` URLs, as Verdaccio does) and proxies
   tarball bytes from the backing upstream using the server-owned credential,
   after re-checking caller access to the uplink.
 - Clients reach a private route by pointing the corresponding scope's registry
-  at that endpoint — `@acme:registry=https://<pnpr>/<uplink>` — exactly the
+  at that endpoint — `@acme:registry=https://<pnpr>/~<uplink>` — exactly the
   mechanism npm already provides for scoped private registries. This works
   **without** the resolver: ordinary client-side resolution against the endpoint
   yields correctly-routed, credential-free tarball URLs.
@@ -348,7 +350,7 @@ emits streamed package frames and the returned lockfile:
   no anonymous tarball probe on the hot path.
 - **Private proxied route:** emit a URL canonical for the uplink's registry
   endpoint, integrity-only relative to the scope's configured
-  `https://<pnpr>/<uplink>` registry. The endpoint fetches from the upstream with
+  `https://<pnpr>/~<uplink>` registry. The endpoint fetches from the upstream with
   the server-owned uplink credential after re-checking caller access.
 - **Private pnpr-hosted route:** emit a pnpr-hosted tarball URL (canonical for the
   pnpr registry) and re-check the caller against pnpr package access policy before
@@ -582,7 +584,7 @@ integration, in the pacquet fetch path that chooses metadata/tarball auth, and i
 how pnpr exposes uplinks as registry endpoints.
 
 - **Expose uplinks as registry endpoints.** Each pnpr-managed uplink is served
-  under a stable registry path (`https://<pnpr>/<uplink>`): packument reads
+  under a stable registry path (`https://<pnpr>/~<uplink>`): packument reads
   (with `dist.tarball` rewritten to canonical endpoint URLs) and tarball proxying
   with the server-owned credential, gated by the uplink access policy. This is
   the same registry surface that backs client-side resolution when a scope is
@@ -793,9 +795,19 @@ per-base-key candidate lists stay bounded.
   generation/rotation metadata in addition to their existing url/credential.
   Should access be inline user lists, named groups/teams, reused package
   permissions, or all of the above?
-- **Uplink registry endpoint shape:** the URL path under which each uplink is
-  exposed (`/<uplink-name>` vs an operator-set path), and how clients discover or
-  are provisioned the scope→endpoint mapping in their `.npmrc`.
+- **Uplink registry endpoint prefix:** uplink endpoints share pnpr's root path
+  namespace with package names (`/<name>` is a packument), so the endpoint path
+  needs a prefix that cannot begin a package name. The proposed form is
+  `/~<uplink>/`: `~` is a URL-unreserved character (never percent-encoded or
+  re-decoded) and an invalid leading character for an npm package name, so it
+  never collides with `/<name>` or `/@scope/...`, and mid-string it does not
+  trigger shell tilde expansion. Rejected alternatives: `/<uplink>/` (collides
+  with a package literally named `<uplink>`), `/+<uplink>/` (`+` is widely
+  mis-decoded as a space in path segments), and `/$<uplink>/` (`$` triggers shell
+  and `.npmrc` variable expansion). The npm-reserved `/-/uplink/<uplink>/`
+  namespace is a bulletproof-but-clunkier fallback. Open: whether operators may
+  override the prefix, and how clients are provisioned the scope→endpoint mapping
+  in their `.npmrc`.
 - **Default for revocation validation:** rely on the short TTL (proposed) vs.
   validate-on-private-hit by default. The latter is safer but adds a round trip
   to every private hit.
