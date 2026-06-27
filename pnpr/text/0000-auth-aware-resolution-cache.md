@@ -101,11 +101,12 @@ chooses **one** request shape for each metadata or resolve-time tarball fetch:
 
 A resolution's **private footprint** is the set of private route identities
 whose metadata or resolve-time tarball data was actually fetched during that
-resolve, paired with the exact credential selected for each route. This is
-derived from information pnpr already has during the single resolve it already
-performs — **no per-package probing and no extra requests.** During resolution
-pnpr knows, for every fetch, which route it targeted and whether the route was
-sent anonymously or with a credential.
+resolve, including direct HTTP tarball dependencies fetched during resolution to
+read their manifest and integrity. Each route is paired with the exact
+credential selected for it. This is derived from information pnpr already has
+during the single resolve it already performs — **no per-package probing and no
+extra requests.** During resolution pnpr knows, for every fetch, which route it
+targeted and whether the route was sent anonymously or with a credential.
 
 A footprint that is **empty** means the resolution is fully public.
 
@@ -342,10 +343,11 @@ metadata/tarball auth.
 - **Record the per-fetch route during resolution.** The resolve path
   (`pnpr/crates/pnpr/src/resolver/resolve.rs`) and the pacquet npm/tarball
   fetchers must surface, for each metadata fetch and resolve-time tarball fetch,
-  the route identity, whether it was public or private, and the selected
-  credential identity digest. The existing `ResolutionObserver` reports resolved
-  tarball packages after a resolver result, so it is not sufficient by itself;
-  the hook needs to sit at the actual fetch/auth-selection layer.
+  including direct HTTP tarball dependencies fetched for manifest/integrity, the
+  route identity, whether it was public or private, and the selected credential
+  identity digest. The existing `ResolutionObserver` reports resolved tarball
+  packages after a resolver result, so it is not sufficient by itself; the hook
+  needs to sit at the actual fetch/auth-selection layer.
 - **Make lower metadata caches credential-scoped.** Pacquet's shared metadata
   mirror is currently keyed by registry/package, not by auth. Add a metadata
   cache scope to the npm resolver fetch context:
@@ -383,8 +385,9 @@ metadata/tarball auth.
 
 Risk areas: the footprint must be complete (a missed private fetch would
 mis-classify a resolution as public), so the recording must cover every metadata
-fetch path, resolve-time tarball fetches, auth-blind metadata mirror fast paths,
-and uplink fallback ordering. Tests should cover: unscoped npmjs packages are
+fetch path, resolve-time tarball fetches (including direct HTTP tarball
+dependencies fetched for manifest/integrity), auth-blind metadata mirror fast
+paths, and uplink fallback ordering. Tests should cover: unscoped npmjs packages are
 fetched without auth and hit the shared cache even when a registry-wide npm token
 is forwarded; private install is isolated by credential; invalid credential
 misses and does not reuse private metadata mirrors; same-token reuse hits;
