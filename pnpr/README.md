@@ -1,6 +1,6 @@
 # pnpr RFCs
 
-RFCs related to [pnpr](https://github.com/pnpm/pnpm).
+RFCs related to [pnpr](https://github.com/pnpm/pnpm/tree/main/pnpr).
 
 > [!IMPORTANT]
 > Unlike the rest of this repository, the contents of this `pnpr/` directory are
