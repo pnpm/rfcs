@@ -42,9 +42,15 @@ let resolution_cache_key = if request.auth_headers.is_empty() && request.lockfil
 };
 ```
 
-This RFC changes only the auth half of that condition. Requests that include a
-lockfile continue to use the existing no-resolution-cache path unless a separate
-change analyzes and justifies caching lockfile-seeded resolves.
+This RFC removes both broad bypasses from the resolution-cache path. Forwarded
+auth and lockfile presence are inputs to auth-aware cache lookup, not reasons to
+skip it. Lockfile-seeded update resolves must still participate in the cache:
+the base resolution-input key includes the input lockfile and the lockfile mode
+flags (`frozenLockfile`, `preferFrozenLockfile`, `trustLockfile`, manifest
+checks, and trust policy), so a hit is scoped to the exact lockfile-seeded
+request shape. A proven-fresh frozen lockfile may keep its existing
+short-circuit before cache lookup because it does not run resolution at all; any
+request that needs a real resolve should be cacheable.
 
 The reason is correct: a resolution computed with a token that can see a private
 package *contains* that package's versions and tarball URLs, and the cache key
@@ -302,6 +308,9 @@ existing lockfile contains registry-shaped entries or tarball URLs that do not
 match the current route policy, pnpr should return a freshly routed lockfile or
 force the client through the pnpr gateway rather than letting the client fetch a
 private or unknown upstream URL directly.
+Lockfile-seeded update resolves still use the resolution cache; their cache key
+includes the input lockfile and lockfile mode flags, and the cached value is the
+routed output lockfile for that exact input.
 
 ### Private metadata cache
 
@@ -526,10 +535,11 @@ URLs from registry config.
   populate/read an auth-blind mirror that later affects resolution.
 - **Footprint + keying in the cache layer**
   (`pnpr/crates/pnpr/src/resolver.rs`):
-  - Preserve the `request.lockfile.is_none()` half of the current gate. This RFC
-    only removes forwarded auth as a reason to skip resolution-cache lookup.
-    Requests with a lockfile continue to bypass the resolution cache unless a
-    separate design covers lockfile-seeded caching.
+  - Replace the current `auth_headers.is_empty() && request.lockfile.is_none()`
+    gate. A cache candidate base key is computed for requests with or without an
+    input lockfile. Fresh frozen-lockfile reuse may still short-circuit before
+    cache lookup, but any request that proceeds to resolution should be eligible
+    for cache lookup and write.
   - Keep the current resolution-input key as the base cache key, but store one
     or more candidate entries under it. Each candidate carries its private
     footprint and the HMAC digest of the private access descriptors that
@@ -542,6 +552,10 @@ URLs from registry config.
   - After a resolve, compute the footprint from the recorded routes; store an
     empty-footprint candidate for public resolutions, or a descriptor-keyed
     candidate for private resolutions.
+  - For lockfile-seeded requests, include a stable digest of the canonical input
+    lockfile plus the lockfile behavior flags in the base key. A different input
+    lockfile, update mode, freshness policy, or trust policy must not match a
+    prior candidate.
   - Store already-routed tarball URLs in cached resolutions. A private cache hit
     must replay pnpr gateway URLs for private/unknown tarballs, not raw upstream
     URLs that require the selected server-owned credential.
@@ -556,11 +570,11 @@ URLs from registry config.
 - **Optional opt-in validation** for zero revocation window, and **optional
   lazy per-registry probing** for auto-detecting public custom registries — both
   behind config, both addable after the base lands.
-- **Lockfile/frozen path routing.** Even when a request with a lockfile bypasses
-  the resolution cache, pnpr and its clients must honor tarball route policy. A
-  lockfile that contains private/unknown upstream URLs should be rerouted
-  through pnpr or rejected for a fresh server-routed resolution instead of being
-  materialized directly by the client.
+- **Lockfile/frozen path routing.** Fresh frozen-lockfile reuse and verifier-only
+  paths can avoid a full resolve, but pnpr and its clients must still honor
+  tarball route policy. A lockfile that contains private/unknown upstream URLs
+  should be rerouted through pnpr or rejected for a fresh server-routed
+  resolution instead of being materialized directly by the client.
 
 Risk areas: the footprint must be complete (a missed private fetch would
 mis-classify a resolution as public), so the recording must cover every metadata
