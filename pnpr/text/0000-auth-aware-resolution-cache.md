@@ -11,9 +11,11 @@ on the public npm registry) are fetched anonymously and shared globally. Routes
 that match configured private/auth rules are fetched with the selected
 credential and added to the resolution's **private footprint**; private
 resolutions and private metadata are then keyed by the credential identity that
-produced them. That identity can be a forwarded client token or a pnpr-managed
-team credential, so private installs stay fast for teams that share access while
-an invalid or absent credential can never unlock private data.
+produced them. For proxied upstream packages, that identity is always a
+pnpr-managed upstream credential alias, not a client-forwarded token. Client auth
+identifies the caller to pnpr and may authorize packages hosted by pnpr itself,
+but it is not forwarded to third-party registries and is not digested as an
+upstream cache credential.
 
 ## Motivation
 
@@ -84,38 +86,45 @@ chooses **one** request shape for each metadata or resolve-time tarball fetch:
   registry (`registry.npmjs.org`) are always public. The npm docs state that
   [unscoped packages are always public](https://docs.npmjs.com/about-scopes/)
   and that private packages are user- or organization-scoped, so pnpr should
-  deliberately omit forwarded auth for these metadata requests even if the
-  client sent a registry-wide npm token.
+  deliberately omit upstream auth for these metadata requests even if the client
+  sent pnpr auth.
 - **Configured public routes:** an operator may explicitly declare additional
   registries, scopes, or package patterns public. These are fetched without
-  forwarded auth and can participate in the global public cache.
-- **Private/auth routes:** if a route matches a configured private rule or the
-  auth lookup selects a credential for its registry/scope/package, pnpr sends
-  that credential and treats the route as private. The selected credential can
-  be client-forwarded or pnpr-managed. There is no anonymous preflight; the
-  credentialed request is the only request.
+  upstream auth and can participate in the global public cache.
+- **Private proxied routes:** if a proxied route matches a configured private
+  rule, pnpr may send only a pnpr-managed upstream credential alias selected for
+  that route and authorized for the caller. There is no anonymous preflight and
+  no fallback to a client-forwarded upstream credential.
+- **Private pnpr-hosted routes:** if the package is hosted by pnpr itself, the
+  client auth identifies the caller to pnpr and is checked against pnpr's package
+  access policy. It is not forwarded upstream and is not used as the cache
+  credential digest.
 - **Unknown routes:** default to private unless explicitly declared public. If
-  no credential is available for an unknown/private route, pnpr may resolve it
-  anonymously, but the resulting resolution must not be stored in the global
-  public cache.
+  no pnpr-managed upstream credential alias or pnpr-hosted authorization is
+  available for an unknown/private route, pnpr may resolve it anonymously only as
+  a non-shareable private miss when the route permits anonymous access; it must
+  not write the result to the global public cache.
 
 A resolution's **private footprint** is the set of private route identities
 whose metadata or resolve-time tarball data was actually fetched during that
 resolve, including direct HTTP tarball dependencies fetched during resolution to
 read their manifest and integrity. Each route is paired with the exact
-credential selected for it. This is derived from information pnpr already has
-during the single resolve it already performs — **no per-package probing and no
-extra requests.** During resolution pnpr knows, for every fetch, which route it
-targeted and whether the route was sent anonymously or with a credential.
+credential identity selected for it: a pnpr-managed upstream alias for proxied
+packages, or a pnpr-hosted access-policy identity for packages served by pnpr
+itself. This is derived from information pnpr already has during the single
+resolve it already performs — **no per-package probing and no extra requests.**
+During resolution pnpr knows, for every fetch, which route it targeted and which
+route policy and credential identity were selected.
 
 A footprint that is **empty** means the resolution is fully public.
 
-> Note on over-counting: because pnpm forwards the npm token even to the public
-> registry, "an `Authorization` header was attached" is *not* a privacy signal —
-> it would mark ordinary public installs as private. Classification is by route
-> policy and the credential actually selected for that route. In particular,
-> unscoped packages on the official npm registry are fetched without auth, so a
-> broad npm token does not pessimize the common unscoped public path.
+> Note on over-counting: because a client may authenticate to pnpr even for a
+> fully public install, "the client was authenticated" is *not* a privacy signal
+> and must not mark ordinary public installs as private. Classification is by
+> route policy and the credential identity actually selected for that route. In
+> particular, unscoped packages on the official npm registry are fetched without
+> upstream auth, so a pnpr-authenticated request does not pessimize the common
+> unscoped public path.
 
 ### Part 2 — Key public entries globally, private entries by credential identity
 
@@ -133,47 +142,46 @@ resolution-input key, then reads the candidate list stored under that base key.
 Each candidate is matched against the credential identities the current request
 can select for that candidate's private footprint. Public candidates match every
 caller. Private candidates match only when the current request can reproduce the
-same credential identities and any required pnpr-managed alias authorization.
+same credential identities and any required pnpr-managed alias or pnpr-hosted
+package authorization.
 The footprint discovered during resolution is used only when writing a new
 candidate after a miss, not for finding the first candidate set.
 
-Why key by credential identity rather than "does the caller have a token for
-this scope?" — because the latter is an authorization bypass. A caller could send a
-**bogus** token for `@acme` and be served a private resolution it cannot
-actually access. We do not trust the claim; we require the current request to
-select the same working credential identity:
+Why key by credential identity rather than "does the caller have some auth for
+this scope?" — because the latter is an authorization bypass. A bogus client
+token for `@acme` must never unlock a private proxied resolution. Proxied
+packages therefore do not use client-forwarded upstream auth at all:
 
-- Caller presents an **invalid forwarded token** → its HMAC differs from the
-  HMAC of the token that produced the entry → **cache miss** → the request falls
-  through to a real resolve using the invalid token, which the **upstream
-  registry itself rejects** (401/403). No cached private data is served.
-- Caller presents the **valid forwarded token** → it holds a credential the
-  registry honors, which *is* access by definition → serving the cache is
-  correct.
-- Caller is authorized for a **pnpr-managed credential alias** → the request
-  selects that alias identity and can match entries produced by the same alias.
-- Caller is not authorized for the alias → the request cannot select that alias
-  identity, so it cannot match the alias's private entries.
+- If the caller is authorized for a **pnpr-managed upstream credential alias**,
+  the request selects that alias identity and can match entries produced by the
+  same alias.
+- If the caller is not authorized for the alias, the request cannot select that
+  alias identity, so it cannot match the alias's private entries.
+- If the package is **hosted by pnpr itself**, the request is matched by
+  re-running pnpr package access policy for the caller against the hosted package
+  routes in the footprint. The client's bearer token authenticates the caller; it
+  is not the upstream cache credential.
 
-For forwarded tokens, the registry remains the source of truth for access. For
-pnpr-managed aliases, pnpr is additionally the source of truth for whether the
-caller may use that configured upstream credential. In both cases, the cache key
-requires the current request to select the exact credential identity that
-produced the entry, and an invalid or unauthorized request cannot match.
+The cache key requires the current request to select the exact credential
+identity that produced the entry, and pnpr-hosted private entries additionally
+require the current caller to satisfy the relevant package access policy. An
+invalid, absent, or unauthorized credential cannot match.
 
 **Safety invariant:** a private-footprint entry is keyed by the same credential
-identity that produced it, and pnpr-managed alias entries are also gated by the
-same alias access policy. It can never leak beyond that credential identity.
+identity that produced it. pnpr-managed alias entries are gated by alias access
+policy, and pnpr-hosted entries are gated by pnpr package access policy. Private
+data can never leak beyond the credential identity or access policy that
+produced it.
 
 ### Team-owned upstream credentials
 
-The forwarded-client-token model is safe but fragments private cache entries by
-user token. That is acceptable as a fallback, but it is not the best default for
-CI or teams that access the same third-party registry through a shared service
-account. pnpr already has server-owned uplink auth for the registry proxy and
-package access policies for callers, but the resolver path currently relies on
-forwarded client credentials. This RFC extends that model to resolver-managed
-third-party credentials.
+For third-party/proxied packages, pnpr should not forward arbitrary client auth
+to the upstream registry. The resolver should use the same proxy shape as the
+registry server: clients authenticate to pnpr, and pnpr uses operator-managed
+upstream credentials when the caller is allowed to use them. pnpr already has
+server-owned uplink auth for the registry proxy and package access policies for
+callers; this RFC extends that model to resolver-managed third-party
+credentials.
 
 An operator can configure **upstream credential aliases** for third-party
 registries:
@@ -189,22 +197,24 @@ registries:
   `credential-alias + generation`, HMACed with the server secret. The raw token
   is never written to cache keys or exposed to clients.
 
-This gives teams the fast path without requiring every developer to send the
-same raw third-party token from their local machine. Everyone authorized for the
-same alias shares private resolution entries and private metadata entries. A
-caller who is not authorized for the alias cannot select that credential and
-therefore cannot match its cache entries.
+This gives teams the fast path without allowing client-supplied third-party
+tokens to affect proxied resolution. Everyone authorized for the same alias
+shares private resolution entries and private metadata entries. A caller who is
+not authorized for the alias cannot select that credential and therefore cannot
+match its cache entries.
 
 Route selection precedence:
 
 1. Public route policy wins and suppresses auth.
-2. An authorized pnpr-managed credential alias is selected for matching private
-   routes.
-3. Otherwise, fall back to the client-forwarded credential selected by the
-   package-aware auth lookup.
-4. If the route is private/unknown and no credential is available, resolve
-   anonymously only as a non-shareable private miss; do not write a global public
-   cache entry.
+2. A pnpr-hosted private route uses the caller's pnpr identity and package
+   access policy; no upstream credential is involved.
+3. A proxied private route selects an authorized pnpr-managed upstream credential
+   alias.
+4. If the route is private/unknown and no hosted-package authorization or
+   upstream alias is available, resolve anonymously only as a non-shareable
+   private miss when the route permits anonymous access; otherwise fail closed.
+   Never forward client auth to the proxied upstream registry and never write a
+   global public cache entry for this path.
 
 When an upstream credential is rotated, the alias generation changes, so new
 resolves populate a new private namespace. Old entries age out by TTL. If a
@@ -238,45 +248,40 @@ namespace and only within the normal freshness policy.
 
 - Public installs: shared globally — full cache benefit, even for authenticated
   clients, as long as the packages route through public/anonymous fetch rules.
-- CI / teams using the same token: shared — repeated installs hit the cache.
 - CI / teams using a pnpr-managed upstream credential alias: shared across every
   pnpr user authorized for that alias, without exposing the raw upstream token to
   clients.
-- Two users with *different* valid tokens to the same private registry: do **not**
-  share each other's private entries (different HMACs). This is a small,
-  deliberate loss of sharing in exchange for the invariant; operators that want
-  broader sharing can configure a shared alias for that route.
-- Scoped public packages on npmjs with a broad registry token: if the route
-  policy selects that token, pnpr treats the route as private and does not share
-  globally. Operators can recover sharing for known-public scopes/package
-  patterns by declaring them public, which also makes pnpr omit auth for those
-  fetches.
+- pnpr-hosted private packages: shared across callers who currently satisfy the
+  package access policy recorded in the footprint. Client tokens authenticate
+  callers to pnpr; they are not cache keys.
+- Scoped public packages on npmjs with an authenticated pnpr request: still
+  public if the route policy says public. Client auth to pnpr is not forwarded
+  upstream and does not make the entry private.
 - Self-hosted deployments whose *public* default registry is not covered by a
   public route rule: treated as private until the operator declares it public —
   a one-line config change recovers global sharing.
 
 ### Revocation window
 
-A token revoked upstream still matches its HMAC until the entry's TTL expires
-(already short — `packument_ttl`, ~5 min by default), during which a private hit
-serves data the token could see moments earlier. For pnpr-managed credential
-aliases, rotating the alias generation immediately moves future hits and writes
-to a new namespace; the old namespace ages out. For deployments that want zero
-window on private hits, an **opt-in** lightweight validation — a single
-authenticated request (one round trip, not a full re-resolve) — can run before
-serving a private hit. The default relies on the short TTL plus per-hit alias
+For pnpr-managed upstream credential aliases, rotating the alias generation
+immediately moves future hits and writes to a new namespace; the old namespace
+ages out. pnpr-hosted package access is re-evaluated before serving a
+pnpr-hosted private hit. For deployments that want zero upstream revocation
+window, an **opt-in** lightweight validation — a single authenticated request
+(one round trip, not a full re-resolve) — can run before serving an upstream
+private hit. The default relies on the short TTL plus per-hit alias/package
 authorization checks.
 
 ### Optional: auto-detecting public custom registries
 
 Operators who do not want to declare a public self-hosted registry can opt into
 lazy classification **at the registry/scope granularity** (never per package):
-attempt the first fetch to an unknown registry anonymously, attach auth only on
-`401/403` (or `404` when auth is available, since some registries hide private
-packages as 404), and cache the `(registry, scope) → requires-auth` verdict with
-a TTL. Cost: at most one extra round trip per new private registry-scope per TTL
-window, and zero for the public path. This is a later refinement; the base
-design is config-driven with no probing.
+attempt the first fetch to an unknown registry anonymously. If the route later
+needs auth, use only a configured pnpr-managed upstream alias, never a
+client-forwarded upstream credential. Cache the `(registry, scope) →
+requires-auth` verdict with a TTL. Cost: at most one extra round trip per new
+private registry-scope per TTL window, and zero for the public path. This is a
+later refinement; the base design is config-driven with no probing.
 
 ## Rationale and Alternatives
 
@@ -288,22 +293,23 @@ single route-policy decision per fetch.
 **Alternative B — Always hash auth into the cache key.** Simple and safe, but it
 gives *every* authenticated request its own cache namespace, so the dominant
 public case never shares across users — it only helps repeat installs by the
-same caller. It also fails to share private entries across a team unless every
-member sends the same raw upstream token. This RFC's footprint split keeps
-public resolutions globally shared while applying credential-identity keying
-only where it is actually needed.
+same caller. It also hashes the wrong thing for this design: client auth is a
+caller identity for pnpr-hosted packages, not an upstream credential for proxied
+packages. This RFC's footprint split keeps public resolutions globally shared
+while applying credential-identity keying only where it is actually needed.
 
 **Alternative C — "Caller has a token for the scope" gate.** Share a private
-entry with any caller that presents some credential for the registry. Rejected:
-it is an authorization bypass (an invalid token unlocks private data). Keying by
-credential identity plus alias authorization closes this.
+entry with any authenticated caller or any caller that presents some credential
+for the registry. Rejected: it is an authorization bypass. Client auth to pnpr
+authorizes only pnpr-hosted package access; proxied package access requires the
+caller to be authorized for the selected upstream alias. Keying by credential
+identity plus access-policy checks closes this.
 
 **Alternative D — Server-side encrypted credential vault.** Store upstream
 credentials in pnpr (clients authenticate only to pnpr) and encrypt them at
 rest. This is a worthwhile, separate feature for credential *management* and
-*transmission*, but it does **not** fix caching on its own: a vaulted token
-produces exactly the same scope-specific resolution as a forwarded one, so the
-cache would still have to be gated by credential identity and caller access.
+*transmission*, but it does **not** fix caching on its own: the cache still has
+to be gated by the selected upstream credential identity and caller access.
 Encrypting the cached resolutions themselves would actively *defeat* sharing.
 The server-managed alias feature in this RFC is the minimal useful slice of that
 vault idea for performance: it supplies a stable credential identity and an
@@ -311,7 +317,7 @@ access policy, while full credential lifecycle management can remain a later
 extension.
 
 **Alternative E — Do nothing.** Authenticated installs stay ~2.8× slower. Given
-that forwarding the npm token to a public registry is the pnpm default, this
+that clients commonly authenticate even when resolving public packages, this
 penalizes the common case for no privacy benefit.
 
 This proposal is the minimal change that recovers the common-case performance
@@ -329,17 +335,27 @@ metadata/tarball auth.
   unscoped packages on `registry.npmjs.org`, plus operator rules for public and
   private registries/scopes/package patterns, plus optional server-managed
   upstream credential aliases with per-alias access policies. The fetch path
-  must choose the route policy and selected auth together, using the same
-  package-aware lookup that will set the `Authorization` header. Public routes
-  suppress forwarded auth; private/auth routes send the selected credential and
-  record its credential identity for the footprint.
+  must choose the route policy and selected upstream auth together. Public routes
+  send no upstream auth; private proxied routes send only the selected
+  pnpr-managed upstream alias; pnpr-hosted routes use client auth only to
+  authorize the caller against pnpr package policy.
 - **Authorize pnpr-managed upstream credentials.** Reuse pnpr's existing caller
   identity (bearer-token-backed users), uplink auth configuration concepts, and
   registry package permission policy shape where possible to decide whether a
   request may use a configured upstream credential alias. Add an optional
   named-group/team layer if operators need group reuse. If no pnpr identity is
-  available, pnpr cannot select a team credential; it falls back to forwarded
-  client auth.
+  available, pnpr cannot select a team credential; it fails closed for private
+  proxied routes unless anonymous access is explicitly permitted as a
+  non-shareable private miss.
+- **Define credential identity inputs.** For proxied packages, the private
+  credential identity is the configured upstream alias plus generation, HMACed
+  with the server secret. It is not derived from
+  `AuthHeaders::for_url_with_package`, request `Authorization` headers,
+  registry/scope config entries, or inline `user:pass@host` URL auth. URL and
+  package normalization still matter for route-policy and alias selection, but
+  once a proxied alias is selected, the cache identity is the alias identity. For
+  pnpr-hosted packages, the footprint stores the hosted route/access-policy
+  identity and cache hits re-run pnpr authorization for the caller.
 - **Record the per-fetch route during resolution.** The resolve path
   (`pnpr/crates/pnpr/src/resolver/resolve.rs`) and the pacquet npm/tarball
   fetchers must surface, for each metadata fetch and resolve-time tarball fetch,
@@ -369,9 +385,10 @@ metadata/tarball auth.
     footprint and the HMAC digest of the credential identities that produced it.
     A public candidate has an empty footprint and matches every caller; a
     private candidate matches only when the current request can select the same
-    credential identities and, for pnpr-managed aliases, the caller is still
-    authorized to use them. This avoids knowing the footprint before the first
-    resolve and avoids a second resolve or anonymous probe.
+    credential identities and the caller is still authorized for any
+    pnpr-managed aliases or pnpr-hosted package policies in the footprint. This
+    avoids knowing the footprint before the first resolve and avoids a second
+    resolve or anonymous probe.
   - After a resolve, compute the footprint from the recorded routes; store an
     empty-footprint candidate for public resolutions, or a credential-keyed
     candidate for private resolutions.
@@ -388,12 +405,14 @@ mis-classify a resolution as public), so the recording must cover every metadata
 fetch path, resolve-time tarball fetches (including direct HTTP tarball
 dependencies fetched for manifest/integrity), auth-blind metadata mirror fast
 paths, and uplink fallback ordering. Tests should cover: unscoped npmjs packages are
-fetched without auth and hit the shared cache even when a registry-wide npm token
-is forwarded; private install is isolated by credential; invalid credential
-misses and does not reuse private metadata mirrors; same-token reuse hits;
-different pnpr users authorized for the same upstream credential alias share
-resolution and metadata cache entries; revoked alias access stops matching
-private hits; custom private default registry is not treated as public.
+fetched without upstream auth and hit the shared cache even when the client is
+authenticated to pnpr; private pnpr-hosted packages require caller package
+access; private proxied packages require an authorized upstream alias and never
+use client-forwarded upstream auth; invalid or unauthorized access misses and
+does not reuse private metadata mirrors; different pnpr users authorized for the
+same upstream credential alias share resolution and metadata cache entries;
+revoked alias/package access stops matching private hits; custom private default
+registry is not treated as public.
 
 ## Prior Art
 
