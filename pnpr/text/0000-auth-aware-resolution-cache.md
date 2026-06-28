@@ -19,8 +19,18 @@ caller. Client auth identifies the caller to pnpr and may authorize packages
 hosted by pnpr itself, but it is not forwarded to third-party registries and is
 not digested as an upstream cache credential.
 
+The registries pnpr will fetch from server-side are an **allowlist** — the
+built-in npm route, operator-declared public routes, configured uplinks, and
+pnpr itself — and a client `registry`/`namedRegistries` matching none of them is
+rejected before any fetch. Being default-deny rather than denylisting dangerous
+hosts closes the resolver's server-side request-forgery surface (a caller can no
+longer point pnpr at cloud instance metadata or an internal service), and it
+removes the "unknown route" entirely: every resolved route is either public
+(globally shared) or carries a private access descriptor, so the cache has just
+two states with no non-shareable tier.
+
 The same route decision governs the tarball URLs in resolver output: public
-routes keep their direct upstream (CDN) tarball URLs, while private and unknown
+routes keep their direct upstream (CDN) tarball URLs, while private proxied
 routes are served through pnpr's **per-uplink registry endpoints**
 (`https://<pnpr>/~<uplink>`) that the client points the corresponding scope at.
 Because those URLs are canonical for the configured registry, lockfile entries
@@ -107,26 +117,37 @@ This matters in both directions:
   a self-hosted/corporate one (Verdaccio, Artifactory, GitHub Packages, a
   private proxy), then unscoped packages served from it can be fully private.
 
-The base design must not probe every package twice. Classification therefore
-chooses **one** request shape for each metadata or resolve-time tarball fetch:
+Every registry pnpr will fetch from server-side is an **allowlist** derived from
+the operator's configuration: the built-in npm route, operator-declared public
+routes, configured uplinks (and their `/~<uplink>/` endpoints), and pnpr-hosted
+registries. A client `registry`/`namedRegistries` whose origin matches none of
+these is **rejected at the request boundary, before any fetch**: pnpr is
+default-deny, so a caller cannot direct it at an arbitrary host (see
+[Fetch allowlist and SSRF](#fetch-allowlist-and-ssrf)). There is consequently no
+"unknown route" to resolve anonymously and no non-shareable cache state — every
+resolved route is either public or carries a private access descriptor.
 
-- **Built-in public npm route:** by default, unscoped packages served from the
-  exact official npm registry (`registry.npmjs.org`) are treated as public. The
-  [npm scope docs](https://docs.npmjs.com/about-scopes/) describe unscoped
-  packages as public and private packages as user- or organization-scoped, so
-  pnpr should deliberately select the anonymous upstream fetch shape for these
-  metadata requests. The caller's pnpr identity is irrelevant to this public
-  upstream route; it is used later only for pnpr-hosted package access and for
-  deciding whether the caller may use a pnpr-managed uplink. Operators may
-  disable or override this built-in route if npm's policy changes or if they
-  want a conservative deployment.
-- **Configured public routes:** an operator may explicitly declare additional
-  registries, scopes, or package patterns public. These are fetched without
-  upstream auth and can participate in the global public cache.
-- **Private proxied routes:** if a proxied route matches a configured private
-  rule, pnpr may send only the credential of a pnpr-managed uplink selected for
-  that route by registry origin and authorized for the caller. There is no
-  anonymous preflight and no fallback to a client-forwarded upstream credential.
+The base design must not probe every package twice. For each allowed metadata or
+resolve-time tarball fetch, classification chooses **one** request shape:
+
+- **Built-in npm route:** the official npm registry (`registry.npmjs.org`) is
+  allowlisted and fetched anonymously. An anonymously-successful fetch is public
+  and globally shareable — including scoped names. The
+  [npm scope docs](https://docs.npmjs.com/about-scopes/) note that private
+  packages are organization-scoped, but a *private* scoped npm package 404s on an
+  anonymous fetch (pnpr forwards no client credential), so it is never resolved
+  this way; a private npm dependency must be fronted by a uplink. The caller's
+  pnpr identity is irrelevant to this public route. Operators may disable the
+  built-in for a conservative deployment that allowlists every registry
+  explicitly.
+- **Configured public routes:** an operator may declare additional registries,
+  scopes, or package patterns public. These are fetched without upstream auth and
+  participate in the global public cache.
+- **Private proxied routes:** a route whose origin matches a configured uplink
+  the caller is authorized for is fetched with that uplink's server-owned
+  credential — never a client-forwarded one — and recorded under the uplink's
+  private access descriptor. There is no anonymous preflight and no
+  client-credential fallback.
 - **Private pnpr-hosted routes:** if the package is hosted by pnpr itself, the
   client auth identifies the caller to pnpr and is checked against pnpr's package
   access policy. It is not forwarded upstream and is not used as the cache
@@ -136,11 +157,6 @@ chooses **one** request shape for each metadata or resolve-time tarball fetch:
   not be converted into Basic auth, used as an upstream credential identity, or
   stored in any shared cache. Operators that need authenticated direct tarball
   URLs should model that host with a pnpr-managed uplink instead.
-- **Unknown routes:** default to private unless explicitly declared public. If
-  no pnpr-managed uplink or pnpr-hosted authorization is available for an
-  unknown/private route, pnpr may resolve it anonymously only as a non-shareable
-  private miss when the route permits anonymous access; it must not write the
-  result to the global public cache.
 
 A route is **pnpr-hosted** when the normalized request registry points at this
 pnpr service, or at an operator-declared hosted registry alias, and the package
@@ -240,6 +256,38 @@ base resolution key has private candidates; unauthorized callers always observe
 a miss/fail-closed resolve, candidate counts and footprint details must not be
 returned to clients, and private hit/miss metrics should be operator-only.
 
+### Fetch allowlist and SSRF
+
+`/-/pnpr/v0/resolve` and `/-/pnpr/v0/verify-lockfile` fetch package metadata
+server-side from the registries the client supplies (`registry` and every
+`namedRegistries` alias). If those URLs are honored verbatim, an authenticated
+caller can point them at the link-local range that fronts cloud instance
+metadata (`http://169.254.169.254/`), at an internal service, or at any other
+host reachable from the server's network position — server-side request forgery,
+including the classic IMDS credential-theft target.
+
+The allowlist closes this at the source. Before any server-side fetch, pnpr
+rejects a `registry`/`namedRegistries` whose origin matches no allowlisted route
+— the built-in npm route, an operator-declared public route, a configured uplink
+origin (or its `/~<uplink>/` endpoint), or pnpr itself. Because the set is
+**default-deny**, a caller cannot make pnpr issue a request to a host the
+operator did not approve: IMDS, internal services, and any future
+metadata endpoint are all unreachable without a config change, rather than
+patched one address range at a time.
+
+This is strictly stronger than denylisting dangerous hosts (link-local ranges,
+known metadata hostnames): a denylist is default-allow, so every new SSRF target
+is a gap, and it must deliberately keep private/loopback ranges reachable
+(internal registries are pnpr's core use case) — exactly the ranges an attacker
+would target. The allowlist instead lets the operator reach an internal registry
+by *allowlisting that specific registry*, while everything else stays blocked.
+
+One residual remains: an allowlisted *hostname* that resolves to a link-local or
+internal address only at connect time (DNS rebinding) is not caught by an
+origin-level allowlist. Closing that needs a connect-time guard in the HTTP
+client's connector and is a separate hardening step; the allowlist removes the
+far larger surface of arbitrary caller-named hosts.
+
 ### Team-owned upstream credentials (pnpr-managed uplinks)
 
 For third-party/proxied packages, pnpr should not forward arbitrary client auth
@@ -293,11 +341,11 @@ Route selection precedence:
    caller at lookup time; no upstream credential is involved.
 3. A proxied private route selects an authorized pnpr-managed uplink by registry
    origin.
-4. If the route is private/unknown and no hosted-package authorization or uplink
-   is available, resolve anonymously only as a non-shareable private miss when
-   the route permits anonymous access; otherwise fail closed. Never forward
-   client auth to the proxied upstream registry and never write a global public
-   cache entry for this path.
+4. A route matching no allowlisted registry is **rejected** at the request
+   boundary (see [Fetch allowlist and SSRF](#fetch-allowlist-and-ssrf)); pnpr
+   never forwards client auth to an upstream and never resolves an
+   off-allowlist host anonymously. A caller authorized for an uplink origin but
+   not for *this caller* still fails closed at that uplink's access gate.
 
 When an upstream credential is rotated, the uplink generation changes, so new
 resolves populate a new private namespace. Old entries age out by TTL.
@@ -355,10 +403,10 @@ emits streamed package frames and the returned lockfile:
 - **Private pnpr-hosted route:** emit a pnpr-hosted tarball URL (canonical for the
   pnpr registry) and re-check the caller against pnpr package access policy before
   serving it.
-- **Unknown route:** there is no uplink and therefore no credential or endpoint to
-  route through. Resolve anonymously only as a non-shareable private miss when the
-  route permits anonymous access; otherwise fail closed and require the operator
-  to configure an uplink. pnpr does not mint per-tarball opaque gateway URLs.
+There is no "unknown route" tarball case: a package whose metadata could only
+come from an off-allowlist registry is rejected during resolution before it
+reaches the lockfile, so the emitted set is limited to the three routes above.
+pnpr never mints a per-tarball opaque gateway URL.
 
 Resolver responses, streamed package frames, and returned lockfiles must never
 include upstream `Authorization` values, upstream tokens, or a raw private
@@ -447,9 +495,11 @@ auth-blind. Private metadata must follow the same route policy:
   example `metadata-private/<descriptor-id>/<registry>/<package>.jsonl`. The
   existing disk fast paths, in-memory cache, request coalescing, and conditional
   GETs can remain; only the namespace changes.
-- **Private/unknown route without a private access descriptor:** bypass persistent
-  sharing or store only in a request-local cache. Never write it to the global
-  public mirror.
+
+Because off-allowlist routes are rejected before any fetch, there is no
+"descriptor-less private" metadata to handle — every fetched route is public
+(global mirror) or carries a descriptor (its own namespace). No request-local
+bypass tier is needed.
 
 The metadata cache scope is **per metadata fetch**, not per resolve. A single
 workspace resolve may read public npmjs metadata from the global mirror, private
@@ -486,11 +536,13 @@ private routes: do not satisfy the miss from a broader or auth-blind mirror.
   policy- or team-scoped where possible so a team shares cache entries; client
   tokens authenticate callers to pnpr, but they are not cache keys.
 - Scoped public packages on npmjs with an authenticated pnpr request: still
-  public if the route policy says public. Client auth to pnpr is not forwarded
-  upstream and does not make the entry private.
-- Self-hosted deployments whose *public* default registry is not covered by a
-  public route rule: treated as private until the operator declares it public —
-  a one-line config change recovers global sharing.
+  public — the npmjs host is allowlisted and the anonymous fetch succeeds. Client
+  auth to pnpr is not forwarded upstream and does not make the entry private.
+- Self-hosted deployments whose default registry is not yet allowlisted: every
+  request to it is **rejected** until the operator declares it (a public route to
+  share its public packages globally, or a uplink to serve it privately) — a
+  one-line config change. This is the deliberate default-deny posture; nothing is
+  fetched from an unapproved host.
 
 ### Revocation window
 
@@ -502,16 +554,15 @@ validation — a single authenticated request (one round trip, not a full
 re-resolve) — can run before serving an upstream private hit. The default relies
 on the short TTL plus per-hit uplink/package authorization checks.
 
-### Optional: auto-detecting public custom registries
+### No registry auto-detection
 
-Operators who do not want to declare a public self-hosted registry can opt into
-lazy classification **at the registry/scope granularity** (never per package):
-attempt the first fetch to an unknown registry anonymously. If the route later
-needs auth, use only a configured pnpr-managed uplink, never a client-forwarded
-upstream credential. Cache the `(registry, scope) → requires-auth` verdict with a
-TTL. Cost: at most one extra round trip per new private registry-scope per TTL
-window, and zero for the public path. This is a later refinement; the base
-design is config-driven with no probing.
+An earlier draft proposed lazily probing an unknown registry anonymously to
+learn whether it is public. The allowlist removes the need: a registry pnpr will
+fetch from is always operator-declared (a public route or a uplink), so there is
+no unknown registry to probe and no `(registry, scope) → requires-auth` verdict
+to cache. Adding a registry is a one-line config change, not a runtime guess —
+and runtime probing of caller-named hosts is exactly the SSRF surface the
+allowlist exists to remove.
 
 ## Rationale and Alternatives
 
@@ -580,6 +631,19 @@ exposes each uplink as a *canonical* registry endpoint and keeps lockfile entrie
 integrity-only, so the lockfile is identical across modes, rotation stays
 server-side, and no per-tarball gateway state is needed.
 
+**Alternative I — Denylist dangerous fetch hosts instead of an allowlist.** Keep
+resolving against any registry the client sends, but block known-bad targets
+(link-local ranges `169.254.0.0/16` / `fe80::/10`, well-known metadata
+hostnames). Rejected as the model, though it remains useful as defense-in-depth.
+A denylist is default-allow, so it leaks every host it forgot — and it must
+deliberately keep private/loopback ranges reachable (internal registries are
+pnpr's core use case), which are exactly the addresses an SSRF attacker targets.
+It also leaves the unknown-route resolve path (and its non-shareable cache state)
+in place. The allowlist is default-deny: pnpr fetches only operator-approved
+registries, which both closes the SSRF surface at the source and removes the
+unknown route. (The connect-time DNS-rebinding guard is orthogonal and complements
+either model.)
+
 This proposal is the minimal change that recovers the common-case performance
 without weakening the privacy guarantee, and it stands alone regardless of
 whether a credential vault is later added.
@@ -645,8 +709,17 @@ how pnpr exposes uplinks as registry endpoints.
   permission policy shape where possible to decide whether a request may use a
   configured uplink. Add an optional named-group/team layer if operators need
   group reuse. If no pnpr identity is available, pnpr cannot select a team
-  credential; it fails closed for private proxied routes unless anonymous access
-  is explicitly permitted as a non-shareable private miss.
+  credential; it fails closed for private proxied routes (an off-allowlist
+  registry is already rejected at the request boundary, below).
+- **Reject off-allowlist registries at the request boundary.** Before any
+  server-side fetch, both `/resolve` and `/verify-lockfile` must reject a
+  `registry`/`namedRegistries` whose origin matches no allowlisted route (the
+  built-in npm route, an operator-declared public route, a configured uplink
+  origin or its `/~<uplink>/` endpoint, or pnpr itself). This is the SSRF
+  boundary and the reason there is no unknown-route resolve path; it runs in the
+  same place as the inline-URL-credential rejection, before the request body is
+  collected. An off-allowlist host returns an actionable `400`/`403` naming the
+  registry, never a silent anonymous fetch.
 - **Define private access descriptor inputs.** A descriptor has a key input and
   an authorization gate. Proxied routes use `uplink + generation` as the key
   input and uplink authorization as the gate. pnpr-hosted routes use the hosted
@@ -690,7 +763,9 @@ how pnpr exposes uplinks as registry endpoints.
   - `Private { access_descriptor }` uses a descriptor-scoped mirror path and
     matching in-memory key/fetch-lock key, preserving the current fast disk and
     request-coalescing paths without cross-descriptor sharing.
-  - `Bypass` uses only request-local caching.
+
+  (There is no descriptor-less private scope: off-allowlist routes never reach a
+  fetch, so every fetched route is `Public` or `Private`.)
   Private/auth metadata must not be loaded from or written to a global auth-blind
   mirror in a way that lets a later invalid credential reuse it. Upstream
   `401`/`403` must fail closed; only transport failures may fall back to stale
@@ -701,7 +776,7 @@ how pnpr exposes uplinks as registry endpoints.
 - **Apply metadata cache scope to verification fetches too.** Lockfile
   verification and trust checks do not add packages to the resolution footprint,
   but their packument fetches still read and populate metadata mirrors. They must
-  use the same `Public` / `Private { access_descriptor }` / `Bypass` metadata
+  use the same `Public` / `Private { access_descriptor }` metadata
   scope as resolution fetches. Otherwise an unauthorized caller could use
   verifier verdicts as a private-metadata oracle, or a verifier could
   populate/read an auth-blind mirror that later affects resolution.
@@ -739,9 +814,8 @@ how pnpr exposes uplinks as registry endpoints.
     config plumbing.
   - `CachedResolution` may need to carry its footprint so lookups can apply the
     revocation-validation path when enabled.
-- **Optional opt-in validation** for zero revocation window, and **optional
-  lazy per-registry probing** for auto-detecting public custom registries — both
-  behind config, both addable after the base lands.
+- **Optional opt-in validation** for zero revocation window, behind config,
+  addable after the base lands.
 - **Lockfile/frozen path routing.** Fresh frozen-lockfile reuse and verifier-only
   paths can avoid a full resolve, but pnpr and its clients must still honor
   tarball route policy. A lockfile that contains raw private/unknown upstream
