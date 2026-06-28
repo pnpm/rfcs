@@ -174,7 +174,7 @@ read their manifest and integrity. Each route is paired with the exact
 namespace input plus the authorization predicate for that private route:
 
 - proxied routes derive the descriptor from the selected pnpr-managed uplink
-  plus generation, and its gate is "the caller may still use this uplink";
+  plus a digest of its credential, and its gate is "the caller may still use this uplink";
 - pnpr-hosted routes derive the descriptor from the hosted route/access-policy
   identity, and its gate is "the caller still satisfies this package policy".
 
@@ -211,7 +211,7 @@ The cache key behavior depends on the footprint:
 
 A private access descriptor is one abstraction with two derivation sources:
 
-- **Proxied route:** descriptor key input = `uplink + generation`; gate
+- **Proxied route:** descriptor key input = `uplink + credential-digest`; gate
   = the caller can still select that uplink for the route.
 - **pnpr-hosted route:** descriptor key input = hosted route/access-policy
   identity; gate = pnpr re-runs package access policy for the caller.
@@ -243,7 +243,7 @@ Proxied packages therefore do not use client-forwarded upstream auth at all:
 The cache key requires the current request to reproduce the exact private access
 descriptor that produced the entry and pass that descriptor's authorization
 gate. For proxied entries that means selecting the same authorized uplink
-generation. For pnpr-hosted entries that means satisfying the same package route
+with an unchanged credential. For pnpr-hosted entries that means satisfying the same package route
 policy at lookup time. An invalid, absent, or unauthorized credential cannot
 match.
 
@@ -322,15 +322,15 @@ registry server: clients authenticate to pnpr, and pnpr uses operator-managed
 upstream credentials when the caller is allowed to use them. This RFC unifies
 that with Verdaccio's existing **uplink** concept rather than introducing a
 separate credential-alias config block: an uplink already names an upstream
-registry and its credential; this RFC adds an access policy and a rotation
-generation to it, and exposes it as a registry endpoint.
+registry and its credential; this RFC adds an access policy to it, namespaces its private cache by a digest
+of that credential (so a rotation re-keys automatically), and exposes it as a
+registry endpoint.
 
 A **pnpr-managed uplink** has:
 
 - a backing upstream registry URL and the upstream credential material (for
   example from an environment variable or secret store);
 - an **access policy** saying which pnpr users/teams may use it;
-- a **generation** for credential rotation;
 - a **registry endpoint path** (`https://<pnpr>/~<uplink>`) clients can point a
   scope at.
 
@@ -350,8 +350,9 @@ credential to that host; see [Split-domain registries](#split-domain-registries-
   is authorized for that origin, and records the uplink identity in the private
   footprint;
 - cache keys and metadata mirrors use a stable proxied descriptor `uplink +
-  generation`, HMACed with the server secret. The raw token is never written to
-  cache keys, embedded in any client-visible URL, or exposed to clients.
+  credential-digest`, HMACed with the server secret. The raw token is never
+  written to cache keys, embedded in any client-visible URL, or exposed to
+  clients.
 
 This gives teams the fast path without allowing client-supplied third-party
 tokens to affect proxied resolution. Everyone authorized for the same uplink
@@ -373,9 +374,10 @@ Route selection precedence:
    off-allowlist host anonymously. A caller authorized for an uplink origin but
    not for *this caller* still fails closed at that uplink's access gate.
 
-When an upstream credential is rotated, the uplink generation changes, so new
-resolves populate a new private namespace. Old entries age out by TTL.
-Generation is a server-side cache-namespacing detail and is never embedded in a
+When an upstream credential is rotated, the digest pnpr keys the uplink's
+private cache by changes automatically, so new resolves populate a new private
+namespace and the old one ages out by TTL — no manual epoch to bump. The digest
+is a server-side cache-namespacing detail and is never embedded in a
 client-visible URL. If a user's team access is revoked, pnpr re-evaluates uplink
 authorization before serving private hits, so the caller stops matching those
 private entries even while the shared upstream token itself remains valid for
@@ -572,7 +574,7 @@ private routes: do not satisfy the miss from a broader or auth-blind mirror.
 
 ### Revocation window
 
-For pnpr-managed uplinks, rotating the uplink generation immediately moves future
+For pnpr-managed uplinks, rotating the upstream credential immediately moves future
 hits and writes to a new namespace; the old namespace ages out. pnpr-hosted
 package access is re-evaluated before serving a pnpr-hosted private hit. For
 deployments that want zero upstream revocation window, an **opt-in** lightweight
@@ -701,7 +703,8 @@ how pnpr exposes uplinks as registry endpoints.
 - **Merge upstream credentials into uplink config.** Rather than a separate
   credential-alias block, extend pnpr's existing `uplinks` config
   (`pnpr/crates/pnpr/src/config.rs`) with an access policy (which pnpr
-  users/teams may use it), a rotation generation, and its exposed endpoint path.
+  users/teams may use it) and its exposed endpoint path; its private cache is
+  namespaced by a digest of the credential, so a rotation re-keys automatically.
   Match an uplink to a fetch by **registry origin**, not by a per-credential
   package glob. The package-pattern routing remains the operator's existing
   `packages`/route-policy concern.
@@ -747,7 +750,7 @@ how pnpr exposes uplinks as registry endpoints.
   collected. An off-allowlist host returns an actionable `400`/`403` naming the
   registry, never a silent anonymous fetch.
 - **Define private access descriptor inputs.** A descriptor has a key input and
-  an authorization gate. Proxied routes use `uplink + generation` as the key
+  an authorization gate. Proxied routes use `uplink + credential-digest` as the key
   input and uplink authorization as the gate. pnpr-hosted routes use the hosted
   route/access-policy identity as the key input and package policy as the gate.
   Descriptor key inputs are HMACed with the server secret before they are used in
@@ -833,7 +836,7 @@ how pnpr exposes uplinks as registry endpoints.
     private cache hit must replay the same canonical uplink-endpoint URLs, not
     raw upstream URLs that require the selected server-owned credential.
   - Bound the number of candidates stored under one base key and evict expired
-    or least-recently-used private candidates first. Uplink generation rotation,
+    or least-recently-used private candidates first. Uplink credential rotation,
     route-policy changes, and unusual workspaces must not make lookup cost grow
     without bound.
   - The HMAC server secret is generated/configured at startup; reuse existing
@@ -909,8 +912,9 @@ per-base-key candidate lists stay bounded.
   per-scope/package patterns, a per-uplink `public: true` flag, or a combination.
   Should `registry.npmjs.org` unscoped packages be the only built-in public
   route, or should other well-known public mirrors be included?
-- **Uplink access + rotation config:** uplinks need a caller access policy and
-  generation/rotation metadata in addition to their existing url/credential.
+- **Uplink access config:** uplinks need a caller access policy in addition to
+  their existing url/credential. Rotation needs no config — the private cache is
+  namespaced by a digest of the credential, so editing it re-keys automatically.
   Should access be inline user lists, named groups/teams, reused package
   permissions, or all of the above?
 - **Uplink registry endpoint prefix:** uplink endpoints share pnpr's root path
