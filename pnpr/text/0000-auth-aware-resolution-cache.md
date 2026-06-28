@@ -275,6 +275,17 @@ operator did not approve: IMDS, internal services, and any future
 metadata endpoint are all unreachable without a config change, rather than
 patched one address range at a time.
 
+Registries are not the only fetch trigger: a resolve also follows **direct-URL
+dependencies** — an `http(s)` tarball spec or a `git`/`git+…` URL — through
+pacquet's tarball and git resolvers. The same boundary therefore rejects any
+`http(s)`/`git` URL appearing in a dependency spec, an `overrides` leaf, or an
+input lockfile's `resolution.tarball` whose origin is off the allowlist (a `git+`
+transport prefix is stripped before the origin check). A semver range or
+`npm:`/`workspace:`/`file:`/`link:` alias never reaches the network and is
+ignored. A direct URL dependency consequently requires the operator to allowlist
+its origin as a public route, the same as any registry — the deliberate
+default-deny posture, extended to every URL that can cause a server-side fetch.
+
 This is strictly stronger than denylisting dangerous hosts (link-local ranges,
 known metadata hostnames): a denylist is default-allow, so every new SSRF target
 is a gap, and it must deliberately keep private/loopback ranges reachable
