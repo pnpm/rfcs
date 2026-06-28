@@ -293,11 +293,26 @@ is a gap, and it must deliberately keep private/loopback ranges reachable
 would target. The allowlist instead lets the operator reach an internal registry
 by *allowlisting that specific registry*, while everything else stays blocked.
 
-One residual remains: an allowlisted *hostname* that resolves to a link-local or
-internal address only at connect time (DNS rebinding) is not caught by an
-origin-level allowlist. Closing that needs a connect-time guard in the HTTP
-client's connector and is a separate hardening step; the allowlist removes the
-far larger surface of arbitrary caller-named hosts.
+Two residuals remain, both closed by the same **connect-time guard** in the HTTP
+client's connector — a separate hardening step:
+
+- **DNS rebinding.** An allowlisted *hostname* that resolves to a link-local or
+  internal address only at connect time is not caught by an origin-level
+  allowlist.
+- **Transitive dependencies.** The request-boundary check validates the
+  *client's* `registry`/`namedRegistries` and direct-URL dependency specs. But a
+  package resolved from an allowlisted registry can declare a *transitive*
+  dependency on an off-allowlist `http(s)`/git URL, which the resolver fetches
+  server-side during the tree walk — outside the request boundary. (This is a
+  mostly-blind SSRF: pnpr fetches the URL but does not echo the response to the
+  caller.)
+
+A connector-level guard that filters the actual connect target IP (blocking
+link-local/private/metadata ranges, including IP-literal URLs that skip DNS)
+closes both for `http(s)` fetches at once; git remotes — resolved via the `git`
+binary rather than the shared client — need their own gate. The origin-level
+allowlist still removes the far larger surface of arbitrary caller-named hosts
+and every direct-input vector.
 
 ### Team-owned upstream credentials (pnpr-managed uplinks)
 
