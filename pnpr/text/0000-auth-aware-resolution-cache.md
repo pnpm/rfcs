@@ -142,7 +142,11 @@ resolve-time tarball fetch, classification chooses **one** request shape:
   pnpr identity is irrelevant to this public route.
 - **Configured public routes:** an operator may declare additional registries,
   scopes, or package patterns public. These are fetched without upstream auth and
-  participate in the global public cache.
+  participate in the global public cache. A rule fails closed on a typo: a
+  present-but-unparsable registry URL or package glob drops the whole rule rather
+  than collapsing an omitted field's "match-any" onto it, so a misconfiguration
+  can only narrow matching, never widen a scoped public route into one that
+  classifies a private registry as public.
 - **Private proxied routes:** a route whose origin matches a configured uplink
   the caller is authorized for is fetched with that uplink's server-owned
   credential — never a client-forwarded one — and recorded under the uplink's
@@ -276,15 +280,25 @@ metadata endpoint are all unreachable without a config change, rather than
 patched one address range at a time.
 
 Registries are not the only fetch trigger: a resolve also follows **direct-URL
-dependencies** — an `http(s)` tarball spec or a `git`/`git+…` URL — through
-pacquet's tarball and git resolvers. The same boundary therefore rejects any
-`http(s)`/`git` URL appearing in a dependency spec, an `overrides` leaf, or an
-input lockfile's `resolution.tarball` whose origin is off the allowlist (a `git+`
-transport prefix is stripped before the origin check). A semver range or
-`npm:`/`workspace:`/`file:`/`link:` alias never reaches the network and is
-ignored. A direct URL dependency consequently requires the operator to allowlist
-its origin as a public route, the same as any registry — the deliberate
-default-deny posture, extended to every URL that can cause a server-side fetch.
+dependencies** — an `http(s)` tarball spec or a git URL — through pacquet's
+tarball and git resolvers. The same boundary therefore rejects any `scheme://`
+URL appearing in a dependency spec, an `overrides` leaf, or an input lockfile's
+`resolution.tarball` whose origin is off the allowlist — every transport, not
+just `http(s)` (`git+rsync://`, `git+ftp://`, and `git+file://`, which would
+read a server-local path, are all gated; a `git+` prefix is stripped first) —
+plus scp-style git remotes (`[user@]host:path`, which carry no scheme but still
+reach a host). A semver range or `npm:`/`workspace:`/`file:`/`link:` alias never
+reaches the network and is ignored. A direct URL dependency consequently
+requires the operator to allowlist its origin as a public route, the same as any
+registry — the deliberate default-deny posture, extended to every URL that can
+cause a server-side fetch. A `.`/`..` path segment is rejected outright, so a
+path-scoped allow (`//host/base/`) cannot be escaped to a sibling path.
+
+Redirects are re-validated, not trusted: pnpr's resolution HTTP client installs
+a redirect policy that checks **every redirect hop**'s target against the same
+allowlist, so an allowlisted host that `30x`-redirects to an off-allowlist
+target fails before the redirected fetch (with the target URL redacted to
+scheme+host in the error, so a presigned-URL token can't leak through it).
 
 This is strictly stronger than denylisting dangerous hosts (link-local ranges,
 known metadata hostnames): a denylist is default-allow, so every new SSRF target
@@ -341,9 +355,13 @@ different uplinks for different clients depending on each client's registry
 config, and a single uplink can serve whatever packages its upstream serves.
 
 A credential is attached **only** to fetches whose origin matches the uplink's
-own configured origin. A tarball host taken from a packument's `dist.tarball` is
-untrusted input and never causes pnpr to send the packument-serving uplink's
-credential to that host; see [Split-domain registries](#split-domain-registries-separate-tarball-host).
+own configured origin, **and only over the uplink's own scheme**. Origin
+matching nerf-darts the URL, which strips the scheme, so an `http://host` fetch
+would otherwise be handed an `https://host` uplink's token and leak it in
+cleartext; a scheme mismatch instead falls through to an anonymous public fetch.
+A tarball host taken from a packument's `dist.tarball` is untrusted input and
+never causes pnpr to send the packument-serving uplink's credential to that
+host; see [Split-domain registries](#split-domain-registries-separate-tarball-host).
 
 - callers authenticate to pnpr as they already can with pnpr bearer tokens;
 - pnpr, not the client, supplies the uplink's upstream credential when the caller
@@ -418,12 +436,19 @@ registry endpoints** rather than opaque per-tarball gateway URLs:
   lockfile across a public registry and an internal mirror.
 
 For each selected package, pnpr applies the same route classification when it
-emits streamed package frames and the returned lockfile:
+emits streamed package frames and the returned lockfile — classifying a
+registry-resolved package by its **registry route**, not by its `dist.tarball`
+host. The distinction matters for a split-domain registry (packument and tarball
+on different hosts): keying on the tarball host would misread a private package
+as public and leak its raw upstream URL, so the registry route decides:
 
 - **Public/anonymous route:** emit the upstream `dist.tarball` URL (canonical for
-  the public registry → integrity-only). Public tarballs download directly from
-  the upstream CDN and never traverse pnpr; the route policy is the proof, with
-  no anonymous tarball probe on the hot path.
+  the public registry → integrity-only), **sanitized** first — inline
+  `user:pass@` userinfo is stripped, and a registry package's `dist.tarball` also
+  has its query/fragment dropped, so a presigned/tokenized upstream URL
+  (`?X-Amz-Signature=…`) never reaches a client or the shared cache. Public
+  tarballs download directly from the upstream CDN and never traverse pnpr; the
+  route policy is the proof, with no anonymous tarball probe on the hot path.
 - **Private proxied route:** emit a URL canonical for the uplink's registry
   endpoint, integrity-only relative to the scope's configured
   `https://<pnpr>/~<uplink>` registry. The endpoint fetches from the upstream with
