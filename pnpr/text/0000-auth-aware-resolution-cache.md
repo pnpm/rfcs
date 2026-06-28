@@ -130,16 +130,16 @@ resolved route is either public or carries a private access descriptor.
 The base design must not probe every package twice. For each allowed metadata or
 resolve-time tarball fetch, classification chooses **one** request shape:
 
-- **Built-in npm route:** the official npm registry (`registry.npmjs.org`) is
-  allowlisted and fetched anonymously. An anonymously-successful fetch is public
-  and globally shareable — including scoped names. The
+- **Built-in npm route:** the official npm registry (`registry.npmjs.org`) is a
+  built-in public route — always allowlisted and fetched anonymously, with no
+  configuration required and ahead of any uplink credential for the same origin
+  (public wins). An anonymously-successful fetch is public and globally
+  shareable — including scoped names. The
   [npm scope docs](https://docs.npmjs.com/about-scopes/) note that private
   packages are organization-scoped, but a *private* scoped npm package 404s on an
   anonymous fetch (pnpr forwards no client credential), so it is never resolved
   this way; a private npm dependency must be fronted by a uplink. The caller's
-  pnpr identity is irrelevant to this public route. Operators may disable the
-  built-in for a conservative deployment that allowlists every registry
-  explicitly.
+  pnpr identity is irrelevant to this public route.
 - **Configured public routes:** an operator may declare additional registries,
   scopes, or package patterns public. These are fetched without upstream auth and
   participate in the global public cache.
