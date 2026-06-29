@@ -309,21 +309,23 @@ should not have to store that full tarball URL forever. The selected mount is
 the important fact, not the current public URL of the pnpr deployment.
 
 pnpr should reuse pnpm's named-registry mechanism as the URL indirection layer.
-When a package document is served from one registry surface but the selected
-tarball route belongs to another concrete mount, pnpr should report the required
-mount registry alias to the client. The client can then add or update a
-generated `namedRegistries` entry in `pnpm-workspace.yaml` before writing the
-lockfile:
+When resolution discovers that a package document came through one registry
+surface but the selected concrete mount is another registry identity, the client
+should synthesize the named-registry alias automatically. The user does not need
+to author the alias first. pnpr can report the selected mount identity in the
+resolution response, and the client can add or update the generated
+`namedRegistries` entry in `pnpm-workspace.yaml` before writing the lockfile:
 
 ```yaml
 namedRegistries:
   pnpr-mount-npmjs: https://registry.example.com/~npmjs/
 ```
 
-The lockfile should reuse the same named-registry specifier shape that users can
-already write in manifests, but only as lockfile metadata. For example, when
-`foo@1.0.0` depends on `bar@2.0.0` and pnpr selected the `npmjs` mount for
-`bar`, the snapshot dependency edge can carry the generated registry alias:
+The lockfile should reuse the same named-registry specifier shape that pnpm
+already writes for configured named registries, but only as generated lockfile
+metadata. For example, when `foo@1.0.0` depends on `bar@2.0.0` and pnpr selected
+the `npmjs` mount for `bar`, the snapshot dependency edge can carry the generated
+registry alias:
 
 ```yaml
 snapshots:
@@ -332,21 +334,21 @@ snapshots:
       bar: pnpr-mount-npmjs:bar@2.0.0
 ```
 
-The corresponding package entry should use the same registry-qualified identity
-and still stay a **registry resolution** with integrity, not a
-`TarballResolution` with a hardcoded URL:
+The corresponding package entry should use the existing lockfile package-key
+derivation for that ref and still stay a **registry resolution** with integrity,
+not a `TarballResolution` with a hardcoded URL:
 
 ```yaml
 packages:
-  pnpr-mount-npmjs:bar@2.0.0:
+  bar@pnpr-mount-npmjs:bar@2.0.0:
     resolution:
       integrity: sha512-...
 ```
 
-This requires the lockfile dependency-reference grammar to understand generated
-named-registry refs in addition to today's plain version, alias, and `link:`
-references. Importer dependency versions should accept the same symbolic form
-for direct dependencies resolved through a generated mount alias.
+Direct/importer dependency versions can use the same symbolic form when a root
+dependency resolves through a generated mount alias. This should be handled as
+the same named-registry lockfile mechanism pnpm already uses for aliases such as
+`gh:` and user-configured `namedRegistries`.
 
 If the final package-key encoding differs from this example, it must still keep
 the selected registry alias in lockfile package identity. Two concrete mounts can
@@ -496,12 +498,12 @@ server internals move to the mount model.
    rewrite generic npm `dist.tarball` URLs to that child mount by default.
 6. Teach the resolver allowlist and route classifier to map `registry` and
    `namedRegistries` URLs to mount identities.
-7. Generate reserved `namedRegistries` aliases for concrete mounts selected by
-   pnpr and persist/update them in `pnpm-workspace.yaml` before writing the
-   lockfile.
-8. Extend pnpm/pacquet lockfile dependency refs and package identity to carry
-   generated named-registry aliases for mount-routed registry resolutions instead
-   of concrete tarball URLs.
+7. Generate reserved `namedRegistries` aliases automatically when pnpr
+   resolution selects a concrete mount, and persist/update them in
+   `pnpm-workspace.yaml` before writing the lockfile.
+8. Reuse pnpm's existing named-registry lockfile refs for mount-routed registry
+   resolutions, and keep pacquet's reader, writer, and installer behavior in
+   parity with that format.
 9. Teach install, frozen-lockfile verification, and tarball fetching to resolve
    generated mount aliases through `namedRegistries`.
 10. Add hosted organization mount storage namespaces and make publish/unpublish
@@ -516,8 +518,8 @@ Tests should cover:
 - fallback packuments emitting concrete child mount tarball URLs;
 - pnpm/pacquet resolver output using generated named-registry aliases instead
   of concrete pnpr tarball URLs;
-- parsing generated named-registry refs in snapshot dependencies and importer
-  dependency versions;
+- writing and reading generated named-registry refs in snapshot dependencies and
+  importer dependency versions;
 - same `name@version` packages from different mounts not colliding in
   `packages` or `snapshots`;
 - client-side `pnpm-workspace.yaml` updates adding generated mount aliases
@@ -552,9 +554,9 @@ compatible with npm package names and scopes beneath the mount.
 - Is `~<mount>` the right path syntax for every mount, or should hosted
   organization mounts use a different namespace?
 - Should the config term be `mounts`, `registries`, or `registryMounts`?
-- Should registry-qualified package keys use the same
-  `pnpr-mount-npmjs:bar@2.0.0` shape as dependency refs, or should package
-  identity encode the selected mount another way?
+- Is the existing package-key shape derived from named-registry refs
+  (`bar@pnpr-mount-npmjs:bar@2.0.0`) acceptable for generated mount aliases, or
+  should pnpm add a more explicit package-key encoding?
 - What should the reserved generated alias prefix be, and how should pnpm
   handle an existing user-authored `namedRegistries` entry that collides with
   it?
