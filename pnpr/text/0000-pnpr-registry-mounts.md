@@ -147,8 +147,8 @@ mounts:
         tokenEnv: CORP_NPM_TOKEN
       access: team:acme
 
-  # One URL that routes each package to exactly one concrete mount by an
-  # explicit name pattern. No existence-based fallback.
+  # One URL that routes each package to exactly one concrete mount by the first
+  # matching explicit name pattern. No existence-based fallback.
   main:
     router:
       routes:
@@ -179,9 +179,10 @@ enum RegistryMount {
         access: AccessPolicy,
         cache: CachePolicy,
     },
-    /// Maps package-name patterns to concrete mounts. Each package matches one
-    /// route and resolves to that route's source — authoritatively. A source's
-    /// "not found" or "unavailable" is final; the router never tries another.
+    /// Maps package-name patterns to concrete mounts in declared order. The
+    /// first matching route resolves to that route's source — authoritatively.
+    /// A source's "not found" or "unavailable" is final; the router never
+    /// tries another.
     Router {
         routes: Vec<Route>,
     },
@@ -275,9 +276,10 @@ This is the one-URL convenience of a Verdaccio facade, made safe by being
 **declarative and authoritative** rather than existence-based:
 
 - **One package, one route, one source.** A request resolves the package name
-  against the routes (most-specific match wins; a `**` catch-all is the
-  default), and the matched source is the sole origin for that name's metadata
-  and tarballs.
+  by evaluating the router's routes in declared order. The first route whose
+  patterns match is authoritative; later routes are not consulted even if their
+  patterns would also match. A `**` catch-all is an ordinary route and should be
+  listed last when it is meant to handle only otherwise-unmatched names.
 - **The matched source is authoritative.** If `@acme/foo` matches the `acme`
   route and `acme` returns *not found*, the router returns not found. It does
   **not** consult `npmjs`. A private name therefore can never resolve to a
@@ -588,10 +590,10 @@ server internals move to the mount model.
 5. Serve every mount's tarballs at the canonical path for its own registry base,
    so pnpm's existing canonical-URL reconstruction keeps the host out of the
    lockfile. Do not rewrite or persist concrete-mount tarball URLs.
-6. Implement routers: most-specific pattern match selects one source; the source
-   is authoritative on not-found and on unavailable (return an error, never a
-   `404`); routers own no cache; writes route by pattern and are accepted only
-   when the matched source is hosted.
+6. Implement routers: routes are evaluated in declared order; the first matching
+   route selects one source; the source is authoritative on not-found and on
+   unavailable (return an error, never a `404`); routers own no cache; writes
+   route by pattern and are accepted only when the matched source is hosted.
 7. Teach the resolver allowlist and route classifier to map `registry` and
    `namedRegistries` URLs to mount identities and reject unknown ones.
 8. Add registry identity to pnpm/pacquet lockfile package identity so the same
@@ -617,6 +619,8 @@ Tests should cover:
 - moving a lockfile between pnpr deployments with the same mount IDs without
   package-entry churn;
 - a private route returning not-found NOT falling through to a public source;
+- a private route listed before a catch-all winning by route order, with the
+  catch-all never consulted for that matched package name;
 - a private/matched source being **down** returning an error, never a `404`;
 - hosted organization mounts not falling through to upstreams;
 - an upstream being exactly one URL with no secondary/mirror endpoint behavior;
@@ -665,9 +669,9 @@ package names and scopes beneath the mount.
   organization mounts use a different namespace?
 - Should the config terms be `mounts`/`router`/`routes`, or something else
   (`registries`, `registryMounts`, ...)?
-- Router pattern matching: glob (`@acme/*`, `**`) vs. prefix vs. full
-  parser-combinator patterns, and the precedence rule (most-specific wins vs.
-  first-listed wins) when patterns overlap.
+- Router pattern language: glob (`@acme/*`, `**`) vs. prefix vs. full
+  parser-combinator patterns. Precedence is not an open question: routes are
+  evaluated in declared order and the first matching route wins.
 - What exact lockfile encoding carries registry identity in package identity —
   a registry-qualified package key, a package-to-registry table, or another
   compact form — and how does it interoperate with the existing `name@version`
