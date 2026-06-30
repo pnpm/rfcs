@@ -303,6 +303,42 @@ same concrete source until an operator edits the routes. That is the only thing
 a router does: pick one declared origin. It cannot merge metadata across
 sources, and it cannot fall through between them.
 
+### Router validation
+
+Because routing is first-match-in-order, route order is load-bearing, and a
+misordered router is the one way a *configuration mistake* can reintroduce the
+cross-origin hazard the model otherwise forbids — silently sending a private
+scope to a public origin:
+
+```yaml
+routes:
+  - patterns: ['**']        # catch-all first
+    source: npmjs
+  - patterns: ['@acme/*']   # unreachable: @acme/* already resolves to npmjs
+    source: acme
+```
+
+pnpr must therefore validate every router at config load and **refuse to start
+(and fail a config reload) on an unreachable route**, rather than accept it and
+serve a private name from a public source. The checks are static, because
+pattern-set coverage is decidable for the router's glob language:
+
+- **No shadowed route.** A route whose patterns are fully covered by the union of
+  earlier routes can never match and is rejected. The catch-all-before-a-narrower
+  -route case above is the most important instance; the minimum viable check — a
+  `**` catch-all that is not the last route — already catches the dangerous
+  common mistake, and full earlier-shadows-later coverage detection is the
+  complete form.
+- **No duplicate or contradictory patterns** within one router.
+- **Every `source` resolves** to a defined mount, and a router does not list
+  itself as a source (nor form a cycle, if nesting is ever allowed).
+
+Validation makes a misordered router a startup error an operator sees
+immediately, holding routers to the same "misconfiguration is caught, not
+silent" standard as the rest of the model. An operator who genuinely wants a
+redundant route removes it; pnpr never silently serves the wrong origin because
+a route was placed in the wrong order.
+
 ### Default target and the root facade
 
 The npm registry protocol expects a registry root:
@@ -594,6 +630,9 @@ server internals move to the mount model.
    route selects one source; the source is authoritative on not-found and on
    unavailable (return an error, never a `404`); routers own no cache; writes
    route by pattern and are accepted only when the matched source is hosted.
+   Validate routers at config load — reject shadowed/unreachable routes
+   (especially a non-last `**`), duplicate patterns, and unknown/self sources —
+   and fail closed on a config reload that would introduce one.
 7. Teach the resolver allowlist and route classifier to map `registry` and
    `namedRegistries` URLs to mount identities and reject unknown ones.
 8. Add registry identity to pnpm/pacquet lockfile package identity so the same
@@ -621,6 +660,10 @@ Tests should cover:
 - a private route returning not-found NOT falling through to a public source;
 - a private route listed before a catch-all winning by route order, with the
   catch-all never consulted for that matched package name;
+- config validation rejecting a router with a shadowed/unreachable route (a
+  non-last `**`, or a later route fully covered by earlier ones) and failing a
+  reload that would introduce one, so a private scope can never be misordered
+  onto a public source;
 - a private/matched source being **down** returning an error, never a `404`;
 - hosted organization mounts not falling through to upstreams;
 - an upstream being exactly one URL with no secondary/mirror endpoint behavior;
