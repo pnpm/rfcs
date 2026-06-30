@@ -171,6 +171,11 @@ enum RegistryMount {
     HostedOrg {
         org: OrgId,
         access: AccessPolicy,
+        /// Where this org's packuments and tarballs come from. The default is
+        /// pnpr-native storage that pnpr publishes into; an external projection
+        /// (e.g. bit.cloud's component store) implements the same interface
+        /// read-only and owns its own write path. See "Hosted organization mounts".
+        backend: HostedBackend,
     },
     /// Exactly one external origin. Not a chain and not a set of endpoints:
     /// one URL, one credential generation, one cache namespace.
@@ -210,8 +215,9 @@ made.
 
 ### Hosted organization mounts
 
-A hosted organization mount stores packages on pnpr and serves only that
-organization's hosted registry:
+A hosted organization mount serves only that organization's registry — its
+packuments and tarballs (how those bytes are produced is a backend detail,
+below):
 
 ```text
 GET /~acme/foo
@@ -228,10 +234,44 @@ Hosted organization mounts have no upstream fallback. A request to `/~acme/foo`
 returns `foo` only if the `acme` organization hosts `foo` and the caller is
 authorized to read it.
 
-Publishing, dist-tag updates, unpublish, token policy, audit logs, quotas, and
-billing all naturally attach to the hosted organization mount. This is the
-standalone pnpr product surface, and it is the only mount kind that accepts
-writes.
+**A hosted mount is defined by a backend, not by a storage layout.** The mount
+contract is an interface — given an org and a package name (and version, for a
+tarball), produce the packument and stream the tarball — with writes optional:
+
+```rust
+trait HostedBackend {
+    /// The org's packument for `name`: versions, dist-tags, and each
+    /// version's `dist.integrity`. `None` if the org does not host it.
+    async fn packument(&self, name: &PackageName) -> Result<Option<Packument>>;
+    /// The verified tarball bytes for a resolved `name@version`.
+    async fn tarball(&self, name: &PackageName, version: &Version) -> Result<Option<TarballStream>>;
+    /// Accept a publish. Backends whose write path lives elsewhere leave this
+    /// unimplemented and are read-only.
+    async fn publish(&self, /* manifest, tarball, identity */) -> Result<()> { unsupported() }
+}
+```
+
+pnpr ships a **default backend** that stores packages in pnpr's own
+content-addressed storage and implements `publish`, unpublish, and dist-tag
+updates. This is the standalone pnpr product surface, where token policy, audit
+logs, quotas, and billing attach to the hosted org mount; with the default
+backend, the hosted mount is the only mount kind that accepts writes.
+
+The same mount kind can instead be backed by an **external projection** that
+stores no npm packages of its own. bit.cloud is the motivating case: its registry
+projects a component object store — tarballs generated on demand, packuments
+synthesized from component snaps (hash versions mapped to semver) carrying a
+`componentId` field — and publishing happens through bit's own export flow, not
+pnpr's. Such a backend implements `packument`/`tarball` read-only and leaves
+`publish` to its own pipeline. Everything around the backend is identical
+regardless of which one is plugged in: `/~<org>/` addressing, the
+authorize-at-the-source policy, the cache (a natural fit for memoizing an
+expensive on-the-fly tarball), integrity verification, and the lockfile's
+recorded registry identity.
+
+So "hosted org" is one concept with a pluggable origin of bytes — pnpr-native
+storage by default, an external component/object store when an operator like
+bit.cloud supplies one — not a commitment to pnpr owning the storage.
 
 ### Upstream mounts
 
@@ -565,8 +605,8 @@ router *in addition* would only restrict who may reach public packages through
 
 Cache keys include the concrete mount identity:
 
-- hosted organization packages are stored and cached under the organization
-  mount namespace;
+- hosted organization packuments and tarballs are cached under the organization
+  mount namespace (and stored there by the default storage backend);
 - upstream metadata and tarballs are cached under the upstream mount namespace,
   including credential generation where credentials are configured;
 - routers cache nothing of their own; metadata and tarballs belong to the
@@ -688,9 +728,13 @@ server internals move to the mount model.
    with the format.
 9. Make install, frozen-lockfile verification, and tarball fetching resolve a
    recorded registry identity through config, failing closed when it is absent.
-10. Add hosted organization mount storage namespaces and route publish/unpublish
-    to concrete hosted organization mounts (directly or via a router route that
-    targets a hosted source).
+10. Define the `HostedBackend` interface (packument + tarball, optional publish)
+    and ship the default pnpr-native storage backend with its own storage
+    namespaces; route publish/unpublish to hosted mounts whose backend supports
+    writes (directly or via a router route that targets a hosted source).
+    Keep the serving, cache, integrity, auth, and identity layers backend-agnostic
+    so an external projection (e.g. bit.cloud's component store) can implement the
+    interface read-only.
 11. Wire the configurable default target for the path-less base, with
     publish-to-the-path-less-base allowed only when the resolved target writes
     to a hosted org.
@@ -713,6 +757,9 @@ Tests should cover:
   onto a public source;
 - a private/matched source being **down** returning an error, never a `404`;
 - hosted organization mounts not falling through to upstreams;
+- a hosted mount backed by an external read-only projection serving packuments
+  and tarballs through the same routing/auth/cache/identity path as the default
+  storage backend, and rejecting writes it does not implement;
 - an upstream being exactly one URL with no secondary/mirror endpoint behavior;
 - private upstream mounts keeping credentials server-side;
 - a private source's access policy enforced both through a router and via the
