@@ -4,9 +4,9 @@
 
 pnpr should model every addressable registry origin as a **registry mount**. A
 mount owns one clear origin policy: a pnpr-hosted organization registry, an
-upstream registry, or a **mirror group** of byte-equivalent members. pnpr can
-also expose automatically derived **blended compatibility endpoints** that
-overlay a private mount on a public fallback. Named mounts are exposed at
+upstream registry, or a **mirror group** of byte-equivalent members. A private
+mount can additionally opt in to a derived **blended compatibility endpoint**
+that overlays it on a public fallback. Named mounts are exposed at
 `https://<pnpr>/~<mount>/`, so every origin has an explicit identity in the URL,
 in pnpr's internal routing, and in client resolution.
 
@@ -95,9 +95,10 @@ The desired outcome is a design where:
 - a mirror group can serve byte-equivalent mirrors of one origin;
 - private packages are declared through named registries that point at strict
   private mounts;
-- a deployment can expose derived `/~~<mount>` blended endpoints for
+- a private mount can opt in to a derived `/~~<mount>` blended endpoint for
   Verdaccio/bit.cloud-style backward compatibility, without making blended
-  fallback the recommended model;
+  fallback the recommended model or exposing it on mounts that did not ask for
+  it;
 - the root path is a configurable default target, never the internal primitive.
 
 ## Detailed Explanation
@@ -111,15 +112,17 @@ ID and is available at its strict endpoint:
 https://<pnpr>/~<mount>/
 ```
 
-When a public fallback is configured, pnpr may also expose a derived blended
-compatibility endpoint for private mounts:
+When a private mount opts in by naming a public fallback, pnpr also exposes a
+derived blended compatibility endpoint for that mount:
 
 ```text
 https://<pnpr>/~~<mount>/
 ```
 
 The double-tilde endpoint is not a second storage/cache namespace. It is a
-facade over the strict private mount plus the configured public fallback.
+facade over the strict private mount plus that mount's declared public fallback.
+It exists only for mounts that opt in; mounts that do not are reachable only at
+their strict `~<mount>` endpoint.
 
 Mount IDs are pnpr route names, not npm package scopes. They must be path-safe,
 operator-controlled identifiers. The leading `~` keeps mount routes out of the
@@ -182,9 +185,11 @@ enum RegistryMount {
     MirrorGroup {
         members: Vec<MountId>,
     },
-    /// Derived Verdaccio-style facade: serve a private mount first, then fall
-    /// back to a public mount. Members are NOT byte-equivalent, so the first
-    /// match shadows later ones. Integrity pinning is the provenance backstop.
+    /// Derived Verdaccio-style facade for a private mount that opted in by
+    /// declaring `blendedFallback`. Serve the private mount first, then fall
+    /// back to its named public mount. Members are NOT byte-equivalent, so the
+    /// first match shadows later ones. Integrity pinning is the provenance
+    /// backstop. Derived per opted-in mount, not constructed directly.
     BlendedEndpoint {
         private: MountId,
         fallback: MountId,
@@ -292,26 +297,34 @@ declare private dependencies with that named registry in `package.json`. Blended
 endpoints exist for legacy clients that still expect one registry URL to serve
 private packages first and public npm second.
 
-When a public fallback mount is configured, pnpr may derive a blended endpoint
-for each private mount:
+A private mount opts in to a blended endpoint by naming the public mount it
+falls back to. pnpr derives the `/~~<mount>/` facade only for mounts that do so:
 
 ```yaml
 mounts:
   acme:
     hostedOrg:
       org: acme
+    blendedFallback: npmjs   # opt-in: derive /~~acme/ = acme, then npmjs
 
   npmjs:
     upstream:
       url: https://registry.npmjs.org/
       public: true
 
-publicFallback: npmjs
+  corp:
+    upstream:                # no blendedFallback: reachable only at /~corp/
+      url: https://npm.corp.example/
 
 # Derived by pnpr:
 # /~acme/  => strict hosted organization registry
 # /~~acme/ => acme first, then npmjs
+# /~corp/  => strict private upstream (no blended endpoint)
 ```
+
+The fallback is named per mount, not deployment-wide, so different private
+mounts may overlay different public fallbacks, and a mount with no
+`blendedFallback` has no blended endpoint at all.
 
 Semantics:
 
@@ -342,9 +355,11 @@ Semantics:
   "name a hosted mount" error as any other non-hosted target.
 
 Blended mode is the only place cross-origin (non-equivalent) selection happens.
-It is opt-in through the configured public fallback, derived mechanically from a
-strict private mount, and confined to one private-over-public overlay rather than
-an arbitrary ordered chain.
+It is opt-in per mount via that mount's `blendedFallback`, derived mechanically
+from a strict private mount, and confined to one private-over-public overlay
+rather than an arbitrary ordered chain. A mount never gains a blended endpoint
+unless it names a fallback, so the dependency-confusion surface is created only
+where an operator explicitly asks for it.
 
 ### Default mount and the root facade
 
@@ -368,8 +383,8 @@ Rules:
 - **The default is an alias to one named target, never an ad-hoc blend.** Aliasing
   the root to a strict mount adds an address, not ambiguity: `/foo` *is*
   `~npmjs/foo`. The only way the root serves more than one origin is when the
-  default target is a derived blended endpoint such as `~~acme`, which is opt-in
-  through the configured public fallback and named in config.
+  default target is a derived blended endpoint such as `~~acme`, which exists
+  only because that mount opted in via `blendedFallback` and is named in config.
 - **There is no implicit hosted uplink.** pnpr does not ship a magic `~hosted`
   default. Hosted orgs are explicit `~<org>` mounts. A deployment that wants the
   root to be its hosted org sets `defaultTarget: acme`; `pnpr init` for a
@@ -619,10 +634,11 @@ boundary explicit without a process per registry.
 Implementation should be staged so compatibility remains intact while the
 server internals move to the mount model.
 
-1. Add a `RegistryMount` config model (`HostedOrg`, `Upstream`, `MirrorGroup`)
-   plus derived `BlendedEndpoint` facades, and compile existing
-   `uplinks`/`packages` config into it; a publish-private/fall-back-public config
-   compiles into a strict private mount plus `/~~<mount>` compatibility endpoint.
+1. Add a `RegistryMount` config model (`HostedOrg`, `Upstream`, `MirrorGroup`,
+   plus a per-mount `blendedFallback` that derives a `BlendedEndpoint` facade),
+   and compile existing `uplinks`/`packages` config into it; a
+   publish-private/fall-back-public config compiles into a strict private mount
+   that opts in to a `/~~<mount>` compatibility endpoint.
 2. Introduce an internal `MountOrigin` value that route handlers construct for
    every packument and tarball request.
 3. Unify the normal tarball path and the `~<uplink>` tarball path into one
@@ -659,6 +675,8 @@ Tests should cover:
   package-entry churn;
 - mirror groups serving a tarball from any member and verifying one integrity;
 - strict private mounts used through named-registry package.json declarations;
+- `/~~<mount>` derived only for mounts that declare `blendedFallback`, and absent
+  for mounts that do not;
 - `/~~<mount>` blended compatibility endpoints: private shadowing public;
   integrity mismatch failing closed when the selected origin changes between
   packument and tarball fetch; public-member redirect not persisted and never
@@ -708,8 +726,8 @@ package names and scopes beneath the mount.
   deployment move updates one setting?
 - Should mirror-group membership be verifiable (pnpr asserting equivalence) or
   purely an operator declaration?
-- Is `/~~<mount>` the right syntax for derived blended compatibility endpoints,
-  and should pnpr expose them automatically for every private mount whenever a
-  public fallback is configured?
+- Is `/~~<mount>` the right syntax for derived blended compatibility endpoints?
+  (Blending is per-mount opt-in via `blendedFallback`, never auto-exposed for
+  every private mount.)
 - How much Verdaccio config compatibility should pnpr preserve, and for how
   long?
