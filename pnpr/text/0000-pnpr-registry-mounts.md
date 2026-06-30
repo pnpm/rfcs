@@ -104,7 +104,8 @@ The desired outcome is a design where:
   exactly one of them by an explicit name pattern — never by guessing;
 - private packages are declared (by scope/pattern or named registry), so a
   private name can never silently resolve to a public origin;
-- the root path is a configurable default target, never the internal primitive.
+- the path-less base URL is an optional, configurable default target, never a
+  privileged registry — every mount is already a registry root in its own right.
 
 ## Detailed Explanation
 
@@ -122,9 +123,9 @@ operator-controlled identifiers. The leading `~` keeps mount routes out of the
 normal npm package-name space and lets `@scope/pkg` keep its existing meaning
 under every mount.
 
-The root path is available as a configurable default surface, but internally it
-always resolves to one named mount target (see
-[Default target and the root facade](#default-target-and-the-root-facade)).
+The path-less base URL (no mount in the path) resolves to one named mount via a
+configurable default target (see
+[Default target and the path-less base](#default-target-and-the-path-less-base)).
 
 Illustrative config:
 
@@ -339,45 +340,63 @@ silent" standard as the rest of the model. An operator who genuinely wants a
 redundant route removes it; pnpr never silently serves the wrong origin because
 a route was placed in the wrong order.
 
-### Default target and the root facade
+### Default target and the path-less base
 
-The npm registry protocol expects a registry root:
+Every `~<mount>/` is already a complete npm registry root. The npm protocol
+treats whatever base URL a client is configured with as the registry, so
 
 ```text
-GET /foo
-GET /foo/-/foo-1.0.0.tgz
+GET  <base>/foo
+GET  <base>/foo/-/foo-1.0.0.tgz
 ```
 
-pnpr keeps this root surface for compatibility, configured as a **default
-target** that resolves to exactly one named mount — a concrete mount or a
-router:
+work identically whether `<base>` is `https://<pnpr>/~main/`,
+`https://<pnpr>/~acme/`, or anything else. npm does not require the registry to
+live at the domain root — a path prefix is a perfectly valid registry. So mounts
+are not "sub-registries" under a privileged real root; each mount *is* a root.
+
+The only base that does not name a mount is the **path-less** one — a client
+configured with `registry=https://<pnpr>/` and no mount in the path. That base
+needs something to answer it, so pnpr lets an operator alias it to one named
+mount via a **default target**:
 
 ```yaml
 defaultTarget: main        # or: npmjs, acme, ...
 ```
 
+This is purely a convenience for clients (and tools like a bare `npm publish`)
+configured with the host and no mount path; it adds an address, not a privileged
+registry.
+
 Rules:
 
-- **The default is an alias to one named mount.** `/foo` *is* `~main/foo`. If
-  the default is a concrete mount, the root serves that one origin; if it is a
-  router, the root routes by the router's declared patterns. Either way there is
-  no ad-hoc blending and no existence-based fallback.
+- **The path-less base is optional.** A deployment may omit `defaultTarget`
+  entirely and expose only `~<mount>/` URLs; the bare host then has no registry
+  and clients must address a mount. The default target exists only to give the
+  path-less base a meaning when a deployment wants one.
+- **The default is an alias to one named mount.** With `defaultTarget: main`,
+  `<base>/foo` *is* `~main/foo`. If the default is a concrete mount, the
+  path-less base serves that one origin; if it is a router, it routes by the
+  router's declared patterns. Either way there is no ad-hoc blending and no
+  existence-based fallback.
 - **There is no implicit hosted uplink.** pnpr does not ship a magic `~hosted`
   default. Hosted orgs are explicit `~<org>` mounts. A deployment that wants the
-  root to be its hosted org sets `defaultTarget: acme`; `pnpr init` for a
-  single-org deployment may scaffold that line into generated config, but it is
-  visible config, not built-in behavior. This keeps the product model
+  path-less base to be its hosted org sets `defaultTarget: acme`; `pnpr init`
+  for a single-org deployment may scaffold that line into generated config, but
+  it is visible config, not built-in behavior. This keeps the product model
   (organizations, not "the hosted implementation") and the multi-tenant case
   (no single default org) coherent.
-- **Publish-to-root is allowed only when the resolved target writes to a hosted
-  org.** A hosted-org default accepts writes; a router default accepts a write
-  only if the published name's route targets a hosted source. An upstream
-  default, or a router route that targets an upstream, rejects the publish with
+- **An unqualified publish (to the path-less base) is allowed only when the
+  resolved target writes to a hosted org.** A hosted-org default accepts writes;
+  a router default accepts a write only if the published name's route targets a
+  hosted source. An upstream default, or a router route that targets an
+  upstream, rejects the publish with
   a clear "name a hosted mount" error, so a publish can never silently land in
   the wrong place.
 
-This makes the root path a product choice instead of the internal architecture.
-Small deployments can keep one root URL (typically a router); standalone
+This makes the path-less base a product choice instead of the internal
+architecture. Small deployments can point clients at one base URL (typically a
+router mount); standalone
 deployments can point users at `~<org>` registries directly.
 
 ### Client routing and lockfiles
@@ -645,8 +664,9 @@ server internals move to the mount model.
 10. Add hosted organization mount storage namespaces and route publish/unpublish
     to concrete hosted organization mounts (directly or via a router route that
     targets a hosted source).
-11. Wire the configurable default target / root facade, with publish-to-root
-    allowed only when the resolved target writes to a hosted org.
+11. Wire the configurable default target for the path-less base, with
+    publish-to-the-path-less-base allowed only when the resolved target writes
+    to a hosted org.
 
 Tests should cover:
 
@@ -672,7 +692,9 @@ Tests should cover:
   error instead of falling back to the root registry;
 - cache namespace isolation by mount and credential generation;
 - router writes accepted only when the matched route targets a hosted source;
-- publish-to-root rejected when the resolved target does not write to a hosted org.
+- an unqualified publish to the path-less base rejected when the resolved target
+  does not write to a hosted org, and the path-less base disabled entirely when
+  no `defaultTarget` is set.
 
 ## Prior Art
 
