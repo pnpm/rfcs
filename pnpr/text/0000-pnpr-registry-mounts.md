@@ -4,11 +4,22 @@
 
 pnpr should model every addressable registry surface as a **registry mount**.
 A mount owns one clear origin policy: a pnpr-hosted organization registry, an
-upstream registry, or a fallback/group that delegates to other mounts. Named
-mounts are exposed at `https://<pnpr>/~<mount>/`, so hosted organizations,
-server-owned upstream credentials, and composed fallback registries all share
-one architecture. Fallback becomes composition over concrete registry mounts,
-not a special "try these uplinks" behavior inside the default registry facade.
+upstream registry, a **mirror group** of byte-equivalent members, or a
+**blended default** that overlays a hosted registry on a public fallback. Named
+mounts are exposed at `https://<pnpr>/~<mount>/`, so every origin has an
+explicit identity in the URL, in pnpr's internal routing, and in client
+resolution.
+
+The default model is **strict**: a package is served from exactly one concrete
+mount, addressed explicitly. Cross-origin composition is opt-in and split into
+two clearly different modes so the dangerous one (same name from two origins
+with different bytes) is never the default and is always obvious in config.
+
+Lockfiles stay deployment-portable by reusing pnpm's existing tarball-URL
+reconstruction rather than persisting pnpr URLs. The one genuinely new lockfile
+requirement is recording **registry identity** in package identity, so the same
+`name@version` from two different mounts cannot collide — a gap that exists in
+pnpm today.
 
 ## Motivation
 
@@ -23,7 +34,7 @@ pnpm now has named registries and pnpr already has origin-qualified
 space. The client, the resolver, and the server can all carry a registry
 identity explicitly instead of rediscovering it by walking a fallback chain.
 
-Fallback chains are a poor default abstraction across different security and
+Fallback chains are a poor *default* abstraction across different security and
 provenance domains:
 
 - the same `name@version` can exist in two registries with different bytes,
@@ -34,6 +45,36 @@ provenance domains:
   content for the same package name;
 - server-owned upstream credentials need a stable route identity so they never
   leak into client lockfiles or another mount's cache.
+
+### pnpm cannot represent the same `name@version` from two registries today
+
+This is not only a pnpr concern — it is a concrete, pre-existing gap in pnpm's
+lockfile model, and it is the strongest motivation for first-class registry
+identity.
+
+pnpm already has a named-registries feature (`gh:`, `jsr:`, and user-configured
+`namedRegistries`). When the resolver resolves such a dependency it knows the
+registry it came from, but the package id it builds drops that fact:
+
+```ts
+// resolving/npm-resolver/src/index.ts (pickFromSimpleRegistry)
+id: `${pickedPackage.name}@${pickedPackage.version}` as PkgResolutionId,
+```
+
+The `registryName` is returned in the resolver result but never reaches the
+lockfile key — it is consumed only inside `npm-resolver`. The package key is
+`name@version`, and the `packages`/`snapshots` maps hold exactly one entry per
+key. So two registries serving the same `name@version` with different bytes
+**collide on one key**, and whichever resolves first wins; pnpm does not error,
+it silently treats them as the same package.
+
+A single registry still round-trips correctly because the stored resolution is a
+`TarballResolution` carrying the real per-registry tarball URL. The gap is
+strictly: two registries, same `name@version`, in one graph. It is latent today
+because named registries are niche, but the mount model surfaces it routinely,
+so the lockfile must carry registry identity.
+
+### Product framing
 
 If pnpr is launched as a standalone product, the default product primitive is
 not "hosted" as an implementation detail. It is an organization registry:
@@ -47,9 +88,11 @@ The desired outcome is a design where:
 - `~acme` can serve only packages hosted by the `acme` organization;
 - `~npmjs` can serve the public npm registry;
 - `~corp` can serve a private upstream with pnpr-managed credentials;
-- `~public` can be a fallback/group mount over other mounts;
-- the root path can remain a compatibility/default facade, without being the
-  internal primitive.
+- a mirror group can serve byte-equivalent mirrors of one origin;
+- a deployment can opt into a blended default that publishes private packages
+  and falls back to public npm, in the familiar Verdaccio/bit.cloud style,
+  without sacrificing lockfile portability or fail-closed integrity;
+- the root path is a configurable default mount, never the internal primitive.
 
 ## Detailed Explanation
 
@@ -67,8 +110,9 @@ operator-controlled identifiers. The leading `~` keeps mount routes out of the
 normal npm package-name space and lets `@scope/pkg` keep its existing meaning
 under every mount.
 
-The root path remains available as a compatibility/default surface, but
-internally it should resolve to a mount or a facade over mounts.
+The root path is available as a configurable default surface, but internally it
+always resolves to one concrete mount (see [Default mount and the root
+facade](#default-mount-and-the-root-facade)).
 
 Illustrative config:
 
@@ -91,16 +135,19 @@ mounts:
         tokenEnv: CORP_NPM_TOKEN
       access: team:acme
 
-  public:
-    fallback:
+  # Byte-equivalent mirrors of the same origin. Any member may serve a
+  # tarball, because every member is declared to hold identical bytes.
+  npm-mirrors:
+    mirrorGroup:
       members:
-        - acme
         - npmjs
+        - npmjs-backup
 
-defaultMount: public
+defaultMount: npmjs
 ```
 
-The syntax is illustrative. The required model is:
+The syntax is illustrative. The required model keeps the two grouping modes as
+distinct types so the dangerous one is never reachable by accident:
 
 ```rust
 enum RegistryMount {
@@ -114,8 +161,17 @@ enum RegistryMount {
         access: AccessPolicy,
         cache: CachePolicy,
     },
-    Fallback {
+    /// Members are declared byte-equivalent for every `name@version`.
+    /// Selecting any member is safe; tarballs may be served from any of them.
+    MirrorGroup {
         members: Vec<MountId>,
+    },
+    /// Opt-in Verdaccio-style overlay: serve a hosted mount first, then fall
+    /// back to a public mount. Members are NOT byte-equivalent, so the first
+    /// match shadows later ones. Integrity pinning is the provenance backstop.
+    BlendedDefault {
+        hosted: MountId,
+        fallback: MountId,
     },
 }
 ```
@@ -149,13 +205,14 @@ GET /~acme/@scope/pkg/-/pkg-1.0.0.tgz
 name. This avoids a generic `~hosted` URL that describes implementation rather
 than ownership.
 
-Hosted organization mounts have no upstream fallback by default. A request to
-`/~acme/foo` should return `foo` only if the `acme` organization hosts `foo` and
-the caller is authorized to read it.
+Hosted organization mounts have no upstream fallback. A request to `/~acme/foo`
+returns `foo` only if the `acme` organization hosts `foo` and the caller is
+authorized to read it.
 
 Publishing, dist-tag updates, unpublish, token policy, audit logs, quotas, and
 billing all naturally attach to the hosted organization mount. This is the
-standalone pnpr product surface.
+standalone pnpr product surface, and it is the only mount kind that accepts
+writes.
 
 ### Upstream mounts
 
@@ -176,224 +233,221 @@ This is the current `~<uplink>` idea generalized into the primary origin model.
 The name "uplink" can remain as a compatibility term, but architecturally it is
 a registry mount.
 
-### Fallback mounts
+### Mirror groups
 
-A fallback mount delegates to an ordered list of other registry mounts:
+A mirror group composes members that are **declared byte-equivalent** for every
+`name@version` — the same origin behind several hosts, or a primary plus
+backups:
+
+```yaml
+mounts:
+  npm-mirrors:
+    mirrorGroup:
+      members:
+        - npmjs
+        - npmjs-backup
+```
+
+Because the members are equivalent, there is no provenance question: a packument
+may be assembled from whichever member answers first, and a tarball may be
+served from any member, since every member is asserted to return identical bytes
+that satisfy the same `dist.integrity`. A mirror group is the only kind of
+cross-member composition that is safe by construction, which is why it is its
+own type and not a mode of a general fallback.
+
+A mirror group is read-only. It does not own bytes; it forwards to its members.
+Its tarball URL base is the group's own `~<mount>` path, and the bytes are
+reconstructed from the group registry (so the canonical-URL reconstruction in
+[Client routing and lockfiles](#client-routing-and-lockfiles) still applies).
+
+### Blended default mount
+
+Many proxy registries (Verdaccio, bit.cloud, GitHub Packages) let one URL host
+private packages *and* fall back to public npm. This is a genuinely useful UX
+and pnpr supports it — but as an explicit, opt-in mount type whose risks are
+named, not as the default fallback behavior.
+
+A blended default mount overlays one hosted mount on one public fallback mount:
 
 ```yaml
 mounts:
   public:
-    fallback:
-      members:
-        - acme
-        - npmjs
+    blendedDefault:
+      hosted: acme       # private packages published here win
+      fallback: npmjs    # everything else proxies public npm
+
+defaultMount: public
 ```
 
-Fallback is therefore composition over registry surfaces, not a separate
-mechanism that knows how to fetch tarballs itself. A fallback mount does not own
-package bytes. Its job is to select a concrete child mount.
+Semantics:
 
-Child mount authorization is still enforced by the child. A caller who can use
-`~public` does not automatically gain access to `~corp` just because `corp` is
-listed in `public`'s fallback members. The fallback walk skips children the
-caller cannot use or fails according to the configured policy.
+- **First match shadows.** For `GET /~public/foo`, pnpr serves `acme`'s `foo` if
+  it exists, otherwise `npmjs`'s `foo`. The members are not byte-equivalent, so
+  the unselected origin is unreachable through this mount for that name. This is
+  the intended "private overrides public" behavior, and it is also a
+  dependency-confusion surface: whoever can publish to the hosted mount can
+  shadow a public name. That is gated by publish authorization and must be
+  documented, not silent.
+- **Integrity is the provenance backstop.** The packument pins the selected
+  origin's `dist.integrity`. If membership changes between the packument fetch
+  and the tarball fetch and pnpr routes to a different origin, the client's
+  integrity check fails closed — a loud, recoverable error, never silently-wrong
+  bytes. This is the same safety level npm and Verdaccio already operate at.
+- **The fallback member must be public.** See [Serving tarballs in blended
+  mode](#serving-tarballs-in-blended-mode): blended mode relies on serving or
+  redirecting tarballs at a canonical path, and a client cannot follow a
+  redirect into a private upstream because the upstream credential is
+  server-side. The hosted member is served by pnpr directly; the fallback member
+  must be a public mount.
 
-For a packument request:
+Blended mode is the only place cross-origin (non-equivalent) selection happens,
+it is opt-in, and it is confined to one hosted-over-public overlay rather than an
+arbitrary ordered chain.
 
-```text
-GET /~public/foo
-```
+### Default mount and the root facade
 
-pnpr tries each child mount according to the fallback policy. If `~acme/foo`
-does not exist and `~npmjs/foo` exists, the selected concrete origin is
-`~npmjs`.
-
-For generic npm registry clients, the response can rewrite `dist.tarball` URLs
-to the concrete selected mount:
-
-```text
-https://<pnpr>/~npmjs/foo/-/foo-1.0.0.tgz
-```
-
-not back to:
-
-```text
-https://<pnpr>/~public/foo/-/foo-1.0.0.tgz
-```
-
-This keeps tarball provenance stable. The tarball request is now explicitly for
-the mount whose packument selected the version and declared `dist.integrity`.
-It does not re-run fallback and cannot silently switch registries.
-
-pnpm/pacquet lockfiles should not have to persist that concrete URL. The
-concrete mount URL is a wire-level npm registry detail. Resolver output intended
-for pnpm/pacquet should preserve the same selected mount provenance through a
-symbolic registry identity, described below.
-
-Fallback mounts may still be useful for compatibility and mirrors:
-
-- "host organization packages first, then npmjs";
-- "try the local public mirror, then npmjs";
-- "try these equivalent upstream mirrors in order".
-
-When a fallback is configured as a true mirror group whose members are declared
-equivalent for package identity and bytes, pnpr may choose to keep group URLs
-for tarballs. That should be an explicit mirror-group mode, not the default
-fallback behavior.
-
-Fallback mounts are read-only by default. Writes should target a concrete hosted
-organization mount unless pnpr later adds an explicit write-routing policy.
-
-### Root registry facade
-
-The npm registry protocol expects a registry root such as:
+The npm registry protocol expects a registry root:
 
 ```text
 GET /foo
 GET /foo/-/foo-1.0.0.tgz
 ```
 
-pnpr can keep this root surface for compatibility. It should be configured as a
-default mount or facade over mounts:
+pnpr keeps this root surface for compatibility, configured as a **default
+mount** that resolves to exactly one concrete mount:
 
 ```yaml
-defaultMount: public
+defaultMount: npmjs        # or: a hosted org, a mirror group, or a blended mount
 ```
 
-If the default mount is concrete, root tarball URLs can remain root-relative.
-If the default mount is a fallback/group, pnpr should prefer concrete mount
-tarball URLs in packuments for generic npm clients so origin identity remains
-explicit after the packument is served.
+Rules:
+
+- **The default is an alias to one concrete mount, never an ad-hoc blend.**
+  Aliasing the root to a single mount adds an address, not ambiguity: `/foo`
+  *is* `~npmjs/foo`. The only way the root serves more than one origin is when
+  the default mount is itself a blended mount, which is opt-in and named.
+- **There is no implicit hosted uplink.** pnpr does not ship a magic `~hosted`
+  default. Hosted orgs are explicit `~<org>` mounts. A deployment that wants the
+  root to be its hosted org sets `defaultMount: acme`; `pnpr init` for a
+  single-org deployment may scaffold that line into generated config, but it is
+  visible config, not built-in behavior. This keeps the product model
+  (organizations, not "the hosted implementation") and the multi-tenant case
+  (no single default org) coherent.
+- **Publish-to-root is allowed only when the default is a hosted org** (or a
+  blended mount, which routes writes to its hosted member). If the default is an
+  upstream or a mirror group, unqualified publishes are rejected with a clear
+  "name a hosted mount" error, so a publish can never silently land in the wrong
+  place.
 
 This makes the root path a product choice instead of the internal architecture.
-Small deployments can keep the Verdaccio-like root behavior, while standalone
-pnpr deployments can point users at `~<org>` registries directly.
+Small deployments can keep one root URL; standalone deployments can point users
+at `~<org>` registries directly.
 
-### Named registries and resolver installs
+### Client routing and lockfiles
 
-The resolver should treat registry identity as a mount identity.
-
-When a client sends a default registry or named registry, pnpr maps that URL to
-one configured mount. A registry URL that does not map to an allowlisted mount
-is rejected before any server-side fetch.
-
-Examples:
+The resolver treats registry identity as mount identity. A client maps scopes
+and named registries to mount URLs, and pnpr rejects any registry URL that does
+not map to an allowlisted mount before any server-side fetch:
 
 ```ini
-registry=https://registry.example.com/~public/
+registry=https://registry.example.com/~npmjs/
 @acme:registry=https://registry.example.com/~acme/
 @corp:registry=https://registry.example.com/~corp/
 ```
 
-With this model, pnpr does not need to fetch everything through the same
-registry facade. Different scopes and named registries can naturally resolve
-against different mounts, each with its own auth, cache, and tarball URL base.
+With explicit per-scope routing, composition happens in the client's registry
+config, deterministically and visibly, rather than by server-side guessing.
+Different scopes resolve against different mounts, each with its own auth, cache,
+and tarball URL base.
 
-Resolver output follows the same rule as registry packuments:
+**Lockfiles are already deployment-portable — reuse that, do not rewrite URLs.**
+pnpm does not persist canonical registry tarball URLs. It stores integrity and
+rebuilds the URL at install time from the registry config:
 
-- public direct routes may keep direct upstream tarball URLs when the
-  auth-aware routing policy allows it;
-- private or pnpr-hosted routes use pnpr mount identities;
-- fallback/group routes record the selected concrete mount identity.
+```ts
+// lockfile/utils/src/pkgSnapshotToResolution.ts
+let registry = (name[0] === '@') ? registries[name.split('/')[0]] : ''
+if (!registry) registry = registries.default
+tarball = getNpmTarballUrl(name, version, { registry })   // host comes from config
+```
 
-### Generated named registries and lockfiles
+and the writer drops any tarball URL that `isCanonicalRegistryTarballUrl`
+recognizes as the canonical shape for its registry
+(`resolving/tarball-url/src/index.ts`). Its docstring even anticipates a proxy
+serving tarballs on a non-canonical path: rewrite the resolved tarball to
+`getNpmTarballUrl(name, version, { registry })` so nothing host-specific is
+persisted.
 
-pnpm/pacquet resolver installs should avoid hardcoding pnpr deployment URLs in
-lockfile package entries. A lockfile that was resolved through:
+So as long as each mount serves tarballs at the **canonical path for its own
+registry base** (`https://<pnpr>/~npmjs/foo/-/foo-1.0.0.tgz` is canonical for
+base `https://<pnpr>/~npmjs/`), pnpm already:
+
+- keeps the pnpr host out of the lockfile;
+- reconstructs the correct per-mount tarball URL from the client's mount config;
+- lets the same lockfile move between pnpr deployments by changing only the
+  registry/mount base in config.
+
+This is why an earlier draft's machinery — pnpr rewriting `dist.tarball` to a
+concrete mount and the client synthesizing a `namedRegistries` alias table into
+`pnpm-workspace.yaml` — is unnecessary for the strict model and is dropped.
+
+**The one new lockfile requirement: registry identity in package identity.**
+What pnpm's reconstruction cannot express is *which* mount a package came from
+when scope alone is ambiguous — the same `name@version` from two mounts (and
+split-within-a-scope, e.g. `@acme/foo` hosted but `@acme/bar` from npm). For
+those, the lockfile must record the registry identity in the package key so the
+two cannot collide, and so reconstruction targets the right base. This is the
+gap described in the [Motivation](#pnpm-cannot-represent-the-same-nameversion-from-two-registries-today),
+and the prior art is vlt's DepID, which makes registry a first-class component
+of package identity:
 
 ```text
-https://registry.example.com/~npmjs/foo/-/foo-1.0.0.tgz
+registry··x@1.2.3       # default registry (empty registry component)
+registry·npmjs·x@1.2.3  # the npmjs registry — a distinct key from the default
 ```
 
-should not have to store that full tarball URL forever. The selected mount is
-the important fact, not the current public URL of the pnpr deployment.
+The default registry uses an empty component, so ordinary dependencies carry no
+extra noise; only a non-default registry qualifies the key. The lockfile stores
+the registry *name/identity*, not a URL; the name→URL mapping lives in config
+(`namedRegistries` / mount config), and a missing entry fails closed with a
+configuration error rather than silently recomputing provenance.
 
-pnpr should reuse pnpm's named-registry mechanism as the URL indirection layer.
-When resolution discovers that a package document came through one registry
-surface but the selected concrete mount is another registry identity, the client
-should synthesize the named-registry alias automatically. The user does not need
-to author the alias first. pnpr can report the selected mount identity in the
-resolution response, and the client can add or update the generated
-`namedRegistries` entry in `pnpm-workspace.yaml` before writing the lockfile:
+The exact key encoding is a design detail to settle with the pnpm lockfile
+maintainers (see [Unresolved Questions](#unresolved-questions-and-bikeshedding)),
+but the invariant is fixed: registry identity is part of package identity, and
+no tarball URL is persisted for canonical registry resolutions.
 
-```yaml
-namedRegistries:
-  pnpr-mount-npmjs: https://registry.example.com/~npmjs/
-```
+### Serving tarballs in blended mode
 
-The lockfile should reuse the same named-registry specifier shape that pnpm
-already writes for configured named registries, but only as generated lockfile
-metadata. For example, when `foo@1.0.0` depends on `bar@2.0.0` and pnpr selected
-the `npmjs` mount for `bar`, the snapshot dependency edge can carry the generated
-registry alias:
+Blended mode keeps the lockfile just as portable as the strict model, because
+only the *persisted* `dist.tarball` must be canonical — the bytes can be served
+from anywhere at fetch time:
 
-```yaml
-snapshots:
-  foo@1.0.0:
-    dependencies:
-      bar: pnpr-mount-npmjs:bar@2.0.0
-```
+- The packument served at `/~public/foo` selects the concrete origin and pins
+  its `dist.integrity`.
+- `dist.tarball` is written canonical for the `~public` base, so pnpm drops it
+  and later reconstructs `https://<pnpr>/~public/foo/-/foo-1.0.0.tgz`.
+- At fetch time pnpr **routes** that canonical request to the real bytes:
+  - **serve internally** for the hosted member and for any same-host mount (no
+    extra round-trip);
+  - **HTTP-redirect to the public CDN** for the public fallback member, when a
+    deployment wants to offload bandwidth. The redirect `Location` never enters
+    the lockfile, so it may be non-canonical. Redirects are only legal to public
+    targets, because the client has no credentials for a private upstream.
 
-The corresponding package entry should use the existing lockfile package-key
-derivation for that ref and still stay a **registry resolution** with integrity,
-not a `TarballResolution` with a hardcoded URL:
+The redirect is therefore an optional bandwidth optimization for the public
+passthrough, not the mechanism; the mechanism is "canonical persisted URL +
+fetch-time origin routing, with integrity as the backstop."
 
-```yaml
-packages:
-  bar@pnpr-mount-npmjs:bar@2.0.0:
-    resolution:
-      integrity: sha512-...
-```
+### Serving tarballs inside pnpr
 
-Direct/importer dependency versions can use the same symbolic form when a root
-dependency resolves through a generated mount alias. This should be handled as
-the same named-registry lockfile mechanism pnpm already uses for aliases such as
-`gh:` and user-configured `namedRegistries`.
-
-If the final package-key encoding differs from this example, it must still keep
-the selected registry alias in lockfile package identity. Two concrete mounts can
-contain the same package name and version with different bytes or metadata, so
-they cannot collide under one `packages`/`snapshots` key. The important invariant
-is that dependency edges and package entries select one concrete mount without
-relying on a persisted tarball URL.
-
-At install time, the client resolves the package through the generated named
-registry:
-
-```text
-pnpr-mount-npmjs -> https://<current-pnpr>/~npmjs/
-```
-
-If the same lockfile is used against another pnpr deployment with the same mount
-IDs, only the generated `namedRegistries` URLs need to change. Registry-qualified
-dependency refs and package identities do not churn. If a lockfile refers to a
-generated named registry that is absent from the workspace config, the install
-should fail with a clear configuration error instead of falling back to the root
-registry or recomputing provenance.
-
-Generated mount aliases differ from user-authored named registries such as
-`gh:`. They are generated by pnpr from mount IDs, use a reserved prefix so user
-config cannot shadow them, and are scoped to pnpr-routed registry resolutions.
-User-authored named registries still work as today for manifest specifiers and
-ordinary registry selection.
-
-The trigger is not "any arbitrary tarball URL host differs from the package
-document host." Many registries use CDN tarball hosts that are not registry
-origins and cannot serve packuments. The safe trigger is: pnpr's mount selection
-knows the package document came through one mount but the tarball must be served
-through another concrete pnpr mount. In that case the generated named registry
-points at the concrete pnpr mount (`/~npmjs/`, `/~corp/`, ...), not at a raw
-third-party tarball host.
-
-The client should not rewrite `package.json` dependency specifiers to generated
-mount aliases. The generated `namedRegistries` entries are a URL table for the
-lockfile and install pipeline. They are not a change to the user's authored
-dependency declarations.
-
-Generic npm clients that only consume packuments cannot use this symbolic
-lockfile mechanism, so registry responses may still contain concrete
-`dist.tarball` URLs. The no-hardcoded-URL requirement applies to pnpm/pacquet
-resolver output and lockfile persistence.
+pnpr currently has two tarball-serving handlers — the normal path and the
+`~<uplink>` path. The mount model unifies them: both should construct a concrete
+**mount origin** and call one shared, origin-aware serving routine. Each mount
+serves tarballs at the canonical path for its own base; cache namespace,
+credential generation, integrity verification, and advisory/OSV screening are
+all keyed by the resolved mount origin. Cross-origin selection happens only in
+blended mode and only as described above.
 
 ### Relationship to auth-aware resolution caching
 
@@ -404,8 +458,8 @@ The existing auth-aware cache proposal distinguishes public routes,
 pnpr-hosted private routes, and private proxied routes. Registry mounts make
 those route identities explicit:
 
-- public routes are public upstream mounts or concrete children of fallback
-  mounts;
+- public routes are public upstream mounts or the public member of a blended
+  mount;
 - pnpr-hosted private routes are hosted organization mounts;
 - private proxied routes are private upstream mounts with pnpr-managed
   credentials;
@@ -413,9 +467,8 @@ those route identities explicit:
   its access policy or credential generation.
 
 The same mount identity should feed resolver cache keys, metadata cache keys,
-tarball cache namespaces, and pnpr-routed symbolic registry identities. This
-avoids having one concept for resolver caching and a different concept for
-registry serving.
+tarball cache namespaces, and the lockfile's recorded registry identity, so
+there is one origin concept across caching and serving.
 
 ### Authorization, cache, and policy
 
@@ -429,8 +482,8 @@ Cache keys include the concrete mount identity:
   mount namespace;
 - upstream metadata and tarballs are cached under the upstream mount namespace,
   including credential generation where credentials are configured;
-- fallback mounts may cache delegation decisions, but package metadata and
-  tarballs belong to the selected child mount.
+- mirror-group and blended mounts cache nothing of their own; metadata and
+  tarballs belong to the selected concrete member.
 
 Policy checks also receive the concrete mount identity. This avoids pretending
 that `foo@1.0.0` from two registries is the same package for every policy
@@ -445,127 +498,141 @@ This preserves compatibility with Verdaccio configuration, but it keeps the
 wrong primitive at the center. Package-name rules and fallback chains force pnpr
 to infer origin after the fact. That makes private tarball routing, cache
 namespaces, named registries, and standalone hosted organization registries
-harder to explain and easier to get wrong.
+harder to explain and easier to get wrong. pnpr can still support Verdaccio
+config as a compatibility layer that compiles into mounts (the publish-private,
+fall-back-public shape compiles into a blended default mount), but the core
+primitive is the mount.
 
-pnpr can still support Verdaccio-shaped config as a compatibility layer, but it
-should compile that config into mounts internally.
+### Use one blended root registry as the default
 
-### Use one blended root registry
+pnpr could make the root smart enough to serve hosted, public, private, and
+fallback content. This is convenient but hides provenance, and the more the root
+does, the more hidden state a tarball request needs to answer safely. The mount
+model keeps that identity explicit and confines blending to an opt-in mount.
 
-pnpr could keep one root registry and make it smart enough to serve hosted
-packages, public npm packages, private upstream packages, and fallback chains.
-This is convenient for clients, but it hides provenance. The more the root path
-does, the more internal state is needed to answer a tarball request safely:
-which upstream supplied the packument, which credential was used, whether the
-tarball cache is shared, and which policy context applies.
+### Rewrite `dist.tarball` to the concrete mount and persist it
 
-Registry mounts keep that identity in the URL and in the server's internal
-origin descriptor.
+An earlier draft had pnpr rewrite tarball URLs to the selected concrete mount
+and persist them. This is rejected: a persisted concrete-mount URL is
+non-canonical for the client's registry base, so pnpm cannot drop it, which
+bakes the deployment host into every lockfile entry and churns the lockfile on
+any host change. It regresses the portability pnpm already guarantees. Serving
+at the canonical path plus fetch-time routing achieves the same provenance with
+a portable lockfile.
+
+### Persist the full tarball URL in the lockfile
+
+Equivalent regression for the same reason: pnpm deliberately drops canonical
+registry tarball URLs. Full URLs are correct only for genuinely non-canonical
+paths, and even there the recommended approach is to rewrite to canonical so the
+URL can be dropped.
 
 ### Add a generic `~hosted` registry
 
-A `~hosted` mount would separate hosted packages from upstream packages, but it
-does not match the product model. Operators and users think in terms of
-organizations, teams, projects, or tenants, not "the hosted implementation".
-
-`~<org>` gives hosted packages a natural ownership boundary and leaves package
-scopes free to mean normal npm scopes.
+A `~hosted` mount would separate hosted from upstream packages, but it does not
+match the product model. Operators and users think in terms of organizations,
+teams, projects, or tenants, not "the hosted implementation". `~<org>` gives
+hosted packages a natural ownership boundary and leaves package scopes free to
+mean normal npm scopes.
 
 ### Run separate pnpr instances for each registry
 
-Separate instances give strong physical isolation, but they remove useful
-composition. Operators would need extra routing, duplicated config, duplicated
-caches, and separate publish/auth surfaces for registries that logically belong
-to the same product.
-
-Mounts keep the isolation boundary explicit without requiring a process per
-registry.
+Separate instances give strong isolation but remove useful composition, and
+require duplicated routing, config, caches, and publish/auth surfaces for
+registries that logically belong to one product. Mounts keep the isolation
+boundary explicit without a process per registry.
 
 ## Implementation
 
 Implementation should be staged so compatibility remains intact while the
 server internals move to the mount model.
 
-1. Add a `RegistryMount` config model and compile existing `uplinks` and
-   `packages` config into it.
-2. Introduce an internal `ResolvedOrigin`/`MountOrigin` value that route
-   handlers use for packument and tarball requests.
-3. Refactor the current normal tarball path and `~<uplink>` tarball path so
-   they construct a mount origin and call shared origin-aware serving code.
-4. Move metadata and tarball cache namespace decisions behind the selected
-   mount origin.
-5. Make fallback/group mounts select a concrete child mount for packuments and
-   rewrite generic npm `dist.tarball` URLs to that child mount by default.
-6. Teach the resolver allowlist and route classifier to map `registry` and
-   `namedRegistries` URLs to mount identities.
-7. Generate reserved `namedRegistries` aliases automatically when pnpr
-   resolution selects a concrete mount, and persist/update them in
-   `pnpm-workspace.yaml` before writing the lockfile.
-8. Reuse pnpm's existing named-registry lockfile refs for mount-routed registry
-   resolutions, and keep pacquet's reader, writer, and installer behavior in
-   parity with that format.
-9. Teach install, frozen-lockfile verification, and tarball fetching to resolve
-   generated mount aliases through `namedRegistries`.
-10. Add hosted organization mount storage namespaces and make publish/unpublish
-   write to concrete hosted organization mounts.
-11. Keep the root registry facade as a compatibility/default mount, but avoid
-   making root fallback behavior the internal tarball provenance mechanism.
+1. Add a `RegistryMount` config model (`HostedOrg`, `Upstream`, `MirrorGroup`,
+   `BlendedDefault`) and compile existing `uplinks`/`packages` config into it;
+   a publish-private/fall-back-public config compiles into a blended mount.
+2. Introduce an internal `MountOrigin` value that route handlers construct for
+   every packument and tarball request.
+3. Unify the normal tarball path and the `~<uplink>` tarball path into one
+   shared origin-aware serving routine that takes a `MountOrigin`.
+4. Key metadata/tarball cache namespaces and integrity/OSV screening on the
+   resolved mount origin.
+5. Serve every mount's tarballs at the canonical path for its own registry base,
+   so pnpm's existing canonical-URL reconstruction keeps the host out of the
+   lockfile. Do not rewrite or persist concrete-mount tarball URLs.
+6. Implement mirror groups (any member may serve) and the blended default mount
+   (hosted-over-public, integrity-backstopped, public-only redirect for the
+   fallback member).
+7. Teach the resolver allowlist and route classifier to map `registry` and
+   `namedRegistries` URLs to mount identities and reject unknown ones.
+8. Add registry identity to pnpm/pacquet lockfile package identity so the same
+   `name@version` from two mounts cannot collide, recording a registry
+   name/identity (not a URL) and reconstructing the tarball URL from config.
+   Keep pacquet's reader, writer, and installer in parity with the format.
+9. Make install, frozen-lockfile verification, and tarball fetching resolve a
+   recorded registry identity through config, failing closed when it is absent.
+10. Add hosted organization mount storage namespaces and route
+    publish/unpublish to concrete hosted organization mounts (including the
+    hosted member of a blended default).
+11. Wire the configurable default mount / root facade, with publish-to-root
+    allowed only for hosted (or blended) defaults.
 
 Tests should cover:
 
-- the same package name and version existing with different bytes in two
-  mounts;
-- fallback packuments emitting concrete child mount tarball URLs;
-- pnpm/pacquet resolver output using generated named-registry aliases instead
-  of concrete pnpr tarball URLs;
-- writing and reading generated named-registry refs in snapshot dependencies and
-  importer dependency versions;
-- same `name@version` packages from different mounts not colliding in
-  `packages` or `snapshots`;
-- client-side `pnpm-workspace.yaml` updates adding generated mount aliases
-  without overwriting conflicting user-authored aliases;
-- tarball requests not re-running fallback after a lockfile or packument selected
-  an origin;
+- the same `name@version` existing with different bytes in two mounts, kept
+  distinct in `packages`/`snapshots` and not colliding;
+- strict per-scope routing producing portable lockfiles with no pnpr host
+  persisted, reconstructing the right per-mount tarball URL;
+- moving a lockfile between pnpr deployments with the same mount IDs without
+  package-entry churn;
+- mirror groups serving a tarball from any member and verifying one integrity;
+- blended mode: hosted shadowing public; integrity mismatch failing closed when
+  the selected origin changes between packument and tarball fetch; public-member
+  redirect not persisted and never targeting a private upstream;
+- a recorded registry identity missing from config failing closed with a clear
+  error instead of falling back to the root registry;
 - hosted organization mounts not falling through to upstreams;
 - private upstream mounts keeping credentials server-side;
 - cache namespace isolation by mount and credential generation;
-- resolver named registries mapping to mounts and rejecting unknown registry
-  URLs;
-- moving the same lockfile between pnpr deployments with the same mount IDs
-  without package-entry churn;
-- root compatibility behavior for existing Verdaccio-style configs.
+- publish-to-root rejected when the default mount is an upstream or mirror group.
 
 ## Prior Art
 
+vlt (the originators of named registries) make registry identity a first-class
+component of the dependency identifier. A vlt **DepID** for a registry package
+is a typed tuple `[type, registry, name@version]`, e.g. `registry··x@1.2.3` for
+the default registry and `registry·npmjs·x@1.2.3` for a named one. Registry is
+part of the lockfile key, so the same `name@version` from two registries cannot
+collide — exactly the gap pnpm has. pnpm adopted vlt's named-registry *syntax*
+(`gh:`/`alias:`) but not its *identity model*, which is why pnpm's `name@version`
+key drops the registry. This RFC adopts the identity model (registry as a key
+component), not vlt's serialization (which vlt itself is reconsidering).
+
 Verdaccio uses package rules and uplinks to let one registry facade proxy other
-registries. That design is useful for compatibility, but it predates pnpm's
-current named-registry use cases and pnpr's resolver/gateway model.
+registries. That is useful for compatibility, and its publish-private,
+fall-back-public shape is exactly what the blended default mount models — but it
+predates pnpm's named-registry use cases and pnpr's resolver/gateway model.
 
-npm clients already support routing different package scopes to different
-registries through configuration. Registry mounts make that registry identity a
-first-class server concept instead of collapsing all requests into one facade.
-
-Many hosted package registries expose organization, project, or tenant
-boundaries in the URL. `~<org>` follows that product shape while staying
-compatible with npm package names and scopes beneath the mount.
+Many hosted registries expose organization, project, or tenant boundaries in the
+URL. `~<org>` follows that product shape while staying compatible with npm
+package names and scopes beneath the mount.
 
 ## Unresolved Questions and Bikeshedding
 
 - Is `~<mount>` the right path syntax for every mount, or should hosted
   organization mounts use a different namespace?
-- Should the config term be `mounts`, `registries`, or `registryMounts`?
-- Is the existing package-key shape derived from named-registry refs
-  (`bar@pnpr-mount-npmjs:bar@2.0.0`) acceptable for generated mount aliases, or
-  should pnpm add a more explicit package-key encoding?
-- What should the reserved generated alias prefix be, and how should pnpm
-  handle an existing user-authored `namedRegistries` entry that collides with
-  it?
-- Should generated `namedRegistries` URLs be written as absolute pnpr URLs, or
-  should pnpm support values derived from `pnprServer` so deployment changes
-  update one setting instead of several aliases?
-- Should pnpr ever support write-routing from a fallback mount to a designated
-  hosted child?
-- Should mirror groups be a separate mount type from ordinary fallback groups?
-- What should the default root facade be for a new standalone pnpr deployment?
+- Should the config term be `mounts`, `registries`, or `registryMounts`, and
+  what are the final names for the two grouping types (`mirrorGroup` /
+  `blendedDefault`)?
+- What exact lockfile encoding carries registry identity in package identity —
+  a registry-qualified package key, a package-to-registry table, or another
+  compact form — and how does it interoperate with the existing `name@version`
+  depPath grammar (which today special-cases only prefixes like `runtime:`)?
+- How is the registry name/identity mapped to a URL at install time — through
+  `namedRegistries`, through a single `pnprServer` base, or both — so a
+  deployment move updates one setting?
+- Should mirror-group membership be verifiable (pnpr asserting equivalence) or
+  purely an operator declaration?
+- Should the blended default mount support more than one public fallback member,
+  or is a single hosted-over-public overlay sufficient?
 - How much Verdaccio config compatibility should pnpr preserve, and for how
   long?
