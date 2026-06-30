@@ -536,6 +536,33 @@ Authorization is checked at the mount boundary. The caller's pnpr identity may
 authorize access to a hosted organization mount or to a private upstream mount,
 but it is not forwarded to third-party registries.
 
+**Authorize at the concrete source.** Every mount is independently addressable at
+its own `~<mount>/` URL, so a private package's access policy must live on the
+concrete source mount that holds it — that is the boundary a request cannot
+bypass. A router or default target is *not* where private packages are protected:
+the source is reachable directly at its own URL regardless of any router in front
+of it. Access composes as an AND — a request through a router must satisfy the
+router's own policy (if any) **and** the resolved source's policy, while a
+request to the source's own URL satisfies that source's policy — so the source
+policy always applies, by every path. A router-level policy therefore restricts
+only the router entry point; it does not gate the underlying mounts' URLs. To
+make a whole deployment internal, every reachable mount needs a policy, not just
+the router.
+
+Worked example — private packages on a public registry (e.g. npm, which serves a
+private `@myorg` scope and all public packages from one origin). Two upstream
+mounts point at the same `registry.npmjs.org`: an anonymous `npm-public`
+(`public: true`) and an authenticated `npm-private` (`auth.tokenEnv: NPM_TOKEN`,
+`access: team:myorg`), with a router sending `@myorg/*` to `npm-private` and
+`**` to `npm-public`. The `team:myorg` policy lives on `npm-private`, so both
+`/~main/@myorg/secret` (via the router) and `/~npm-private/@myorg/secret`
+(direct) are gated, while `lodash` stays open by either path. Putting
+`team:myorg` on the router instead would not protect `@myorg/*` (already
+protected at the source) and would not close `/~npm-public/`; putting it on the
+router *in addition* would only restrict who may reach public packages through
+`/~main/`. An unauthorized caller for a private package should receive `404`, not
+`403`, so private-package existence is not revealed.
+
 Cache keys include the concrete mount identity:
 
 - hosted organization packages are stored and cached under the organization
@@ -688,6 +715,9 @@ Tests should cover:
 - hosted organization mounts not falling through to upstreams;
 - an upstream being exactly one URL with no secondary/mirror endpoint behavior;
 - private upstream mounts keeping credentials server-side;
+- a private source's access policy enforced both through a router and via the
+  source's own `~<mount>/` URL, so an open router never exposes a gated source;
+- an unauthorized caller for a private package receiving `404`, not `403`;
 - a recorded registry identity missing from config failing closed with a clear
   error instead of falling back to the root registry;
 - cache namespace isolation by mount and credential generation;
