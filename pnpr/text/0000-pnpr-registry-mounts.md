@@ -2,18 +2,22 @@
 
 ## Summary
 
-pnpr should model every addressable registry surface as a **registry mount**.
-A mount owns one clear origin policy: a pnpr-hosted organization registry, an
-upstream registry, a **mirror group** of byte-equivalent members, or a
-**blended default** that overlays a hosted registry on a public fallback. Named
-mounts are exposed at `https://<pnpr>/~<mount>/`, so every origin has an
-explicit identity in the URL, in pnpr's internal routing, and in client
-resolution.
+pnpr should model every addressable registry origin as a **registry mount**. A
+mount owns one clear origin policy: a pnpr-hosted organization registry, an
+upstream registry, or a **mirror group** of byte-equivalent members. pnpr can
+also expose automatically derived **blended compatibility endpoints** that
+overlay a private mount on a public fallback. Named mounts are exposed at
+`https://<pnpr>/~<mount>/`, so every origin has an explicit identity in the URL,
+in pnpr's internal routing, and in client resolution.
 
 The default model is **strict**: a package is served from exactly one concrete
 mount, addressed explicitly. Cross-origin composition is opt-in and split into
 two clearly different modes so the dangerous one (same name from two origins
 with different bytes) is never the default and is always obvious in config.
+Future-proof private package declarations should use a named registry that
+points at the strict `~<mount>` URL. Blended endpoints exist for backward
+compatibility with single-registry clients that expect private-first,
+public-fallback behavior.
 
 Lockfiles stay deployment-portable by reusing pnpm's existing tarball-URL
 reconstruction rather than persisting pnpr URLs. The one genuinely new lockfile
@@ -89,21 +93,33 @@ The desired outcome is a design where:
 - `~npmjs` can serve the public npm registry;
 - `~corp` can serve a private upstream with pnpr-managed credentials;
 - a mirror group can serve byte-equivalent mirrors of one origin;
-- a deployment can opt into a blended default that publishes private packages
-  and falls back to public npm, in the familiar Verdaccio/bit.cloud style,
-  without sacrificing lockfile portability or fail-closed integrity;
-- the root path is a configurable default mount, never the internal primitive.
+- private packages are declared through named registries that point at strict
+  private mounts;
+- a deployment can expose derived `/~~<mount>` blended endpoints for
+  Verdaccio/bit.cloud-style backward compatibility, without making blended
+  fallback the recommended model;
+- the root path is a configurable default target, never the internal primitive.
 
 ## Detailed Explanation
 
 ### Registry mounts
 
 A registry mount is an addressable npm registry surface. It has a stable mount
-ID and is available at:
+ID and is available at its strict endpoint:
 
 ```text
 https://<pnpr>/~<mount>/
 ```
+
+When a public fallback is configured, pnpr may also expose a derived blended
+compatibility endpoint for private mounts:
+
+```text
+https://<pnpr>/~~<mount>/
+```
+
+The double-tilde endpoint is not a second storage/cache namespace. It is a
+facade over the strict private mount plus the configured public fallback.
 
 Mount IDs are pnpr route names, not npm package scopes. They must be path-safe,
 operator-controlled identifiers. The leading `~` keeps mount routes out of the
@@ -111,8 +127,8 @@ normal npm package-name space and lets `@scope/pkg` keep its existing meaning
 under every mount.
 
 The root path is available as a configurable default surface, but internally it
-always resolves to one concrete mount (see [Default mount and the root
-facade](#default-mount-and-the-root-facade)).
+always resolves to one named mount target (see
+[Default mount and the root facade](#default-mount-and-the-root-facade)).
 
 Illustrative config:
 
@@ -143,7 +159,7 @@ mounts:
         - npmjs
         - npmjs-backup
 
-defaultMount: npmjs
+defaultTarget: npmjs
 ```
 
 The syntax is illustrative. The required model keeps the two grouping modes as
@@ -166,11 +182,11 @@ enum RegistryMount {
     MirrorGroup {
         members: Vec<MountId>,
     },
-    /// Opt-in Verdaccio-style overlay: serve a hosted mount first, then fall
+    /// Derived Verdaccio-style facade: serve a private mount first, then fall
     /// back to a public mount. Members are NOT byte-equivalent, so the first
     /// match shadows later ones. Integrity pinning is the provenance backstop.
-    BlendedDefault {
-        hosted: MountId,
+    BlendedEndpoint {
+        private: MountId,
         fallback: MountId,
     },
 }
@@ -248,44 +264,62 @@ mounts:
         - npmjs-backup
 ```
 
-Because the members are equivalent, there is no provenance question: a packument
-may be assembled from whichever member answers first, and a tarball may be
-served from any member, since every member is asserted to return identical bytes
-that satisfy the same `dist.integrity`. A mirror group is the only kind of
-cross-member composition that is safe by construction, which is why it is its
-own type and not a mode of a general fallback.
+Because the operator declares the members equivalent, there is no registry
+identity distinction inside the group: a packument may be assembled from
+whichever member answers first, and a tarball may be served from any member,
+since every member is asserted to return identical bytes that satisfy the same
+`dist.integrity`. pnpr cannot guarantee that third-party mirrors actually remain
+equivalent; it only guarantees that mirror groups operate according to that
+declaration and still verify integrity when integrity is available. A mirror
+group is its own type so this operator responsibility is explicit and never
+confused with a general fallback.
 
 A mirror group is read-only. It does not own bytes; it forwards to its members.
 Its tarball URL base is the group's own `~<mount>` path, and the bytes are
 reconstructed from the group registry (so the canonical-URL reconstruction in
 [Client routing and lockfiles](#client-routing-and-lockfiles) still applies).
 
-### Blended default mount
+### Blended compatibility endpoints
 
 Many proxy registries (Verdaccio, bit.cloud, GitHub Packages) let one URL host
 private packages *and* fall back to public npm. This is a genuinely useful UX
-and pnpr supports it — but as an explicit, opt-in mount type whose risks are
-named, not as the default fallback behavior.
+and pnpr supports it — but as a derived compatibility endpoint whose risks are
+named, not as the recommended future-proof package declaration model.
 
-A blended default mount overlays one hosted mount on one public fallback mount:
+The recommended model for new private packages is strict routing: publish to a
+private mount such as `/~acme/`, configure a named registry for that mount, and
+declare private dependencies with that named registry in `package.json`. Blended
+endpoints exist for legacy clients that still expect one registry URL to serve
+private packages first and public npm second.
+
+When a public fallback mount is configured, pnpr may derive a blended endpoint
+for each private mount:
 
 ```yaml
 mounts:
-  public:
-    blendedDefault:
-      hosted: acme       # private packages published here win
-      fallback: npmjs    # everything else proxies public npm
+  acme:
+    hostedOrg:
+      org: acme
 
-defaultMount: public
+  npmjs:
+    upstream:
+      url: https://registry.npmjs.org/
+      public: true
+
+publicFallback: npmjs
+
+# Derived by pnpr:
+# /~acme/  => strict hosted organization registry
+# /~~acme/ => acme first, then npmjs
 ```
 
 Semantics:
 
-- **First match shadows.** For `GET /~public/foo`, pnpr serves `acme`'s `foo` if
-  it exists, otherwise `npmjs`'s `foo`. The members are not byte-equivalent, so
-  the unselected origin is unreachable through this mount for that name. This is
+- **First match shadows.** For `GET /~~acme/foo`, pnpr serves `~acme/foo` if it
+  exists, otherwise `~npmjs/foo`. The members are not byte-equivalent, so the
+  unselected origin is unreachable through this endpoint for that name. This is
   the intended "private overrides public" behavior, and it is also a
-  dependency-confusion surface: whoever can publish to the hosted mount can
+  dependency-confusion surface: whoever can publish to the private mount can
   shadow a public name. That is gated by publish authorization and must be
   documented, not silent.
 - **Integrity is the provenance backstop.** The packument pins the selected
@@ -297,12 +331,20 @@ Semantics:
   mode](#serving-tarballs-in-blended-mode): blended mode relies on serving or
   redirecting tarballs at a canonical path, and a client cannot follow a
   redirect into a private upstream because the upstream credential is
-  server-side. The hosted member is served by pnpr directly; the fallback member
-  must be a public mount.
+  server-side. The private member is served by pnpr directly when it needs
+  server-side credentials; the fallback member must be a public mount.
+- **No separate state.** `/~~acme/` does not own package bytes, metadata cache, or
+  tarball cache. It routes to the selected concrete member and uses that member's
+  namespaces and policy context.
+- **Writes follow the private member.** Publishing through a blended endpoint is
+  allowed only if the private member is a hosted organization mount. If the
+  private member is a private upstream, publish is rejected with the same clear
+  "name a hosted mount" error as any other non-hosted target.
 
-Blended mode is the only place cross-origin (non-equivalent) selection happens,
-it is opt-in, and it is confined to one hosted-over-public overlay rather than an
-arbitrary ordered chain.
+Blended mode is the only place cross-origin (non-equivalent) selection happens.
+It is opt-in through the configured public fallback, derived mechanically from a
+strict private mount, and confined to one private-over-public overlay rather than
+an arbitrary ordered chain.
 
 ### Default mount and the root facade
 
@@ -314,30 +356,33 @@ GET /foo/-/foo-1.0.0.tgz
 ```
 
 pnpr keeps this root surface for compatibility, configured as a **default
-mount** that resolves to exactly one concrete mount:
+target** that resolves to exactly one strict mount or derived compatibility
+endpoint:
 
 ```yaml
-defaultMount: npmjs        # or: a hosted org, a mirror group, or a blended mount
+defaultTarget: npmjs        # or: acme, npm-mirrors, ~~acme
 ```
 
 Rules:
 
-- **The default is an alias to one concrete mount, never an ad-hoc blend.**
-  Aliasing the root to a single mount adds an address, not ambiguity: `/foo`
-  *is* `~npmjs/foo`. The only way the root serves more than one origin is when
-  the default mount is itself a blended mount, which is opt-in and named.
+- **The default is an alias to one named target, never an ad-hoc blend.** Aliasing
+  the root to a strict mount adds an address, not ambiguity: `/foo` *is*
+  `~npmjs/foo`. The only way the root serves more than one origin is when the
+  default target is a derived blended endpoint such as `~~acme`, which is opt-in
+  through the configured public fallback and named in config.
 - **There is no implicit hosted uplink.** pnpr does not ship a magic `~hosted`
   default. Hosted orgs are explicit `~<org>` mounts. A deployment that wants the
-  root to be its hosted org sets `defaultMount: acme`; `pnpr init` for a
+  root to be its hosted org sets `defaultTarget: acme`; `pnpr init` for a
   single-org deployment may scaffold that line into generated config, but it is
   visible config, not built-in behavior. This keeps the product model
   (organizations, not "the hosted implementation") and the multi-tenant case
   (no single default org) coherent.
-- **Publish-to-root is allowed only when the default is a hosted org** (or a
-  blended mount, which routes writes to its hosted member). If the default is an
-  upstream or a mirror group, unqualified publishes are rejected with a clear
-  "name a hosted mount" error, so a publish can never silently land in the wrong
-  place.
+- **Publish-to-root is allowed only when the default target writes to a hosted
+  org.** If the default is a hosted org, or a blended endpoint whose private
+  member is hosted, writes route there. If the default is an upstream, private
+  upstream, mirror group, or non-hosted blended endpoint, unqualified publishes
+  are rejected with a clear "name a hosted mount" error, so a publish can never
+  silently land in the wrong place.
 
 This makes the root path a product choice instead of the internal architecture.
 Small deployments can keep one root URL; standalone deployments can point users
@@ -359,6 +404,32 @@ With explicit per-scope routing, composition happens in the client's registry
 config, deterministically and visibly, rather than by server-side guessing.
 Different scopes resolve against different mounts, each with its own auth, cache,
 and tarball URL base.
+
+For private package declarations, the recommended future-proof form is a
+user-authored named registry that points at the strict private mount:
+
+```yaml
+namedRegistries:
+  acme: https://registry.example.com/~acme/
+```
+
+```json
+{
+  "dependencies": {
+    "foo": "acme:foo@1.0.0"
+  }
+}
+```
+
+The compatibility form points legacy clients at the blended endpoint:
+
+```ini
+registry=https://registry.example.com/~~acme/
+```
+
+That keeps old single-registry workflows working, but new manifests should make
+private registry selection visible in `package.json` through named-registry
+specifiers.
 
 **Lockfiles are already deployment-portable — reuse that, do not rewrite URLs.**
 pnpm does not persist canonical registry tarball URLs. It stores integrity and
@@ -423,12 +494,12 @@ Blended mode keeps the lockfile just as portable as the strict model, because
 only the *persisted* `dist.tarball` must be canonical — the bytes can be served
 from anywhere at fetch time:
 
-- The packument served at `/~public/foo` selects the concrete origin and pins
+- The packument served at `/~~acme/foo` selects the concrete origin and pins
   its `dist.integrity`.
-- `dist.tarball` is written canonical for the `~public` base, so pnpm drops it
-  and later reconstructs `https://<pnpr>/~public/foo/-/foo-1.0.0.tgz`.
+- `dist.tarball` is written canonical for the `~~acme` base, so pnpm drops it
+  and later reconstructs `https://<pnpr>/~~acme/foo/-/foo-1.0.0.tgz`.
 - At fetch time pnpr **routes** that canonical request to the real bytes:
-  - **serve internally** for the hosted member and for any same-host mount (no
+  - **serve internally** for the private member and for any same-host mount (no
     extra round-trip);
   - **HTTP-redirect to the public CDN** for the public fallback member, when a
     deployment wants to offload bandwidth. The redirect `Location` never enters
@@ -459,7 +530,7 @@ pnpr-hosted private routes, and private proxied routes. Registry mounts make
 those route identities explicit:
 
 - public routes are public upstream mounts or the public member of a blended
-  mount;
+  compatibility endpoint;
 - pnpr-hosted private routes are hosted organization mounts;
 - private proxied routes are private upstream mounts with pnpr-managed
   credentials;
@@ -482,8 +553,8 @@ Cache keys include the concrete mount identity:
   mount namespace;
 - upstream metadata and tarballs are cached under the upstream mount namespace,
   including credential generation where credentials are configured;
-- mirror-group and blended mounts cache nothing of their own; metadata and
-  tarballs belong to the selected concrete member.
+- mirror groups and blended compatibility endpoints cache nothing of their own;
+  metadata and tarballs belong to the selected concrete member.
 
 Policy checks also receive the concrete mount identity. This avoids pretending
 that `foo@1.0.0` from two registries is the same package for every policy
@@ -499,16 +570,17 @@ wrong primitive at the center. Package-name rules and fallback chains force pnpr
 to infer origin after the fact. That makes private tarball routing, cache
 namespaces, named registries, and standalone hosted organization registries
 harder to explain and easier to get wrong. pnpr can still support Verdaccio
-config as a compatibility layer that compiles into mounts (the publish-private,
-fall-back-public shape compiles into a blended default mount), but the core
-primitive is the mount.
+config as a compatibility layer that compiles into strict mounts plus derived
+`/~~<mount>` blended endpoints for the publish-private, fall-back-public shape,
+but the core primitive is the mount.
 
-### Use one blended root registry as the default
+### Use one blended root registry as the default model
 
 pnpr could make the root smart enough to serve hosted, public, private, and
 fallback content. This is convenient but hides provenance, and the more the root
 does, the more hidden state a tarball request needs to answer safely. The mount
-model keeps that identity explicit and confines blending to an opt-in mount.
+model keeps that identity explicit and confines blending to derived, named
+compatibility endpoints.
 
 ### Rewrite `dist.tarball` to the concrete mount and persist it
 
@@ -547,9 +619,10 @@ boundary explicit without a process per registry.
 Implementation should be staged so compatibility remains intact while the
 server internals move to the mount model.
 
-1. Add a `RegistryMount` config model (`HostedOrg`, `Upstream`, `MirrorGroup`,
-   `BlendedDefault`) and compile existing `uplinks`/`packages` config into it;
-   a publish-private/fall-back-public config compiles into a blended mount.
+1. Add a `RegistryMount` config model (`HostedOrg`, `Upstream`, `MirrorGroup`)
+   plus derived `BlendedEndpoint` facades, and compile existing
+   `uplinks`/`packages` config into it; a publish-private/fall-back-public config
+   compiles into a strict private mount plus `/~~<mount>` compatibility endpoint.
 2. Introduce an internal `MountOrigin` value that route handlers construct for
    every packument and tarball request.
 3. Unify the normal tarball path and the `~<uplink>` tarball path into one
@@ -559,8 +632,8 @@ server internals move to the mount model.
 5. Serve every mount's tarballs at the canonical path for its own registry base,
    so pnpm's existing canonical-URL reconstruction keeps the host out of the
    lockfile. Do not rewrite or persist concrete-mount tarball URLs.
-6. Implement mirror groups (any member may serve) and the blended default mount
-   (hosted-over-public, integrity-backstopped, public-only redirect for the
+6. Implement mirror groups (any member may serve) and derived blended endpoints
+   (private-over-public, integrity-backstopped, public-only redirect for the
    fallback member).
 7. Teach the resolver allowlist and route classifier to map `registry` and
    `namedRegistries` URLs to mount identities and reject unknown ones.
@@ -571,10 +644,10 @@ server internals move to the mount model.
 9. Make install, frozen-lockfile verification, and tarball fetching resolve a
    recorded registry identity through config, failing closed when it is absent.
 10. Add hosted organization mount storage namespaces and route
-    publish/unpublish to concrete hosted organization mounts (including the
-    hosted member of a blended default).
-11. Wire the configurable default mount / root facade, with publish-to-root
-    allowed only for hosted (or blended) defaults.
+    publish/unpublish to concrete hosted organization mounts, including through
+    `/~~<mount>` only when the private member is hosted.
+11. Wire the configurable default target / root facade, with publish-to-root
+    allowed only for hosted targets.
 
 Tests should cover:
 
@@ -585,15 +658,18 @@ Tests should cover:
 - moving a lockfile between pnpr deployments with the same mount IDs without
   package-entry churn;
 - mirror groups serving a tarball from any member and verifying one integrity;
-- blended mode: hosted shadowing public; integrity mismatch failing closed when
-  the selected origin changes between packument and tarball fetch; public-member
-  redirect not persisted and never targeting a private upstream;
+- strict private mounts used through named-registry package.json declarations;
+- `/~~<mount>` blended compatibility endpoints: private shadowing public;
+  integrity mismatch failing closed when the selected origin changes between
+  packument and tarball fetch; public-member redirect not persisted and never
+  targeting a private upstream;
 - a recorded registry identity missing from config failing closed with a clear
   error instead of falling back to the root registry;
 - hosted organization mounts not falling through to upstreams;
 - private upstream mounts keeping credentials server-side;
 - cache namespace isolation by mount and credential generation;
-- publish-to-root rejected when the default mount is an upstream or mirror group.
+- publish-to-root rejected when the default target is an upstream, mirror group,
+  or blended endpoint whose private member is not hosted.
 
 ## Prior Art
 
@@ -609,8 +685,9 @@ component), not vlt's serialization (which vlt itself is reconsidering).
 
 Verdaccio uses package rules and uplinks to let one registry facade proxy other
 registries. That is useful for compatibility, and its publish-private,
-fall-back-public shape is exactly what the blended default mount models — but it
-predates pnpm's named-registry use cases and pnpr's resolver/gateway model.
+fall-back-public shape is exactly what derived `/~~<mount>` endpoints model —
+but it predates pnpm's named-registry use cases and pnpr's resolver/gateway
+model.
 
 Many hosted registries expose organization, project, or tenant boundaries in the
 URL. `~<org>` follows that product shape while staying compatible with npm
@@ -621,8 +698,7 @@ package names and scopes beneath the mount.
 - Is `~<mount>` the right path syntax for every mount, or should hosted
   organization mounts use a different namespace?
 - Should the config term be `mounts`, `registries`, or `registryMounts`, and
-  what are the final names for the two grouping types (`mirrorGroup` /
-  `blendedDefault`)?
+  what are the final names for mirror groups and derived blended endpoints?
 - What exact lockfile encoding carries registry identity in package identity —
   a registry-qualified package key, a package-to-registry table, or another
   compact form — and how does it interoperate with the existing `name@version`
@@ -632,7 +708,8 @@ package names and scopes beneath the mount.
   deployment move updates one setting?
 - Should mirror-group membership be verifiable (pnpr asserting equivalence) or
   purely an operator declaration?
-- Should the blended default mount support more than one public fallback member,
-  or is a single hosted-over-public overlay sufficient?
+- Is `/~~<mount>` the right syntax for derived blended compatibility endpoints,
+  and should pnpr expose them automatically for every private mount whenever a
+  public fallback is configured?
 - How much Verdaccio config compatibility should pnpr preserve, and for how
   long?
