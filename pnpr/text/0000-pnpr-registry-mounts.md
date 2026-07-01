@@ -22,11 +22,12 @@ dependency-confusion class — and the model omits them by construction rather
 than mitigating them. Outage resilience comes from pnpr's own cache, never from
 trying a different origin.
 
-Lockfiles stay deployment-portable by reusing pnpm's existing tarball-URL
-reconstruction rather than persisting pnpr URLs. The one genuinely new lockfile
-requirement is recording **registry identity** in package identity, so the same
-`name@version` from two different mounts cannot collide — a gap that exists in
-pnpm today.
+The pnpr-server implementation keeps lockfiles deployment-portable by serving
+canonical tarball URLs for the registry base the client addressed, so pnpm can
+reuse its existing tarball-URL reconstruction rather than persisting pnpr URLs.
+A later pnpm/pacquet lockfile follow-up should record **registry identity** in
+package identity, so the same `name@version` from two different mounts cannot
+collide — a gap that exists in pnpm today but is outside PR 12747.
 
 ## Motivation
 
@@ -132,57 +133,53 @@ Illustrative config:
 ```yaml
 mounts:
   acme:
-    hostedOrg:
-      org: acme
-      access: team:acme
+    type: hosted
+    org: acme
+    access: team:acme
 
   npmjs:
-    upstream:
-      url: https://registry.npmjs.org/
-      public: true
+    type: upstream
+    url: https://registry.npmjs.org/
+    public: true
 
   corp:
-    upstream:
-      url: https://npm.corp.example/
-      auth:
-        tokenEnv: CORP_NPM_TOKEN
-      access: team:acme
+    type: upstream
+    url: https://npm.corp.example/
+    auth:
+      tokenEnv: CORP_NPM_TOKEN
+    access: team:acme
 
   # One URL that routes each package to exactly one concrete mount by the first
   # matching explicit name pattern. No existence-based fallback.
   main:
-    router:
-      routes:
-        - patterns: ['@acme/*']
-          source: acme
-        - patterns: ['@corp/*']
-          source: corp
-        - patterns: ['**']
-          source: npmjs
+    type: router
+    routes:
+      - patterns: ['@acme/*']
+        source: acme
+      - patterns: ['@corp/*']
+        source: corp
+      - patterns: ['**']
+        source: npmjs
 
 defaultTarget: main
 ```
 
-The syntax is illustrative. The required model is two concrete mount kinds and
-one composite:
+The YAML syntax is intentionally tagged by `type:` (`hosted`, `upstream`,
+`router`) so a mount cannot accidentally declare more than one kind. The
+required model is two concrete mount kinds and one composite:
 
 ```rust
 enum RegistryMount {
     HostedOrg {
         org: OrgId,
         access: AccessPolicy,
-        /// Where this org's packuments and tarballs come from. The default is
-        /// pnpr-native storage that pnpr publishes into; an external projection
-        /// (e.g. bit.cloud's component store) implements the same interface
-        /// read-only and owns its own write path. See "Hosted organization mounts".
-        backend: HostedBackend,
     },
     /// Exactly one external origin. Not a chain and not a set of endpoints:
     /// one URL, one credential generation, one cache namespace.
     Upstream {
         url: Url,
         auth: Option<UpstreamAuth>,
-        access: AccessPolicy,
+        access: Option<AccessPolicy>,
         cache: CachePolicy,
     },
     /// Maps package-name patterns to concrete mounts in declared order. The
@@ -234,44 +231,25 @@ Hosted organization mounts have no upstream fallback. A request to `/~acme/foo`
 returns `foo` only if the `acme` organization hosts `foo` and the caller is
 authorized to read it.
 
-**A hosted mount is defined by a backend, not by a storage layout.** The mount
-contract is an interface — given an org and a package name (and version, for a
-tarball), produce the packument and stream the tarball — with writes optional:
+The implemented hosted mount is pnpr-native storage with a per-org namespace.
+The YAML `org` field selects that namespace; an omitted or empty `org` uses the
+flat storage root, which keeps the bundled registry-mock fixtures working
+without moving seeded packages. Local filesystem storage and S3/R2-compatible
+storage both apply the same namespace, so two hosted mounts can publish or serve
+the same `name@version` without colliding. The `org` value is validated as a
+single path-safe segment before startup because it becomes a filesystem path or
+object-key component.
 
-```rust
-trait HostedBackend {
-    /// The org's packument for `name`: versions, dist-tags, and each
-    /// version's `dist.integrity`. `None` if the org does not host it.
-    async fn packument(&self, name: &PackageName) -> Result<Option<Packument>>;
-    /// The verified tarball bytes for a resolved `name@version`.
-    async fn tarball(&self, name: &PackageName, version: &Version) -> Result<Option<TarballStream>>;
-    /// Accept a publish. Backends whose write path lives elsewhere leave this
-    /// unimplemented and are read-only.
-    async fn publish(&self, /* manifest, tarball, identity */) -> Result<()> { unsupported() }
-}
-```
+With the pnpr-native hosted store, the hosted mount is the only mount kind that
+accepts writes. Publishing, dist-tag updates, unpublish, token policy, audit
+logs, quotas, and billing all attach naturally to the hosted organization mount.
+Writes route into the resolved org namespace, and the publish journal records
+that org so crash recovery promotes staged packages into the same namespace.
 
-pnpr ships a **default backend** that stores packages in pnpr's own
-content-addressed storage and implements `publish`, unpublish, and dist-tag
-updates. This is the standalone pnpr product surface, where token policy, audit
-logs, quotas, and billing attach to the hosted org mount; with the default
-backend, the hosted mount is the only mount kind that accepts writes.
-
-The same mount kind can instead be backed by an **external projection** that
-stores no npm packages of its own. bit.cloud is the motivating case: its registry
-projects a component object store — tarballs generated on demand, packuments
-synthesized from component snaps (hash versions mapped to semver) carrying a
-`componentId` field — and publishing happens through bit's own export flow, not
-pnpr's. Such a backend implements `packument`/`tarball` read-only and leaves
-`publish` to its own pipeline. Everything around the backend is identical
-regardless of which one is plugged in: `/~<org>/` addressing, the
-authorize-at-the-source policy, the cache (a natural fit for memoizing an
-expensive on-the-fly tarball), integrity verification, and the lockfile's
-recorded registry identity.
-
-So "hosted org" is one concept with a pluggable origin of bytes — pnpr-native
-storage by default, an external component/object store when an operator like
-bit.cloud supplies one — not a commitment to pnpr owning the storage.
+The hosted-mount abstraction can still grow a read-only external projection in a
+future implementation, but PR 12747 implements the pnpr-owned hosted store and
+org namespace described above; it does not introduce a generic `HostedBackend`
+plugin interface.
 
 ### Upstream mounts
 
@@ -288,8 +266,11 @@ not a fallback chain and it has no secondary or "mirror" endpoints. If you want
 to use a particular mirror of a registry, point an upstream at that mirror's
 URL — that is the whole feature; the mirror operator owns the mirror's
 availability, and pnpr's cache (below) absorbs transient outages of the origin.
-If the mount is private, the caller must be authorized to use the mount, but the
-upstream credential stays server-side.
+
+`public: true` means the upstream is anonymous and world-readable: it cannot
+also declare `auth`, `access`, or an `Authorization` header. A non-public
+upstream must declare an `access` list naming which pnpr callers may use that
+mount; any upstream credential stays server-side.
 
 This is the current `~<uplink>` idea generalized into the primary origin model.
 The name "uplink" can remain as a compatibility term, but architecturally it is
@@ -316,6 +297,11 @@ mounts:
 This is the one-URL convenience of a Verdaccio facade, made safe by being
 **declarative and authoritative** rather than existence-based:
 
+- **Small pattern language.** Router patterns are deliberately restricted to
+  four statically decidable shapes: `**` for all packages, `@*/*` for all
+  well-formed scoped packages, `@scope/*` for one concrete scope, and an exact
+  package name such as `foo` or `@scope/foo`. Any other `*` form is a config
+  error, not a literal that silently never matches.
 - **One package, one route, one source.** A request resolves the package name
   by evaluating the router's routes in declared order. The first route whose
   patterns match is authoritative; later routes are not consulted even if their
@@ -362,17 +348,19 @@ routes:
 pnpr must therefore validate every router at config load and **refuse to start
 (and fail a config reload) on an unreachable route**, rather than accept it and
 serve a private name from a public source. The checks are static, because
-pattern-set coverage is decidable for the router's glob language:
+pattern-set coverage is decidable for the router's restricted pattern language:
 
 - **No shadowed route.** A route whose patterns are fully covered by the union of
   earlier routes can never match and is rejected. The catch-all-before-a-narrower
-  -route case above is the most important instance; the minimum viable check — a
+  route case above is the most important instance; the minimum viable check — a
   `**` catch-all that is not the last route — already catches the dangerous
   common mistake, and full earlier-shadows-later coverage detection is the
   complete form.
+- **No empty route.** A route with no patterns is rejected because it can never
+  select a source.
 - **No duplicate or contradictory patterns** within one router.
-- **Every `source` resolves** to a defined mount, and a router does not list
-  itself as a source (nor form a cycle, if nesting is ever allowed).
+- **Every `source` resolves** to a defined concrete mount. A route source cannot
+  be unknown, the router itself, or another router.
 
 Validation makes a misordered router a startup error an operator sees
 immediately, holding routers to the same "misconfiguration is caught, not
@@ -490,29 +478,38 @@ serving tarballs on a non-canonical path: rewrite the resolved tarball to
 `getNpmTarballUrl(name, version, { registry })` so nothing host-specific is
 persisted.
 
-So as long as each mount serves tarballs at the **canonical path for its own
-registry base** (`https://<pnpr>/~npmjs/foo/-/foo-1.0.0.tgz` is canonical for
-base `https://<pnpr>/~npmjs/`), pnpm already:
+So as long as pnpr serves tarballs at the **canonical path for the registry base
+the client addressed** (`https://<pnpr>/~npmjs/foo/-/foo-1.0.0.tgz` is canonical
+for base `https://<pnpr>/~npmjs/`, while
+`https://<pnpr>/foo/-/foo-1.0.0.tgz` is canonical for the path-less default
+base), pnpm already:
 
 - keeps the pnpr host out of the lockfile;
 - reconstructs the correct per-mount tarball URL from the client's mount config;
 - lets the same lockfile move between pnpr deployments by changing only the
   registry/mount base in config.
 
+This is also how routers are implemented: a packument requested from `/~main/`
+gets `dist.tarball` URLs under `/~main/`, even if the router resolved the
+package to `acme` or `npmjs` internally. A packument requested from the
+path-less base gets path-less tarball URLs. The tarball request routes through
+the same mount graph again by package name, so the URL remains canonical for the
+client's configured registry instead of baking the resolved concrete mount into
+the lockfile.
+
 This is why an earlier draft's machinery — pnpr rewriting `dist.tarball` to a
 concrete mount and the client synthesizing a `namedRegistries` alias table into
 `pnpm-workspace.yaml` — is unnecessary and is dropped.
 
-**The one new lockfile requirement: registry identity in package identity.**
+**Future lockfile requirement: registry identity in package identity.**
 What pnpm's reconstruction cannot express is *which* concrete mount a package
 came from when scope alone is ambiguous — the same `name@version` from two
 mounts (and split-within-a-scope, e.g. `@acme/foo` hosted but `@acme/bar` from
-npm). For those, the lockfile must record the registry identity of the
-**concrete resolved source** in the package key so the two cannot collide, and
-so reconstruction targets the right base. When a package is reached through a
-router, the lockfile records the concrete source it resolved to, not the router,
-so a later router edit cannot silently change a locked package's origin. This is
-the gap described in the
+npm). For those, a pnpm/pacquet follow-up should record the registry identity of
+the **concrete resolved source** in the package key so the two cannot collide.
+When a package is reached through a router, that future identity should be the
+concrete source it resolved to, not the router, so a later router edit cannot
+silently change a locked package's origin. This is the gap described in the
 [Motivation](#pnpm-cannot-represent-the-same-nameversion-from-two-registries-today),
 and the prior art is vlt's DepID, which makes registry a first-class component
 of package identity:
@@ -529,26 +526,42 @@ the registry *name/identity*, not a URL; the name→URL mapping lives in config
 configuration error rather than silently recomputing provenance.
 
 The exact key encoding is a design detail to settle with the pnpm lockfile
-maintainers (see [Unresolved Questions](#unresolved-questions-and-bikeshedding)),
+maintainers (see
+[Follow-up Questions](#follow-up-questions-and-bikeshedding)),
 but the invariant is fixed: registry identity is part of package identity, and
 no tarball URL is persisted for canonical registry resolutions.
 
+PR 12747 implements the pnpr-server side only. It preserves lockfile portability
+by serving canonical tarball URLs for the addressed base, but it does **not**
+change pnpm's or pacquet's lockfile package identity. The registry-identity
+lockfile work remains a separate pnpm/pacquet follow-up.
+
 ### Serving tarballs inside pnpr
 
-pnpr currently has two tarball-serving handlers — the normal path and the
+pnpr historically had two tarball-serving handlers — the normal path and the
 `~<uplink>` path. The mount model unifies them: both construct a concrete
 **mount origin** and call one shared, origin-aware serving routine. Cache
 namespace, credential generation, integrity verification, and advisory/OSV
 screening are all keyed by the resolved mount origin.
 
-A router serves tarballs at its own canonical base and **internally routes** to
-the pattern-matched concrete source — deterministically the same source that
-served the packument, so there is no risk of a tarball coming from a different
-origin than the metadata that selected it. As a bandwidth optimization, pnpr
-*may* HTTP-redirect a tarball request to a public source's own CDN; the redirect
-`Location` never enters the lockfile (the persisted URL stays canonical for the
-mount), and redirects are only ever issued to public origins, since a client has
-no credentials for a private upstream.
+A router serves tarballs at the same canonical base that served the packument
+and **internally routes** to the pattern-matched concrete source —
+deterministically the same source that served the metadata, so there is no risk
+of a tarball coming from a different origin than the metadata that selected it.
+pnpr fetches upstream tarballs through the selected mount, verifies them against
+that source's packument integrity, and caches them in the selected mount's
+namespace when caching is enabled. The client never needs credentials for a
+private upstream, and the lockfile never records a redirect or concrete upstream
+URL for canonical registry tarballs.
+
+### Search
+
+The npm search endpoint is not a router aggregate. PR 12747 keeps search
+local-storage-only: it scans the hosted store, filters results through the
+per-package access policy, and never queries upstream mounts or merges search
+results across sources. This keeps search aligned with the no-merge provenance
+model. Extending search across hosted org namespaces is an implementation detail;
+upstream search fan-out is intentionally not part of the mount router.
 
 ### Relationship to auth-aware resolution caching
 
@@ -567,27 +580,25 @@ those route identities explicit:
   its access policy or credential generation.
 
 The same mount identity should feed resolver cache keys, metadata cache keys,
-tarball cache namespaces, and the lockfile's recorded registry identity, so
-there is one origin concept across caching and serving.
+tarball cache namespaces, and the future lockfile registry identity, so there is
+one origin concept across caching, serving, and client package identity.
 
 ### Authorization, cache, and policy
 
-Authorization is checked at the mount boundary. The caller's pnpr identity may
-authorize access to a hosted organization mount or to a private upstream mount,
-but it is not forwarded to third-party registries.
+Authorization is checked at the resolved source and at the per-package policy
+layer. The caller's pnpr identity may authorize access to a hosted organization
+mount or to a private upstream mount, but it is not forwarded to third-party
+registries.
 
 **Authorize at the concrete source.** Every mount is independently addressable at
 its own `~<mount>/` URL, so a private package's access policy must live on the
 concrete source mount that holds it — that is the boundary a request cannot
 bypass. A router or default target is *not* where private packages are protected:
 the source is reachable directly at its own URL regardless of any router in front
-of it. Access composes as an AND — a request through a router must satisfy the
-router's own policy (if any) **and** the resolved source's policy, while a
-request to the source's own URL satisfies that source's policy — so the source
-policy always applies, by every path. A router-level policy therefore restricts
-only the router entry point; it does not gate the underlying mounts' URLs. To
-make a whole deployment internal, every reachable mount needs a policy, not just
-the router.
+of it. In PR 12747 routers have no access list of their own; access composes from
+the resolved source mount plus the per-package `packages:` ACL layer. To make a
+whole deployment internal, every reachable mount needs an access policy, not just
+the router URL users are expected to use.
 
 Worked example — private packages on a public registry (e.g. npm, which serves a
 private `@myorg` scope and all public packages from one origin). Two upstream
@@ -598,17 +609,25 @@ mounts point at the same `registry.npmjs.org`: an anonymous `npm-public`
 `/~main/@myorg/secret` (via the router) and `/~npm-private/@myorg/secret`
 (direct) are gated, while `lodash` stays open by either path. Putting
 `team:myorg` on the router instead would not protect `@myorg/*` (already
-protected at the source) and would not close `/~npm-public/`; putting it on the
-router *in addition* would only restrict who may reach public packages through
-`/~main/`. An unauthorized caller for a private package should receive `404`, not
-`403`, so private-package existence is not revealed.
+protected at the source) and would not close `/~npm-public/`. An unauthorized
+caller for a private hosted package receives `404`, not `403`, so private-package
+existence is not revealed.
+
+The Verdaccio-shaped `packages:` block no longer routes packages. It is an ACL
+layer only: `access`, `publish`, and `unpublish` rules are compiled into package
+policies and enforced centrally on mounted reads and writes, whether the selected
+source is hosted or upstream. A `proxy:` entry in `packages:` is not part of the
+mount model; package routing lives only in `mounts:` and `defaultTarget:`.
 
 Cache keys include the concrete mount identity:
 
 - hosted organization packuments and tarballs are cached under the organization
   mount namespace (and stored there by the default storage backend);
-- upstream metadata and tarballs are cached under the upstream mount namespace,
-  including credential generation where credentials are configured;
+- public upstream metadata and tarballs use a stable, secret-free namespace keyed
+  by the mount name, so cache hits survive process restarts;
+- private upstream metadata and tarballs use a secret-keyed namespace derived
+  from the mount and its effective upstream headers, so credential/header
+  rotation naturally moves future fetches to a new namespace;
 - routers cache nothing of their own; metadata and tarballs belong to the
   resolved concrete source.
 
@@ -628,11 +647,13 @@ all refer to the mount that actually supplied the package.
 This preserves compatibility with Verdaccio configuration, but it keeps the
 wrong primitive at the center. Package-name rules plus existence-based fallback
 chains force pnpr to infer origin after the fact, and that inference is the
-dependency-confusion vector. pnpr can still compile Verdaccio config into mounts
-(a `packages:` pattern with one uplink becomes a router route; local-first
-publish becomes a hosted route ahead of an upstream route), but the matched
-route is authoritative — pnpr does not merge metadata across uplinks or fall
-through to a public uplink when a private one misses or is down.
+dependency-confusion vector. PR 12747 makes `mounts:`/`defaultTarget:` the only
+package-routing surface and keeps `packages:` as access policy only. A migration
+tool can help operators rewrite a Verdaccio config into explicit mounts and
+routes, but pnpr should not keep a live compatibility mode that interprets
+`packages: proxy:` as a fallback chain. The matched route is authoritative —
+pnpr does not merge metadata across uplinks or fall through to a public uplink
+when a private one misses or is down.
 
 ### Support existence-based fallback (private first, else public)
 
@@ -696,78 +717,82 @@ boundary explicit without a process per registry.
 
 ## Implementation
 
-Implementation should be staged so compatibility remains intact while the
-server internals move to the mount model.
+PR 12747 implements the pnpr-server side as a replacement of the legacy
+Verdaccio-shaped routing model.
 
-1. Add a `RegistryMount` config model (`HostedOrg`, single-URL `Upstream`,
-   `Router`) and compile existing `uplinks`/`packages` config into it: each
-   `packages:` pattern with one uplink becomes a router route; multi-uplink
-   merge and existence fallback are not carried over.
-2. Introduce an internal `MountOrigin` value that route handlers construct for
-   every packument and tarball request.
-3. Unify the normal tarball path and the `~<uplink>` tarball path into one
-   shared origin-aware serving routine that takes a `MountOrigin`.
-4. Key metadata/tarball cache namespaces and integrity/OSV screening on the
-   resolved mount origin.
-5. Serve every mount's tarballs at the canonical path for its own registry base,
-   so pnpm's existing canonical-URL reconstruction keeps the host out of the
-   lockfile. Do not rewrite or persist concrete-mount tarball URLs.
-6. Implement routers: routes are evaluated in declared order; the first matching
-   route selects one source; the source is authoritative on not-found and on
-   unavailable (return an error, never a `404`); routers own no cache; writes
-   route by pattern and are accepted only when the matched source is hosted.
-   Validate routers at config load — reject shadowed/unreachable routes
-   (especially a non-last `**`), duplicate patterns, and unknown/self sources —
-   and fail closed on a config reload that would introduce one.
-7. Teach the resolver allowlist and route classifier to map `registry` and
-   `namedRegistries` URLs to mount identities and reject unknown ones.
-8. Add registry identity to pnpm/pacquet lockfile package identity so the same
-   `name@version` from two mounts cannot collide, recording the concrete resolved
-   source's identity (not a URL, and not the router) and reconstructing the
-   tarball URL from config. Keep pacquet's reader, writer, and installer in parity
-   with the format.
-9. Make install, frozen-lockfile verification, and tarball fetching resolve a
-   recorded registry identity through config, failing closed when it is absent.
-10. Define the `HostedBackend` interface (packument + tarball, optional publish)
-    and ship the default pnpr-native storage backend with its own storage
-    namespaces; route publish/unpublish to hosted mounts whose backend supports
-    writes (directly or via a router route that targets a hosted source).
-    Keep the serving, cache, integrity, auth, and identity layers backend-agnostic
-    so an external projection (e.g. bit.cloud's component store) can implement the
-    interface read-only.
-11. Wire the configurable default target for the path-less base, with
-    publish-to-the-path-less-base allowed only when the resolved target writes
-    to a hosted org.
+1. Add a tagged `mounts:` config model (`type: hosted`, `type: upstream`,
+   `type: router`) plus optional `defaultTarget:`. This is the only package
+   routing surface. `packages:` remains as access policy (`access`, `publish`,
+   `unpublish`) and does not proxy or fall through.
+2. Build a validated mount graph at config load. Hosted mounts populate a hosted
+   table (`org`, `access`), upstream mounts populate the runtime upstream table,
+   and routers hold ordered routes to concrete sources.
+3. Implement the restricted `PackagePattern` language: `**`, `@*/*`, `@scope/*`,
+   and exact package names. Reject unsupported wildcard forms.
+4. Validate routers statically: reject empty routes, duplicate patterns,
+   shadowed/unreachable routes (including a non-last `**`), unknown sources,
+   self-references, and routes whose source is another router.
+5. Route every mounted read through the mount graph. `/~<mount>/...` addresses
+   that mount directly; the path-less base routes through `defaultTarget` when
+   configured and returns `404` when it is not.
+6. Serve `dist.tarball` URLs canonical for the registry base the client
+   addressed, not the resolved concrete source. Tarball requests re-enter the
+   same mount graph by package name, then fetch from the selected hosted or
+   upstream source.
+7. Route writes through the same graph. A write is accepted only when the
+   resolved source is hosted; a route to an upstream is rejected with a clear
+   "name a hosted mount" error. Publish, dist-tag, unpublish, and batch publish
+   all write into the resolved hosted org namespace.
+8. Namespace hosted storage by `org` for both local filesystem and S3/R2-backed
+   storage. An empty `org` keeps using the flat storage root for registry-mock
+   fixtures. The publish journal records the org so recovery promotes staged
+   packages into the correct namespace.
+9. Enforce source and package access on mount-served reads and writes. Private
+   hosted mounts hide unauthorized package existence with `404`; private upstream
+   credentials stay server-side.
+10. Key upstream cache namespaces by mount identity: public upstreams use a
+    stable secret-free namespace, while private upstreams use a secret-keyed
+    digest of the mount and effective upstream headers. Remove shared mirror
+    failover/conditional-validator behavior from the registry serving path.
+11. Keep search local-storage-only. It scans the flat hosted store and filters
+    results through package access policy; it does not query or merge upstream
+    searches.
+12. Leave pnpm/pacquet lockfile registry identity out of this PR. The server
+    side keeps lockfiles portable by returning canonical tarball URLs for the
+    addressed base; the package-identity format change is a separate follow-up.
 
 Tests should cover:
 
-- the same `name@version` existing with different bytes in two mounts, kept
-  distinct in `packages`/`snapshots` and not colliding;
-- routing producing portable lockfiles with no pnpr host persisted,
-  reconstructing the right per-mount tarball URL, and recording the concrete
-  source (not the router) so a later route edit cannot relocate a locked package;
-- moving a lockfile between pnpr deployments with the same mount IDs without
-  package-entry churn;
+- tagged `mounts:` config parsing, unknown `type:` rejection, undefined
+  `defaultTarget` rejection, and `packages:` deriving ACLs without routing;
+- pattern parsing for `**`, `@*/*`, `@scope/*`, and exact names, plus rejection
+  of unsupported wildcard forms;
 - a private route returning not-found NOT falling through to a public source;
 - a private route listed before a catch-all winning by route order, with the
   catch-all never consulted for that matched package name;
 - config validation rejecting a router with a shadowed/unreachable route (a
   non-last `**`, or a later route fully covered by earlier ones) and failing a
-  reload that would introduce one, so a private scope can never be misordered
-  onto a public source;
+  reload that would introduce one, plus duplicate patterns, empty routes,
+  unknown sources, self-references, and router-as-source;
 - a private/matched source being **down** returning an error, never a `404`;
 - hosted organization mounts not falling through to upstreams;
-- a hosted mount backed by an external read-only projection serving packuments
-  and tarballs through the same routing/auth/cache/identity path as the default
-  storage backend, and rejecting writes it does not implement;
+- hosted storage namespaced by `org`, including an empty `org` mapping to the
+  flat storage root and path-traversal-like org names rejected at config load;
+- publish, batch publish, dist-tag, and unpublish routing to the resolved hosted
+  org and rejecting upstream write targets;
 - an upstream being exactly one URL with no secondary/mirror endpoint behavior;
-- private upstream mounts keeping credentials server-side;
+- public upstream mounts rejecting credentials/access gates, private upstream
+  mounts requiring access, and private upstream credentials staying server-side;
 - a private source's access policy enforced both through a router and via the
   source's own `~<mount>/` URL, so an open router never exposes a gated source;
-- an unauthorized caller for a private package receiving `404`, not `403`;
-- a recorded registry identity missing from config failing closed with a clear
-  error instead of falling back to the root registry;
-- cache namespace isolation by mount and credential generation;
+- an unauthorized caller for a private hosted package receiving `404`, not
+  `403`;
+- tarball URLs rewritten to the addressed registry base (path-less or
+  `/~<mount>/`) and tarball requests routing back through the same mount graph;
+- cache namespace isolation by public mount name and private effective upstream
+  headers;
+- search remaining flat-hosted-storage-only and filtered by package access
+  policy;
 - router writes accepted only when the matched route targets a hosted source;
 - an unqualified publish to the path-less base rejected when the resolved target
   does not write to a hosted org, and the path-less base disabled entirely when
@@ -782,8 +807,9 @@ the default registry and `registry·npmjs·x@1.2.3` for a named one. Registry is
 part of the lockfile key, so the same `name@version` from two registries cannot
 collide — exactly the gap pnpm has. pnpm adopted vlt's named-registry *syntax*
 (`gh:`/`alias:`) but not its *identity model*, which is why pnpm's `name@version`
-key drops the registry. This RFC adopts the identity model (registry as a key
-component), not vlt's serialization (which vlt itself is reconsidering).
+key drops the registry. The pnpm/pacquet follow-up should adopt the identity
+model (registry as a key component), not vlt's serialization (which vlt itself
+is reconsidering).
 
 Nexus's **repository group** and Artifactory's **virtual repository** are the
 established names for "aggregate several repos behind one URL". They are
@@ -805,15 +831,16 @@ Many hosted registries expose organization, project, or tenant boundaries in the
 URL. `~<org>` follows that product shape while staying compatible with npm
 package names and scopes beneath the mount.
 
-## Unresolved Questions and Bikeshedding
+## Follow-up Questions and Bikeshedding
 
-- Is `~<mount>` the right path syntax for every mount, or should hosted
-  organization mounts use a different namespace?
-- Should the config terms be `mounts`/`router`/`routes`, or something else
-  (`registries`, `registryMounts`, ...)?
-- Router pattern language: glob (`@acme/*`, `**`) vs. prefix vs. full
-  parser-combinator patterns. Precedence is not an open question: routes are
-  evaluated in declared order and the first matching route wins.
+- PR 12747 uses `/~<mount>/` for every mount, including hosted org mounts;
+  future path changes would be migrations rather than unresolved design.
+- PR 12747 uses `mounts`, `type: router`, and `routes`; future renaming would
+  be a migration, not an unresolved implementation choice.
+- Router pattern language is fixed for PR 12747: `**`, `@*/*`, `@scope/*`, and
+  exact names. Future pattern extensions must keep static coverage decidable so
+  router-shadow validation remains possible. Precedence is not an open question:
+  routes are evaluated in declared order and the first matching route wins.
 - What exact lockfile encoding carries registry identity in package identity —
   a registry-qualified package key, a package-to-registry table, or another
   compact form — and how does it interoperate with the existing `name@version`
@@ -821,8 +848,9 @@ package names and scopes beneath the mount.
 - How is the registry name/identity mapped to a URL at install time — through
   `namedRegistries`, through a single `pnprServer` base, or both — so a
   deployment move updates one setting?
-- Should a router be allowed to nest (a route whose source is another router),
-  and if so how is the authoritative/no-fall-through rule preserved across nesting?
-- How much Verdaccio config can pnpr auto-compile into routers, and what should
-  happen to configs that rely on multi-uplink merge or existence fallback (warn,
-  refuse, or compile to a single authoritative route)?
+- Router nesting is not part of PR 12747; a route source must be a concrete
+  hosted or upstream mount. Any future nesting proposal must preserve static
+  validation and resolve to one concrete source before serving.
+- Should there be a separate migration tool for Verdaccio configs that rewrites
+  `packages: proxy:` into explicit mounts/routes, and should it warn or refuse
+  configs that rely on multi-uplink merge or existence fallback?
