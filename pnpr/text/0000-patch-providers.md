@@ -325,17 +325,23 @@ mounts:
       minSeverity: high      # only include fixes at/above this severity
 ```
 
-A patch-aware client (a small pnpm follow-up) fetches the document once per
-resolution run and applies it **after version selection** — deliberately
-*not* as a pnpm override. Overrides rewrite declared specs and match them by
-subset, so an exact-version key like `ejs@2.7.4` would never apply to a
-dependency declared as `^2.7.0` — and `^2.7.0` picking `2.7.4` is exactly the
-fresh-resolution case substitute mode exists for. Instead, the client
-resolves every spec exactly as it does today, and when the **picked** version
-appears in the document, it resolves the mapped alias target in its place.
-Version selection is never changed — only which *build* of the selected
-version is installed. Everything downstream is pnpm's already-shipped alias
-machinery, and that is the point:
+A patch-aware client applies the document **after version selection** —
+deliberately *not* as a spec-rewriting override. Today's overrides rewrite
+declared specs and match them by subset, so an exact-version key like
+`ejs@2.7.4` would never apply to a dependency declared as `^2.7.0` — and
+`^2.7.0` picking `2.7.4` is exactly the fresh-resolution case substitute mode
+exists for. The proposed client mechanism (a pnpm follow-up RFC) is a second
+override kind, **resolution overrides**: selectors matched against the
+**picked** version after the resolver has chosen it, replacing that pick with
+the target spec. Matching a concrete version is *simpler* than today's
+subset-against-declared-range semantics (`semver.satisfies(picked, selector)`),
+the substitution is applied exactly once (a substituted target is not
+re-matched, so maps cannot chain or cycle), and workspaces can declare
+resolution overrides of their own — the registry-provided document is merged
+beneath them as the lowest-precedence source. Version selection is never
+changed — only which *build* of the selected version is installed.
+Everything downstream is pnpm's already-shipped alias machinery, and that is
+the point:
 
 - **The lockfile stays canonical and host-free.** A fresh resolution of
   `^2.7.0` picks `2.7.4`, the document redirects that pick, and the lockfile
@@ -350,10 +356,11 @@ machinery, and that is the point:
 - **Provenance is legible and diffable.** The lockfile shows `ejs` resolving
   to `@echo-patch/ejs@2.7.4`; when a manifest refresh moves a patch to
   `-sp2`, the next non-frozen resolution produces a reviewable lockfile diff.
-- **Opting out is explicit workspace config.** A workspace that must keep a
-  vulnerable original declares the exclusion in its own config (the pnpm
-  follow-up defines the exact setting — e.g., an ignore list for registry
-  patches), visible and reviewable like an override.
+- **Opting out is ordinary precedence.** A workspace that must keep a
+  vulnerable original declares its own resolution override for
+  `ejs@2.7.4` (mapping the pick to itself), which outranks the
+  registry-provided document — visible and reviewable, like every other
+  override.
 
 Clients that are not patch-aware never ask for the document and resolve the
 vulnerable original — no worse than today. Per-mount policy can escalate:
@@ -512,7 +519,7 @@ The registry-provided document subsumes both: the same information, one
 document beside the registry surface, zero changes to packument or tarball
 serving, and one client-side application point after version selection.
 
-### Applying the document as literal pnpm overrides
+### Applying the document as spec-rewriting overrides
 
 An earlier draft served the document *in overrides format* for the client to
 merge alongside workspace overrides. Rejected because the semantics do not
@@ -526,7 +533,11 @@ version selection* — it forces every `ejs` in the graph to the patched
 `2.7.4`, downgrading a `^2.7.0` that would have picked a genuinely fixed
 `2.7.5`. Post-pick substitution has neither problem: the resolver picks
 whatever it would have picked, and only a picked version with a patch is
-swapped for its patched build of the *same* version.
+swapped for its patched build of the *same* version. That is why the client
+mechanism is proposed as a second override kind matched after resolution —
+**resolution overrides** — rather than a reuse of spec rewriting: overrides
+stay the answer, applied at the stage where the question can actually be
+asked.
 
 ### Named-registry aliases: same name, same version, different registry
 
@@ -590,8 +601,10 @@ mount graph, routing, or the packument/tarball serving paths:
    the tarball route with the `403` reason body.
 
 Client-side follow-ups (separate pnpm RFC): `pnpm audit --fix` writing alias
-overrides from the enriched audit response, and post-pick substitution from
-the registry-provided patched-versions document during resolution.
+overrides from the enriched audit response, and the **resolution overrides**
+extension — override selectors matched against the picked version, applied
+exactly once, with workspace-declared entries outranking the
+registry-provided patched-versions document.
 
 Tests should cover, at minimum:
 
@@ -691,14 +704,14 @@ Tests should cover, at minimum:
   over the authenticated registry connection, and how a client maps multiple
   configured registries to multiple documents (fetch from each base? default
   registry only?).
-- **pnpm-side application semantics.** Does pnpm apply a registry-provided
-  patched-versions document by default when the registry offers one, or
-  behind a setting? What is the per-package opt-out surface, and how is
-  provenance surfaced (`pnpm why`, install summary)? How does an existing
-  lockfile interact with a changed document — re-resolve only on ordinary
-  re-resolution events, or also when the document digest changes? These
-  belong in the pnpm follow-up RFC, but the answers shape the document
-  format.
+- **Resolution-overrides design.** The pnpm-side follow-up must settle the
+  syntax (a separate field vs. an extension of the existing `overrides`
+  block), whether a registry-provided document is applied by default or
+  behind a setting, how provenance is surfaced (`pnpm why`, install
+  summary), the exact once-only application rule for substituted targets,
+  and how an existing lockfile interacts with a changed document —
+  re-resolve only on ordinary re-resolution events, or also when the
+  document digest changes? The answers shape the document format.
 - **Scale threshold for a filtered variant.** At what measured catalog size
   (entries, compressed bytes) does the single cached document stop being the
   right delivery, and is the fallback a name-filtered bulk lookup, a
