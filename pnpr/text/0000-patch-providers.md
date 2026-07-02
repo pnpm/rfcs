@@ -296,8 +296,7 @@ Advertise mode's audit enrichment already computes, per vulnerable version,
 the substitution a workspace should adopt. `substitute` mode serves that
 same result wholesale: the registry compiles the pinned, policy-filtered
 manifests into one **patched-versions document** — a flat map from exact
-original versions to alias specs, each carrying the manifest-pinned
-integrity of the patched tarball — at a well-known endpoint on each registry
+original versions to alias specs — at a well-known endpoint on each registry
 base that enables it:
 
 ```jsonc
@@ -305,14 +304,8 @@ base that enables it:
 {
   "schema": "pnpr-patched-versions/1",
   "versions": {
-    "ejs@2.7.4": {
-      "spec": "npm:@echo-patch/ejs@2.7.4",
-      "integrity": "sha512-..."
-    },
-    "lodash@4.17.20": {
-      "spec": "npm:@echo-patch/lodash@4.17.20",
-      "integrity": "sha512-..."
-    }
+    "ejs@2.7.4": "npm:@echo-patch/ejs@2.7.4",
+    "lodash@4.17.20": "npm:@echo-patch/lodash@4.17.20"
   }
 }
 ```
@@ -345,12 +338,12 @@ the new behavior covers exactly the picks that previously slipped through —
 which is what the override's author meant all along. The substitution is
 applied exactly once (a substituted target is not re-matched, so maps
 cannot chain or cycle). Because the document's entries are all
-exact-version→exact-spec, they are ordinary overrides under this extension
-— each with a pinned integrity riding along, the way a lockfile pins one —
-and the registry document is merged beneath the workspace's own overrides
-as the lowest-precedence source. Version selection is never changed — only
-which *build* of the selected version is installed. Everything downstream
-is pnpm's already-shipped alias machinery, and that is the point:
+exact-version→exact-spec, they are ordinary overrides under this extension,
+indistinguishable from ones the workspace wrote itself, and the registry
+document is merged beneath the workspace's own overrides as the
+lowest-precedence source. Version selection is never changed — only which
+*build* of the selected version is installed. Everything downstream is
+pnpm's already-shipped alias machinery, and that is the point:
 
 - **The lockfile stays canonical and host-free.** A fresh resolution of
   `^2.7.0` picks `2.7.4`, the document redirects that pick, and the lockfile
@@ -393,23 +386,25 @@ route cannot distinguish a fresh resolution from an old pinned one, so
 which is precisely what "no known-patchable vulnerable artifact leaves this
 registry" means. The default is `serve`.
 
-**Resolution cost: substitution is free by construction.** Matching is a
-map lookup per pick — nothing for the unpatched majority. A matched pick
-does not trigger a second metadata resolution either, because the entry
-carries everything a registry resolution consists of: the exact
-name-and-version (from `spec`) and the tarball integrity (from
-`integrity`), with the canonical tarball URL computable from registry
-config. The client constructs the substituted resolution directly — no
-patch-scope packument fetch — and reads the manifest for subtree resolution
-from the tarball it will fetch regardless. The original pick is not wasted
-work: it is the key that selects the patch, and there is no way to learn
-that `^2.7.0` lands on `2.7.4` without performing the pick. Carrying the
-integrity is also a provenance property, not only a shortcut: the
-substituted tarball is verified against the manifest-pinned digest the same
-way a locked resolution is, so a compromised patch source cannot serve
-different bytes than the provider's signed manifest promised — on the very
-first install, before any lockfile exists. Server-side, the map and the
-patch-scope metadata are local, so substitution is a lookup there too.
+**Resolution cost.** Matching is a map lookup per pick — nothing for the
+unpatched majority. A matched pick resolves the alias target: an
+exact-version resolution against the patch-scope packument, which is small
+(patched versions only), cached like any other, and fetched in parallel
+with the rest of resolution. That is a second resolution of *that
+dependency*, never of the graph, and the original pick is not wasted work —
+it is the key that selects the patch; there is no way to learn that
+`^2.7.0` lands on `2.7.4` without performing the pick. A fetch-free variant
+— carrying each patched tarball's integrity in the document so the client
+constructs the resolution directly — was considered and rejected: a
+hand-written override will never carry an integrity, so the mechanism would
+fork into two systems (or grow an object-form override type), and it
+crosses no trust boundary, because the document and the patch-scope
+packument are served by the same registry origin — pinning one to the other
+adds nothing a compromised registry could not rewrite in both. The
+end-to-end pin lives where it belongs: pnpr verifies patch-source bytes
+against the provider's *signed manifest* before serving them. Server-side,
+the map and the patch-scope metadata are local, so substitution is a lookup
+there.
 
 **Server-side and client-side resolution apply the same map at the same
 point.** The flow above is client-side resolution: pnpm reads packuments,
@@ -433,9 +428,9 @@ Costs and requirements, stated honestly:
 - **Automatic protection reaches only patch-aware clients.** npm and yarn
   users get advertise-mode discovery (and `refuse`, where enabled). pnpr is
   pnpm-first, and the document format is deliberately trivial — exact
-  version in; alias spec and integrity out — so other tools can consume it,
-  and an org can still mechanically derive blunt bare-name overrides from it
-  for clients that predate the feature.
+  version in, alias spec out — so other tools can consume it, and an org can
+  still mechanically derive blunt bare-name overrides from it for clients
+  that predate the feature.
 - **Provider retention becomes load-bearing.** A lockfile aliasing
   `@echo-patch/ejs@2.7.4` installs only while that artifact remains
   available. Providers must treat their patch namespaces as immutable and
@@ -463,9 +458,9 @@ prefers.
 catalog, and that catalog is advisory-driven: an entry exists only for an
 exact `name@version` that has a backported fix, so growth tracks CVE history
 in patched packages, not the registry. Realistic catalogs are on the order
-of 10³–10⁴ entries; at roughly 200 bytes per entry — the sha512 integrity
-dominates, and hash bytes do not compress — that is a couple of megabytes
-raw and on the order of a megabyte on the wire at the high end.
+of 10³–10⁴ entries; at roughly 80 bytes per entry that is sub-megabyte raw,
+and the shape (one scope prefix, repeated names) compresses to tens of
+kilobytes.
 Policy filtering (`minSeverity`, `requireAdvisoryMatch`) trims it further.
 Delivery cost is bounded by the caching contract rather than the size: the
 document changes only on manifest refresh or config reload, so a client
@@ -658,10 +653,9 @@ mount graph, routing, or the packument/tarball serving paths:
    Validate the policy block (known provider, mode, severity gate,
    `unawareClients`, one substituting provider per original `name@version`
    per mount); compile the pinned, policy-filtered manifests into the
-   `/-/pnpr/patched-versions` document — each entry carrying the
-   manifest-pinned integrity of its patched tarball — with a digest/ETag,
-   recompiled only on manifest refresh or config reload; implement
-   `unawareClients: refuse` on the tarball route with the `403` reason body.
+   `/-/pnpr/patched-versions` document with a digest/ETag, recompiled only
+   on manifest refresh or config reload; implement `unawareClients: refuse`
+   on the tarball route with the `403` reason body.
 5. **Server-side resolution integration.** Where pnpr resolves on the
    client's behalf (the resolution endpoint of the auth-aware
    resolution-cache design), apply the pinned map post-pick before a
@@ -692,8 +686,9 @@ Tests should cover, at minimum:
 - audit bulk endpoint carrying the override-spec extension for a vulnerable
   version with a manifest entry, and omitting it otherwise;
 - the patched-versions document compiled from pinned manifests, filtered by
-  `minSeverity`, stable between refreshes, served with a digest/ETag, and
-  carrying per-entry integrity equal to the manifest's;
+  `minSeverity`, stable between refreshes, and served with a digest/ETag;
+- the patch-scope packument's `dist.integrity` for a manifest-listed version
+  equaling the manifest's pinned integrity (the client-visible pin);
 - packuments and tarball responses byte-identical with `patching:` enabled
   and disabled — substitute mode touches neither serving path;
 - an existing lockfile pinning the vulnerable original installing unchanged
@@ -798,9 +793,8 @@ Tests should cover, at minimum:
   automatically?
 - **Scale threshold for a filtered variant.** At what measured catalog size
   (entries, compressed bytes) does the single cached document stop being the
-  right delivery — integrity hashes dominate the bytes and do not compress —
-  and is the fallback a name-filtered bulk lookup, a chunked/delta encoding,
-  or both?
+  right delivery, and is the fallback a name-filtered bulk lookup, a
+  chunked/delta encoding, or both?
 - **Default mode.** Is `advertise` the right default for `patching:`, with
   `substitute` as the explicit escalation? (This RFC assumes yes: changing
   what fresh resolutions receive should be a deliberate, visible deployment
