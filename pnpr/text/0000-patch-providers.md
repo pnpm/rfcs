@@ -10,22 +10,23 @@ vendor is the declared origin), and a **patch scope** — the provider publishes
 patched artifacts under its own package namespace (`@echo-patch/ejs@2.7.4`),
 served through ordinary mounts and routes. A signed, pinned **patch
 manifest** ties the two names together, and a per-mount `patching:` policy
-applies it in one of two modes: **advertise**, where consumers adopt patches
-explicitly via package alias overrides
-(`"ejs@2.7.4": "npm:@echo-patch/ejs@2.7.4"`) surfaced through audit
-enrichment, and **substitute**, where pnpr annotates the vulnerable
-version's entry in served packuments with the patch mapping and a
-patch-aware resolver selects it: whenever resolution picks an annotated
-version, the resolver returns the provider's aliased artifact instead —
-recorded like an ordinary alias, with a canonical, host-free lockfile
-resolution — while already-pinned installs are never altered.
+applies it in one of two modes. Both serve the same per-version
+**annotation** on the vulnerable version's packument entry, which a
+patch-aware resolver acts on **after version selection**: whenever
+resolution picks an annotated version, it returns the provider's aliased
+artifact instead — recorded like an ordinary alias, with a canonical,
+host-free lockfile resolution — while already-pinned installs are never
+altered. The modes differ only in the client posture the annotation
+requests: **advertise** substitutes only for patches the workspace has
+explicitly accepted (discovered through audit enrichment, accepted by hand
+or via `pnpm audit --fix`), while **substitute** substitutes by default,
+with a per-package ignore list to refuse.
 
 Notably, this requires **no new mount kind**. Both shapes are expressible
 with hosted/upstream/router mounts as already specified; the only
-serving-path addition is the substitute-mode annotation, layered onto
-affected packuments on egress over a pristine cache. What this RFC adds is
-the manifest protocol, that annotation, and the audit/advisory machinery
-around them.
+serving-path addition is the annotation, layered onto affected packuments
+on egress over a pristine cache. What this RFC adds is the manifest
+protocol, that annotation, and the audit/advisory machinery around them.
 
 Both shapes extend the invariants of the registry-mounts RFC rather than
 weakening them:
@@ -227,52 +228,43 @@ package versions to their patched counterparts:
   because adoption is always an exact pin produced from the manifest — no
   range resolution against upstream expectations ever happens there.
 
-### Advertise mode: explicit adoption via alias overrides
+### Advertise mode: discovery and explicit acceptance
 
-In `advertise` mode, adoption is a **package alias override** in the consuming
-workspace — the mechanism pnpm already has for substituting one package for
-another:
+In `advertise` mode the registry surfaces available patches but substitutes
+nothing by default: adoption is an explicit, reviewable workspace decision.
+The mechanics are the same annotation and patch-aware resolver as substitute
+mode (below) — the annotation simply requests an **opt-in posture**. Three
+adoption paths:
 
-```jsonc
-{
-  "pnpm": {
-    "overrides": {
-      "ejs@2.7.4": "npm:@echo-patch/ejs@2.7.4"
-    }
-  }
-}
-```
-
-One property of overrides matters here: an override rewrites the **declared
-specs** in `package.json` files, and its selector matches a declared range by
-subset. The exact-version key above therefore covers dependencies declared as
-`2.7.4` (typical for lockstep pins and many transitive declarations) but
-*not* a dependency declared as `^2.7.0` — no selector short of the bare name
-matches that, and a bare-name override
-(`"ejs": "npm:@echo-patch/ejs@2.7.4"`) also *forces* the version for every
-`ejs` in the graph. Both are legitimate hand-written choices — visible,
-reviewable, deliberate — but the range case is handled properly by substitute
-mode (below), which is applied after version selection instead of to specs.
-
-Three adoption paths, from least to most automatic:
-
-1. **Hand-written overrides**, as above. Works today with no pnpr or pnpm
-   changes; the alias installs the patched bytes at every point in the graph
-   where `ejs@2.7.4` appeared, including transitive positions.
-2. **Audit enrichment.** pnpr implements the npm audit endpoints
+1. **Audit enrichment.** pnpr implements the npm audit endpoints
    (`/-/npm/v1/security/advisories/bulk`) against OSV plus the pinned
-   manifests, and reports, per vulnerable version, the exact override spec
+   manifests, and reports, per vulnerable version, the patched artifact
    available *on this registry*. The stock response format has no field for
-   "an aliased fix exists", so pnpr adds a namespaced extension field to each
-   advisory entry carrying the suggested override; clients that do not know
-   the field ignore it.
-3. **`pnpm audit --fix` (pnpm follow-up, out of scope here).** pnpm reads the
-   enriched audit response and writes the alias overrides mechanically. This
-   is deliberately a *write-my-config* flow: the override is visible in the
-   workspace manifest and lockfile, reviewable in the PR that introduces it,
-   and removable when the team upgrades away from the vulnerable base
-   version. (Registry-side resolution-time behavior is substitute mode,
-   below.)
+   "an aliased fix exists", so pnpr adds a namespaced extension field
+   carrying the mapping (`ejs@2.7.4 → npm:@echo-patch/ejs@2.7.4`); clients
+   that do not know the field ignore it.
+2. **Explicit acceptance (patch-aware clients).** The workspace lists
+   accepted patches in its config — per entry, or per provider — and the
+   patch-aware resolver substitutes exactly as in substitute mode, but only
+   for accepted entries. `pnpm audit --fix` (pnpm follow-up, out of scope
+   here) becomes mechanical: read the enriched audit response, append
+   accept-list entries — reviewable in the PR that introduces them,
+   removable after upgrading away. Because acceptance is applied by the
+   resolver **after version selection**, it correctly covers picks reached
+   through ranges — the case overrides cannot express, below.
+3. **Hand-written overrides (any npm-compatible client, today).** An alias
+   override adopts a patch with no new client feature — but overrides
+   rewrite *declared specs* by subset matching, and that has teeth:
+   `"ejs@2.7.4": "npm:@echo-patch/ejs@2.7.4"` covers only dependencies
+   declared as exactly `2.7.4`, silently missing every `^2.7.0` that
+   resolves to `2.7.4`. Covering ranges requires keying by the declared
+   ranges themselves (`"ejs@^2.7.0": "npm:@echo-patch/ejs@2.7.4"`), which
+   *freezes* everything inside that range to the patched build — including
+   after upstream releases a fixed `2.7.5` — and misses differently-shaped
+   ranges added later; a bare-name key is the same trade graph-wide. This
+   path is honest and available, but it is a blunt instrument, not the
+   mechanism this RFC builds on — and it is why `pnpm audit --fix` writes
+   accept-list entries rather than overrides.
 
 What the alias buys over other encodings of "patched artifact":
 
@@ -289,19 +281,20 @@ What the alias buys over other encodings of "patched artifact":
   `npm outdated`, Renovate/Dependabot version filtering, semver-range
   tooling — never see a prerelease identifier on the adoption path.
 
-Advertise mode's limit is that it is **opt-in per workspace**: a fresh
-`pnpm install` in a repository that has not written the override resolves
-`^2.7.0` to the vulnerable original, exactly as before. Repositories that
-never run `pnpm audit` never find out. When the deployment's intent is "no
-fresh resolution may pick a version we have a patch for", that is substitute
-mode.
+Advertise mode's limit is deliberate: it is **opt-in per workspace**. A
+fresh `pnpm install` in a repository that has accepted nothing resolves
+`^2.7.0` to the vulnerable original, exactly as before, and repositories
+that never run `pnpm audit` never find out. When the deployment's intent is
+"no fresh resolution may pick a version we have a patch for", that is
+substitute mode.
 
 ### Substitute mode: annotated packuments selected by the resolver
 
-`substitute` mode puts the mapping where the resolver is already looking:
-on the vulnerable version's entry in the packument. For every manifest
-entry the mount's policy accepts, pnpr serves the base packument with an
-annotation on that version — original metadata and `dist` untouched:
+Both modes put the mapping where the resolver is already looking: on the
+vulnerable version's entry in the packument. For every manifest entry the
+mount's policy accepts, pnpr serves the base packument with an annotation on
+that version — original metadata and `dist` untouched — carrying the mode's
+requested posture:
 
 ```jsonc
 // GET /~main/ejs — versions["2.7.4"], annotated on egress
@@ -310,7 +303,8 @@ annotation on that version — original metadata and `dist` untouched:
   "_pnprPatch": {
     "patched": "npm:@echo-patch/ejs@2.7.4",
     "provider": "echo",
-    "fixes": ["GHSA-..."]
+    "fixes": ["GHSA-..."],
+    "apply": "default"        // advertise mode serves "opt-in"
   }
 }
 ```
@@ -333,7 +327,11 @@ mounts:
 The annotation is applied **on egress**: the cached upstream packument stays
 byte-identical to what the origin served, and the annotation is layered on
 at response time as a pure function of the pinned manifest snapshot. The
-field is inert for any client that does not know it.
+field is inert for any client that does not know it. In advertise mode the
+identical annotation is served with `apply: opt-in` and the resolver
+substitutes only workspace-accepted entries (previous section); the rest of
+this section describes the default-on posture that gives substitute mode its
+name.
 
 A patch-aware resolver (a pnpm follow-up RFC) selects the annotation
 *inside* the resolve call. pnpm's resolver already separates a dependency's
@@ -569,7 +567,10 @@ protection. Widening the selector cannot fix it: no range selector matches
 forces every `ejs` in the graph to the patched `2.7.4`, downgrading a
 `^2.7.0` that would have picked a genuinely fixed `2.7.5`. Any correct
 mechanism must act after version selection — spec rewriting cannot see the
-pick.
+pick. The same fact rules out `pnpm audit --fix` emitting overrides: an
+exact-version key would not apply to range declarations, and range or
+bare-name keys freeze or force version selection — which is why the fix
+flow writes accept-list entries for the patch-aware resolver instead.
 
 ### A standalone patched-versions document plus an override extension
 
@@ -660,12 +661,12 @@ pristine cached packuments:
    version.
 4. **Per-mount `patching:` policy and the egress annotation.** Validate the
    policy block (known provider, mode, severity gate, `unawareClients`, one
-   substituting provider per original `name@version` per mount); in
-   substitute mode, annotate matched version entries of served packuments
-   on egress as a pure function of the pinned snapshots, leaving cached
-   upstream documents and every `dist` object untouched; implement
-   `unawareClients: refuse` on the tarball route with the `403` reason
-   body.
+   substituting provider per original `name@version` per mount); annotate
+   matched version entries of served packuments on egress with the mode's
+   requested posture (`apply: default` / `opt-in`), as a pure function of
+   the pinned snapshots, leaving cached upstream documents and every `dist`
+   object untouched; implement `unawareClients: refuse` on the tarball
+   route with the `403` reason body.
 5. **Server-side resolution integration.** Where pnpr resolves on the
    client's behalf (the resolution endpoint of the auth-aware
    resolution-cache design), apply the same annotation logic inside
@@ -673,12 +674,13 @@ pristine cached packuments:
    substitution marker, and include the patching policy and snapshot digest
    in resolution-cache keys.
 
-Client-side follow-ups (separate pnpm RFC): `pnpm audit --fix` writing alias
-overrides from the enriched audit response, and the patch-aware resolver —
+Client-side follow-ups (separate pnpm RFC): the patch-aware resolver —
 selecting `_pnprPatch` inside the resolve call, returning the aliased
 identity (`resolvedVia: registry-patch`), recording substituted entries in
-a dedicated lockfile section so satisfiability checks accept them, with an
-explicit ignore setting for opting out.
+a dedicated lockfile section so satisfiability checks accept them, and
+honoring the posture through accept lists (opt-in annotations) and ignore
+lists (default annotations) — plus `pnpm audit --fix` writing accept-list
+entries from the enriched audit response.
 
 Tests should cover, at minimum:
 
@@ -696,7 +698,9 @@ Tests should cover, at minimum:
 - audit bulk endpoint carrying the override-spec extension for a vulnerable
   version with a manifest entry, and omitting it otherwise;
 - matched version entries annotated on egress only for manifest-covered,
-  policy-accepted versions, as a pure function of the pinned snapshot;
+  policy-accepted versions, as a pure function of the pinned snapshot,
+  carrying `apply: opt-in` in advertise mode and `apply: default` in
+  substitute mode;
 - cached upstream packuments staying byte-identical to origin (annotation
   on egress only), every `dist` object and all tarball responses identical
   with `patching:` enabled and disabled;
@@ -807,11 +811,11 @@ Tests should cover, at minimum:
   squatting on the public registry is a consideration when the patch source
   is also reachable as a plain npm registry.
 - **Alias-override support matrix.** pnpm supports `npm:` aliases in
-  overrides; verify the exact behavior in npm's `overrides` and yarn's
-  `resolutions` so the audit-suggested spec works (or degrades clearly)
-  across clients.
+  overrides; verify the exact selector-matching and alias behavior in npm's
+  `overrides` and yarn's `resolutions` so the documented hand-written path
+  (range-keyed alias overrides) works, or degrades clearly, across clients.
 - **Audit extension field shape.** The exact name and structure of the
-  namespaced field carrying the suggested override in the bulk-advisories
+  namespaced field carrying the patch mapping in the bulk-advisories
   response, and whether `pnpm audit` should render it without the `--fix`
   follow-up.
 - **SBOM/upstream identity mapping.** License and SBOM tooling will record
@@ -825,10 +829,12 @@ Tests should cover, at minimum:
 - **Patch-aware resolver design.** The pnpm-side follow-up must settle
   whether annotations are honored by default when present or behind a
   setting, whether they are honored from *any* registry or only from
-  configured pnpr bases, the opt-out surface (ignore list per package or
-  per provider), how provenance is surfaced (`pnpm why`, install summary,
-  the `resolvedVia` marker), and the annotation field name (`_pnprPatch`
-  vs. something vendor-neutral other resolvers could adopt).
+  configured pnpr bases, the shape of the opt-in and opt-out surfaces
+  (accept list for `apply: opt-in` annotations, ignore list for
+  `apply: default` ones — per package or per provider), how provenance is
+  surfaced (`pnpm why`, install summary, the `resolvedVia` marker), and the
+  annotation field name (`_pnprPatch` vs. something vendor-neutral other
+  resolvers could adopt).
 - **Lockfile recording shape.** The name and format of the lockfile section
   recording substituted entries — it must let satisfiability checks accept
   an aliased resolution the workspace's own config does not explain, and
