@@ -759,12 +759,23 @@ Tests should cover, at minimum:
   almost verbatim: keyed by an exact package id, it swapped the *source* of
   an already-resolved node, and the replacement was required to keep the
   same name and version — precisely the same-version-different-build
-  contract of a security patch. It was deprecated in favor of `[patch]`
-  because users wanted *version-changing* overrides (unpublished bumps),
-  which `[replace]` could not express — a need this design leaves with
-  pnpm's existing spec-rewriting overrides, keeping the post-pick mechanism
-  for the case where even Cargo's docs note `[patch]` merely "acts just
-  like `[replace]`": identical name and version, different source.
+  contract of a security patch. It was deprecated in favor of `[patch]`,
+  which instead augments the candidate set a source offers *before*
+  resolution — because users wanted *version-changing* overrides
+  (unpublished bumps `[replace]` could not express), and because mutating
+  the graph behind the resolver's back broke resolver-derived behavior such
+  as feature unification. Neither of `[patch]`'s two moves transfers to
+  npm's model: candidate *replacement* (same version, different bytes)
+  works in Cargo because source is part of package identity in
+  `Cargo.lock`, which npm's `(name, version)` identity cannot represent —
+  the rejected dist-rewrite; candidate *addition* works because a Cargo
+  patch carries a real version that ranges select, whereas an npm patched
+  artifact pinned to the same version number can only be distinguished by a
+  prerelease suffix that ranges exclude — the rejected grafting. That is
+  why this design moves identity into the *name* (patch scope) and keeps
+  `[replace]`-style post-pick substitution, with the applied-exactly-once
+  rule standing in for the graph-mutation opacity that bit Cargo, and the
+  version-changing need left with pnpm's spec-rewriting overrides.
 - **npm's overrides (RFC 0036)** are the cautionary tale for *where* to
   match. npm's version-keyed overrides do try to match resolved versions
   ("a match if the named package specifier would be satisfied by the
