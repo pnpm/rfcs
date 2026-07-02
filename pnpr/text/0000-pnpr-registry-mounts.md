@@ -5,9 +5,12 @@
 pnpr should model every addressable registry origin as a **registry mount**.
 There are exactly two concrete mount kinds — a pnpr-**hosted** organization
 registry and a single-origin **upstream** registry — plus one composite, a
-**router** that maps package-name patterns to concrete mounts. Named mounts are
-exposed at `https://<pnpr>/~<mount>/`, so every origin has an explicit identity
-in the URL, in pnpr's internal routing, and in client resolution.
+**router** that presents an ordered list of concrete mounts behind one URL.
+Every concrete mount declares the package-name **patterns** it serves — its
+namespace — and a router routes each package to the first listed source whose
+patterns claim it. Named mounts are exposed at `https://<pnpr>/~<mount>/`, so
+every origin has an explicit identity in the URL, in pnpr's internal routing,
+and in client resolution.
 
 The design is governed by one invariant:
 
@@ -21,6 +24,11 @@ outage or a missing name silently switch a package to a different origin — the
 dependency-confusion class — and the model omits them by construction rather
 than mitigating them. Outage resilience comes from pnpr's own cache, never from
 trying a different origin.
+
+The namespace lives on the origin itself: a mount can neither serve nor accept
+a publish of a name outside its declared patterns, on any path to it. Routing
+is therefore *derived* from declared ownership — a router orders competing
+claims, it never assigns a name to a mount that does not claim it.
 
 The pnpr-server implementation keeps lockfiles deployment-portable by serving
 canonical tarball URLs for the registry base the client addressed, so pnpm can
@@ -58,6 +66,32 @@ domains:
   elsewhere" is the dependency-confusion mechanism: an attacker who registers a
   private package's name publicly is served the moment the private origin 404s
   or is briefly down. The mount model forbids that fall-through entirely.
+
+### Routing must be derived from the origin's declared namespace
+
+An earlier iteration of this design declared name patterns on router routes
+while the concrete mounts themselves accepted any name. That decoupling has
+two costs:
+
+- **The hosted namespace is open.** A hosted mount accepts a publish of any
+  name (gated only by the identity-flavored `packages:` ACL, whose default is
+  permissive). A name no router routes to the mount becomes dormant stored
+  state: unreachable today, authoritative the moment an operator edits routes
+  or a client addresses `/~<mount>/` directly. The static router validation
+  built to catch "a config mistake silently sends a name to the wrong origin"
+  cannot see stored state, so route edits are not as safe as the validation
+  implies. A typo'd scope published to the mount's own URL also succeeds
+  silently and then 404s through the router. And a private upstream mount will
+  fetch arbitrary public names through its server-owned credential for any
+  caller its `access:` admits.
+- **Patterns are duplicated.** The names a mount is *for* and the names routed
+  *to* it are the same fact, written in different places — on every router
+  that includes the mount, and implicitly in what gets published to it — and
+  the copies can drift.
+
+Declaring patterns on the mount itself closes both: the origin's namespace is
+one declaration, enforced at publish and serve time on every path to the
+mount, and routers derive their routing from it instead of restating it.
 
 ### pnpm cannot represent the same `name@version` from two registries today
 
@@ -101,8 +135,11 @@ The desired outcome is a design where:
 - `~acme` can serve only packages hosted by the `acme` organization;
 - `~npmjs` can serve the public npm registry;
 - `~corp` can serve a private upstream with pnpr-managed credentials;
+- every mount declares the package-name patterns it serves, and pnpr enforces
+  that namespace on the mount itself — an undeclared name can be neither
+  published to nor served from it;
 - a router can present several of these behind one URL, routing each package to
-  exactly one of them by an explicit name pattern — never by guessing;
+  exactly one of them by the sources' declared patterns — never by guessing;
 - private packages are declared (by scope/pattern or named registry), so a
   private name can never silently resolve to a public origin;
 - the path-less base URL is an optional, configurable default target, never a
@@ -141,11 +178,13 @@ mounts:
     type: hosted
     org: acme
     access: team:acme
+    patterns: ['@acme/*']
 
   npmjs:
     type: upstream
     url: https://registry.npmjs.org/
     public: true
+    # No patterns: serves every name — the catch-all in any router.
 
   corp:
     type: upstream
@@ -153,18 +192,13 @@ mounts:
     auth:
       tokenEnv: CORP_NPM_TOKEN
     access: team:acme
+    patterns: ['@corp/*']
 
-  # One URL that routes each package to exactly one concrete mount by the first
-  # matching explicit name pattern. No existence-based fallback.
+  # One URL that routes each package to the first listed mount whose declared
+  # patterns claim it. No existence-based fallback.
   main:
     type: router
-    routes:
-      - patterns: ['@acme/*']
-        source: acme
-      - patterns: ['@corp/*']
-        source: corp
-      - patterns: ['**']
-        source: npmjs
+    sources: [acme, corp, npmjs]
 
 defaultTarget: main
 ```
@@ -178,6 +212,8 @@ enum RegistryMount {
     Hosted {
         org: OrgId,
         access: AccessPolicy,
+        /// The names this mount serves. Empty = every name.
+        patterns: Vec<PackagePattern>,
     },
     /// Exactly one external origin. Not a chain and not a set of endpoints:
     /// one URL, one credential generation, one cache namespace.
@@ -186,24 +222,21 @@ enum RegistryMount {
         auth: Option<UpstreamAuth>,
         access: Option<AccessPolicy>,
         cache: CachePolicy,
+        /// The names this mount serves. Empty = every name.
+        patterns: Vec<PackagePattern>,
     },
-    /// Maps package-name patterns to concrete mounts in declared order. The
-    /// first matching route resolves to that route's source — authoritatively.
-    /// A source's "not found" or "unavailable" is final; the router never
-    /// tries another.
+    /// An ordered list of concrete mounts. A package resolves to the first
+    /// source whose declared patterns claim it — authoritatively. A source's
+    /// "not found" or "unavailable" is final; the router never tries another.
     Router {
-        routes: Vec<Route>,
+        sources: Vec<MountId>, // Hosted or Upstream mounts; never another Router
     },
-}
-
-struct Route {
-    patterns: Vec<PackagePattern>,
-    source: MountId, // a Hosted or Upstream mount; never another Router member by existence
 }
 ```
 
 A mount owns:
 
+- its declared package-name patterns — the namespace it serves;
 - its authorization policy for the pnpr caller;
 - its upstream credential, if it has one;
 - its metadata and tarball cache namespace;
@@ -214,6 +247,33 @@ A mount owns:
 The important invariant is that a package request resolves to one concrete
 origin descriptor before metadata, tarballs, cache, or advisory decisions are
 made.
+
+### Mount namespaces (`patterns`)
+
+Every concrete mount may declare the package names it serves:
+
+- **Small pattern language.** Patterns are deliberately restricted to four
+  statically decidable shapes: `**` for all packages, `@*/*` for all
+  well-formed scoped packages, `@scope/*` for one concrete scope, and an exact
+  package name such as `foo` or `@scope/foo`. Any other `*` form is a config
+  error, not a literal that silently never matches.
+- **Omitted patterns mean every name.** A mount with no `patterns:` serves any
+  package. This keeps the single-purpose cases free of ceremony: a pure hosted
+  registry, or a public npmjs upstream acting as a router's catch-all.
+- **The namespace is enforced on the mount itself, on every path to it.** A
+  publish of a name outside the mount's patterns is rejected; a read of one is
+  a definitive `404`, answered before storage or the upstream is consulted —
+  whether the request came through a router or addressed `/~<mount>/`
+  directly.
+
+One declaration therefore does double duty: it is the mount's routing claim —
+what routers use to select a source — and its request filter. For a hosted
+mount the filter closes name squatting: a name outside the declared namespace
+cannot be published at all, so no dormant stored state can become
+authoritative when routes are later edited. For a private upstream mount the
+filter stops an authorized caller from pulling arbitrary public names through
+the mount's server-owned credential, spending its quota and filling its
+private cache namespace with content that belongs on a public route.
 
 ### Hosted organization mounts
 
@@ -233,8 +293,10 @@ name. This avoids a generic `~hosted` URL that describes implementation rather
 than ownership.
 
 Hosted organization mounts have no upstream fallback. A request to `/~acme/foo`
-returns `foo` only if the `acme` organization hosts `foo` and the caller is
-authorized to read it.
+returns `foo` only if the mount's patterns claim `foo`, the `acme` organization
+hosts it, and the caller is authorized to read it. A publish is likewise
+accepted only for a claimed name, so the stored namespace can never grow beyond
+the declared one.
 
 The implemented hosted mount is pnpr-native storage with a per-org namespace.
 The YAML `org` field selects that namespace; an omitted or empty `org` uses the
@@ -282,6 +344,13 @@ public origin is fetched anonymously and sends none. A non-public upstream must
 declare an `access` list naming which pnpr callers may use that mount; any
 upstream credential stays server-side.
 
+An upstream mount's `patterns:` bound which names may be requested through it.
+This matters most for a private upstream: without a namespace bound, any
+caller the mount's `access:` admits could fetch arbitrary public package names
+through the mount's server-owned credential. With `patterns: ['@corp/*']`,
+`/~corp/lodash` is a `404`, and `lodash` reaches its declared public origin
+instead.
+
 This is the current `~<uplink>` idea generalized into the primary origin model.
 The name "uplink" can remain as a compatibility term, but architecturally it is
 a registry mount.
@@ -289,36 +358,31 @@ a registry mount.
 ### Router mounts
 
 A router presents several concrete mounts behind one URL and selects exactly one
-of them per package, by an explicit name pattern:
+of them per package, by the sources' own declared patterns:
 
 ```yaml
 mounts:
   main:
-    router:
-      routes:
-        - patterns: ['@acme/*']
-          source: acme
-        - patterns: ['@corp/*']
-          source: corp
-        - patterns: ['**']
-          source: npmjs
+    type: router
+    sources: [acme, corp, npmjs]
 ```
 
 This is the one-URL convenience of a Verdaccio facade, made safe by being
 **declarative and authoritative** rather than existence-based:
 
-- **Small pattern language.** Router patterns are deliberately restricted to
-  four statically decidable shapes: `**` for all packages, `@*/*` for all
-  well-formed scoped packages, `@scope/*` for one concrete scope, and an exact
-  package name such as `foo` or `@scope/foo`. Any other `*` form is a config
-  error, not a literal that silently never matches.
-- **One package, one route, one source.** A request resolves the package name
-  by evaluating the router's routes in declared order. The first route whose
-  patterns match is authoritative; later routes are not consulted even if their
-  patterns would also match. A `**` catch-all is an ordinary route and should be
-  listed last when it is meant to handle only otherwise-unmatched names.
-- **The matched source is authoritative.** If `@acme/foo` matches the `acme`
-  route and `acme` returns *not found*, the router returns not found. It does
+- **A router restates nothing.** It is an ordered list of concrete source
+  mounts; the patterns live on the sources. A router can order competing
+  claims, but it cannot assign a name to a mount that does not claim it —
+  routing is derived from declared ownership, so the mount's namespace and its
+  routing cannot drift apart.
+- **One package, one source.** A request resolves the package name by
+  evaluating the sources in declared order. The first source whose patterns
+  claim the name is authoritative; later sources are not consulted even if
+  their patterns would also match. A pattern-less source claims every name, so
+  it must be listed last — anything after it is unreachable and rejected by
+  validation. A name no source claims is a definitive not-found.
+- **The matched source is authoritative.** If `@acme/foo` is claimed by `acme`
+  and `acme` returns *not found*, the router returns not found. It does
   **not** consult `npmjs`. A private name therefore can never resolve to a
   public origin, which is the dependency-confusion vector closed by construction.
 - **Unavailable is not "not found".** If the matched source is down (`5xx`,
@@ -330,59 +394,58 @@ This is the one-URL convenience of a Verdaccio facade, made safe by being
 - **No state of its own.** A router owns no bytes, metadata cache, or tarball
   cache. It resolves to a concrete member and uses that member's namespaces,
   credentials, and policy context.
-- **Writes route by pattern to a hosted source.** Publishing `@acme/foo` through
-  the router matches the `acme` route and writes there because `acme` is hosted.
-  Publishing a name whose route targets an upstream is rejected with a clear
-  "name a hosted mount" error — a write can never land on an upstream.
+- **Writes route to a hosted source.** Publishing `@acme/foo` through the
+  router selects `acme` (the first source claiming the name) and writes there
+  because `acme` is hosted. Publishing a name whose selected source is an
+  upstream is rejected with a clear "name a hosted mount" error — a write can
+  never land on an upstream.
 
 Routing is deterministic from config, so the same name always resolves to the
-same concrete source until an operator edits the routes. That is the only thing
+same concrete source until an operator edits the mounts. That is the only thing
 a router does: pick one declared origin. It cannot merge metadata across
 sources, and it cannot fall through between them.
 
 ### Router validation
 
-Because routing is first-match-in-order, route order is load-bearing, and a
+Because routing is first-source-in-order, source order is load-bearing, and a
 misordered router is the one way a *configuration mistake* can reintroduce the
 cross-origin hazard the model otherwise forbids — silently sending a private
 scope to a public origin:
 
 ```yaml
-routes:
-  - patterns: ['**']        # catch-all first
-    source: npmjs
-  - patterns: ['@acme/*']   # unreachable: @acme/* already resolves to npmjs
-    source: acme
+sources: [npmjs, acme]   # npmjs claims every name; acme is unreachable
 ```
 
 pnpr must therefore validate every router at config load and **refuse to start
-(and fail a config reload) on an unreachable route**, rather than accept it and
+(and fail a config reload) on an unreachable source**, rather than accept it and
 serve a private name from a public source. The checks are static, because
-pattern-set coverage is decidable for the router's restricted pattern language:
+pattern-set coverage is decidable for the restricted pattern language:
 
-- **No shadowed route.** A route whose patterns are fully covered by the union of
-  earlier routes can never match and is rejected. The catch-all-before-a-narrower
-  route case above is the most important instance; the minimum viable check — a
-  `**` catch-all that is not the last route — already catches the dangerous
-  common mistake, and full earlier-shadows-later coverage detection is the
-  complete form.
+- **No unreachable source.** A source all of whose patterns are covered by the
+  union of earlier sources' patterns can never be selected and is rejected. A
+  pattern-less source that is not last is the most important instance — it
+  claims every name, so everything after it is dead.
 - **No shadowed pattern.** The same check applies per pattern, not only per
-  route: a single pattern strictly covered by an earlier route's pattern is
-  dead even when the rest of its route stays reachable, and is rejected by
-  name. Otherwise a route like `['@secret/foo', 'plainpkg']` declared after a
-  broad `@*/*` route would validate while silently sending `@secret/foo` to the
-  earlier source.
-- **No empty route.** A route with no patterns is rejected because it can never
-  select a source.
-- **No duplicate or contradictory patterns** within one router.
-- **Every `source` resolves** to a defined concrete mount. A route source cannot
-  be unknown, the router itself, or another router.
+  source: a single pattern of a later source strictly covered by an earlier
+  source's pattern is dead in this router even when the rest of the source
+  stays reachable, and is rejected by name. Otherwise a mount claiming
+  `['@secret/foo', 'plainpkg']` listed after a mount claiming `@*/*` would
+  validate while silently sending `@secret/foo` to the earlier source. Two
+  mounts whose namespaces overlap in both directions cannot be ordered at all
+  — that is genuinely ambiguous provenance, and the operator must adjust the
+  declared namespaces rather than pick an order that silently reassigns part
+  of one.
+- **No duplicate source** within one router, and no duplicate pattern within
+  one mount.
+- **Every source resolves** to a defined concrete mount. A source cannot be
+  unknown, the router itself, or another router.
+- **No empty router.** A router with no sources can never serve a package.
 
 Validation makes a misordered router a startup error an operator sees
 immediately, holding routers to the same "misconfiguration is caught, not
 silent" standard as the rest of the model. An operator who genuinely wants a
-redundant route removes it; pnpr never silently serves the wrong origin because
-a route was placed in the wrong order.
+redundant source removes it; pnpr never silently serves the wrong origin
+because a source was placed in the wrong order.
 
 ### Default target and the path-less base
 
@@ -420,8 +483,8 @@ Rules:
   path-less base a meaning when a deployment wants one.
 - **The default is an alias to one named mount.** With `defaultTarget: main`,
   `<base>/foo` *is* `~main/foo`. If the default is a concrete mount, the
-  path-less base serves that one origin; if it is a router, it routes by the
-  router's declared patterns. Either way there is no ad-hoc blending and no
+  path-less base serves that one origin; if it is a router, it routes by its
+  sources' declared patterns. Either way there is no ad-hoc blending and no
   existence-based fallback.
 - **There is no implicit hosted uplink.** pnpr does not ship a magic `~hosted`
   default. Hosted orgs are explicit `~<org>` mounts. A deployment that wants the
@@ -432,11 +495,10 @@ Rules:
   (no single default org) coherent.
 - **An unqualified publish (to the path-less base) is allowed only when the
   resolved target writes to a hosted org.** A hosted-org default accepts writes;
-  a router default accepts a write only if the published name's route targets a
-  hosted source. An upstream default, or a router route that targets an
-  upstream, rejects the publish with
-  a clear "name a hosted mount" error, so a publish can never silently land in
-  the wrong place.
+  a router default accepts a write only if the published name is claimed by a
+  hosted source. An upstream default, or a router selection of an upstream,
+  rejects the publish with a clear "name a hosted mount" error, so a publish
+  can never silently land in the wrong place.
 
 This makes the path-less base a product choice instead of the internal
 architecture. Small deployments can point clients at one base URL (typically a
@@ -597,7 +659,7 @@ The existing auth-aware cache proposal distinguishes public routes,
 pnpr-hosted private routes, and private proxied routes. Registry mounts make
 those route identities explicit:
 
-- public routes are public upstream mounts (or a router route that targets one);
+- public routes are public upstream mounts (or a router source that is one);
 - pnpr-hosted private routes are hosted organization mounts;
 - private proxied routes are private upstream mounts with pnpr-managed
   credentials;
@@ -627,16 +689,18 @@ the router URL users are expected to use.
 
 Worked example — private packages on a public registry (e.g. npm, which serves a
 private `@myorg` scope and all public packages from one origin). Two upstream
-mounts point at the same `registry.npmjs.org`: an anonymous `npm-public`
-(`public: true`) and an authenticated `npm-private` (`auth.tokenEnv: NPM_TOKEN`,
-`access: team:myorg`), with a router sending `@myorg/*` to `npm-private` and
-`**` to `npm-public`. The `team:myorg` policy lives on `npm-private`, so both
-`/~main/@myorg/secret` (via the router) and `/~npm-private/@myorg/secret`
-(direct) are gated, while `lodash` stays open by either path. Putting
-`team:myorg` on the router instead would not protect `@myorg/*` (already
-protected at the source) and would not close `/~npm-public/`. An unauthorized
-caller for a private hosted package receives `404`, not `403`, so private-package
-existence is not revealed.
+mounts point at the same `registry.npmjs.org`: an authenticated `npm-private`
+(`auth.tokenEnv: NPM_TOKEN`, `access: team:myorg`,
+`patterns: ['@myorg/*']`) and an anonymous, pattern-less `npm-public`
+(`public: true`), with a router `sources: [npm-private, npm-public]`. The
+`team:myorg` policy lives on `npm-private`, so both `/~main/@myorg/secret`
+(via the router) and `/~npm-private/@myorg/secret` (direct) are gated, while
+`lodash` stays open by either path — and `npm-private`'s namespace bound means
+`/~npm-private/lodash` is a `404` rather than a public fetch spent through the
+private credential. Putting `team:myorg` on the router instead would not
+protect `@myorg/*` (already protected at the source) and would not close
+`/~npm-public/`. An unauthorized caller for a private hosted package receives
+`404`, not `403`, so private-package existence is not revealed.
 
 Any response that can vary by caller — one resolved through a private source,
 or one whose per-package ACL denies anonymous access even through a public
@@ -694,7 +758,7 @@ dependency-confusion vector. PR 12747 makes `mounts:`/`defaultTarget:` the only
 package-routing surface and keeps `packages:` as access policy only. A migration
 tool can help operators rewrite a Verdaccio config into explicit mounts and
 routes, but pnpr should not keep a live compatibility mode that interprets
-`packages: proxy:` as a fallback chain. The matched route is authoritative —
+`packages: proxy:` as a fallback chain. The matched source is authoritative —
 pnpr does not merge metadata across uplinks or fall through to a public uplink
 when a private one misses or is down.
 
@@ -728,6 +792,35 @@ fallback. This hides provenance and needs hidden state to answer a tarball
 request safely. A router gives the same one-URL ergonomics with explicit,
 declared routing and no fall-through.
 
+### Declare routing patterns on router routes instead of on the mounts
+
+The first iteration of this design (implemented by pnpm/pnpm#12747) attached
+patterns to router routes (`routes: [{patterns, source}, ...]`) and left the
+concrete mounts namespace-less. Rejected on two grounds.
+
+First, duplication: the names a mount is for must be restated by every router
+that includes it, and the restatements can drift.
+
+Second, and more important, the mount's own surface was unconstrained. A
+hosted mount accepted a publish of any name, so names never routed to it
+accumulated as dormant stored state that a later route edit — or a client
+addressing `/~<mount>/` directly — would surface as authoritative; a typo'd
+scope published to the mount URL succeeded silently and then 404'd through the
+router; and route-level patterns could not stop an authorized caller from
+pulling arbitrary public names through a private upstream's server-owned
+credential. The `packages:` ACL could be hand-written to plug the publish
+hole, but it is identity-flavored, decoupled from the mount, and permissive by
+default — nobody writes it unprompted.
+
+Moving the patterns onto the mount makes the namespace one enforced
+declaration and reduces the router to the one fact that is genuinely
+per-router: precedence order. The expressiveness lost is per-router narrowing
+— two routers can no longer expose different slices of the same source. The
+identity dimension of that use case is already covered by the `packages:` ACL
+and groups; where distinct slices of one upstream are truly needed, two
+upstream mounts over the same URL express it. Per-source pattern overrides
+could be added later if a concrete need appears.
+
 ### Rewrite `dist.tarball` to the concrete mount and persist it
 
 Rejected: a persisted concrete-mount URL is non-canonical for the client's
@@ -760,34 +853,46 @@ boundary explicit without a process per registry.
 
 ## Implementation
 
-PR 12747 implements the pnpr-server side as a replacement of the legacy
-Verdaccio-shaped routing model.
+PR 12747 implemented the mount model as a replacement of the legacy
+Verdaccio-shaped routing model, in the earlier route-level-pattern shape
+(`routes: [{patterns, source}]` on routers, namespace-less concrete mounts).
+This revision moves the patterns onto the concrete mounts and collapses
+routers to ordered `sources:` lists. pnpr is pre-1.0 and replaces the earlier
+shape outright — no compatibility mode for `routes:`.
 
 1. Add a tagged `mounts:` config model (`type: hosted`, `type: upstream`,
    `type: router`) plus optional `defaultTarget:`. This is the only package
-   routing surface. `packages:` remains as access policy (`access`, `publish`,
-   `unpublish`) and does not proxy or fall through.
+   routing surface. Hosted and upstream mounts take an optional `patterns:`
+   list (omitted = every name); a router is an ordered `sources:` list of
+   concrete mount names. `packages:` remains as access policy (`access`,
+   `publish`, `unpublish`) and does not proxy or fall through.
 2. Build a validated mount graph at config load. Hosted mounts populate a hosted
-   table (`org`, `access`), upstream mounts populate the runtime upstream table,
-   and routers hold ordered routes to concrete sources.
+   table (`org`, `access`, `patterns`), upstream mounts populate the runtime
+   upstream table with their patterns, and routers hold ordered source lists.
 3. Implement the restricted `PackagePattern` language: `**`, `@*/*`, `@scope/*`,
-   and exact package names. Reject unsupported wildcard forms.
-4. Validate routers statically: reject empty routes, duplicate patterns,
-   shadowed/unreachable routes (including a non-last `**`), individually
-   shadowed patterns inside otherwise-reachable routes, unknown sources,
-   self-references, and routes whose source is another router. Validate every
-   mount name as a single URL-safe path segment.
-5. Route every mounted read through the mount graph. `/~<mount>/...` addresses
-   that mount directly; the path-less base routes through `defaultTarget` when
-   configured and returns `404` when it is not.
+   and exact package names. Reject unsupported wildcard forms and duplicate
+   patterns within one mount.
+4. Validate routers statically: reject empty routers, duplicate sources,
+   unreachable sources (all patterns covered by earlier sources' patterns,
+   including a non-last pattern-less source), individually shadowed patterns of
+   otherwise-reachable sources, unknown sources, self-references, and sources
+   that are another router. Validate every mount name as a single URL-safe
+   path segment.
+5. Route every mounted read through the mount graph, and enforce the resolved
+   mount's `patterns:` at the mount itself: an unclaimed name is a definitive
+   `404` on reads and a rejection on writes, before storage or the upstream is
+   consulted, on the direct `/~<mount>/...` address and through any router
+   alike. The path-less base routes through `defaultTarget` when configured
+   and returns `404` when it is not.
 6. Serve `dist.tarball` URLs canonical for the registry base the client
    addressed, not the resolved concrete source. Tarball requests re-enter the
    same mount graph by package name, then fetch from the selected hosted or
    upstream source.
 7. Route writes through the same graph. A write is accepted only when the
-   resolved source is hosted; a route to an upstream is rejected with a clear
-   "name a hosted mount" error. Publish, dist-tag, unpublish, and batch publish
-   all write into the resolved hosted org namespace.
+   resolved source is hosted and its patterns claim the name; a selection of an
+   upstream is rejected with a clear "name a hosted mount" error. Publish,
+   dist-tag, unpublish, and batch publish all write into the resolved hosted
+   org namespace.
 8. Namespace hosted storage by `org` for both local filesystem and S3/R2-backed
    storage. An empty `org` keeps using the flat storage root for registry-mock
    fixtures. The publish journal records the org so recovery promotes staged
@@ -810,18 +915,24 @@ Verdaccio-shaped routing model.
 
 Tests should cover:
 
-- tagged `mounts:` config parsing, unknown `type:` rejection, undefined
-  `defaultTarget` rejection, and `packages:` deriving ACLs without routing;
+- tagged `mounts:` config parsing (including mount-level `patterns:` and
+  router `sources:`), unknown `type:` rejection, undefined `defaultTarget`
+  rejection, and `packages:` deriving ACLs without routing;
 - pattern parsing for `**`, `@*/*`, `@scope/*`, and exact names, plus rejection
-  of unsupported wildcard forms;
-- a private route returning not-found NOT falling through to a public source;
-- a private route listed before a catch-all winning by route order, with the
-  catch-all never consulted for that matched package name;
-- config validation rejecting a router with a shadowed/unreachable route (a
-  non-last `**`, or a later route fully covered by earlier ones) and failing a
-  reload that would introduce one, plus a single shadowed pattern inside an
-  otherwise-reachable route, duplicate patterns, empty routes, unknown sources,
-  self-references, and router-as-source;
+  of unsupported wildcard forms and duplicate patterns within one mount;
+- a mount's patterns enforced at the mount itself: an off-pattern publish
+  rejected and an off-pattern read a `404` before storage or the upstream is
+  consulted, both through a router and at the mount's own `/~<mount>/` URL;
+- a private upstream's patterns preventing a public name from being fetched
+  through its server-owned credential;
+- a private source returning not-found NOT falling through to a public source;
+- a private source listed before a pattern-less catch-all winning by source
+  order, with the catch-all never consulted for that claimed package name;
+- config validation rejecting a router with an unreachable source (a non-last
+  pattern-less source, or a source whose patterns are fully covered by earlier
+  sources) and failing a reload that would introduce one, plus a single
+  shadowed pattern of an otherwise-reachable source, duplicate sources, empty
+  routers, unknown sources, self-references, and router-as-source;
 - config validation rejecting URL-unsafe mount names and duplicate hosted
   `org` namespaces;
 - a private/matched source being **down** returning an error, never a `404`;
@@ -851,7 +962,8 @@ Tests should cover:
   cached packument;
 - search remaining flat-hosted-storage-only and filtered by package access
   policy;
-- router writes accepted only when the matched route targets a hosted source;
+- router writes accepted only when the selected source is hosted and claims
+  the name;
 - an unqualified publish to the path-less base rejected when the resolved target
   does not write to a hosted org, and the path-less base disabled entirely when
   no `defaultTarget` is set.
@@ -893,12 +1005,20 @@ package names and scopes beneath the mount.
 
 - PR 12747 uses `/~<mount>/` for every mount, including hosted org mounts;
   future path changes would be migrations rather than unresolved design.
-- PR 12747 uses `mounts`, `type: router`, and `routes`; future renaming would
-  be a migration, not an unresolved implementation choice.
-- Router pattern language is fixed for PR 12747: `**`, `@*/*`, `@scope/*`, and
-  exact names. Future pattern extensions must keep static coverage decidable so
-  router-shadow validation remains possible. Precedence is not an open question:
-  routes are evaluated in declared order and the first matching route wins.
+- This revision uses `mounts`, `type: router`, `sources`, and mount-level
+  `patterns`; future renaming would be a migration, not an unresolved
+  implementation choice.
+- The mount pattern language is fixed: `**`, `@*/*`, `@scope/*`, and exact
+  names. Future pattern extensions must keep static coverage decidable so
+  router-shadow validation remains possible. Precedence is not an open
+  question: sources are evaluated in declared order and the first source whose
+  patterns claim the name wins.
+- Should source selection eventually be specificity-based (an exact name beats
+  `@scope/*` beats `@*/*` beats `**`) instead of order-based? Specificity would
+  make `sources:` an unordered set and remove ordering mistakes entirely, at
+  the cost of a less obvious rule; the decidable pattern language keeps either
+  choice statically checkable, with identical-pattern claims in one router a
+  validation error either way. This revision keeps declared order.
 - What exact lockfile encoding carries registry identity in package identity —
   a registry-qualified package key, a package-to-registry table, or another
   compact form — and how does it interoperate with the existing `name@version`
@@ -906,9 +1026,9 @@ package names and scopes beneath the mount.
 - How is the registry name/identity mapped to a URL at install time — through
   `namedRegistries`, through a single `pnprServer` base, or both — so a
   deployment move updates one setting?
-- Router nesting is not part of PR 12747; a route source must be a concrete
-  hosted or upstream mount. Any future nesting proposal must preserve static
-  validation and resolve to one concrete source before serving.
+- Router nesting is out of scope; a router source must be a concrete hosted or
+  upstream mount. Any future nesting proposal must preserve static validation
+  and resolve to one concrete source before serving.
 - Should there be a separate migration tool for Verdaccio configs that rewrites
   `packages: proxy:` into explicit mounts/routes, and should it warn or refuse
   configs that rely on multi-uplink merge or existence fallback?
