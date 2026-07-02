@@ -375,6 +375,23 @@ endpoint still reports the mapping, so a workspace can see which of its
 resolutions came from the registry's overrides and pin them explicitly if it
 prefers.
 
+**Document size.** The document grows linearly with the provider's patch
+catalog, and that catalog is advisory-driven: an entry exists only for an
+exact `name@version` that has a backported fix, so growth tracks CVE history
+in patched packages, not the registry. Realistic catalogs are on the order of
+10³–10⁴ entries; at roughly 80 bytes per entry that is sub-megabyte raw, and
+the shape (one scope prefix, repeated names) compresses to tens of kilobytes.
+Policy filtering (`minSeverity`, `requireAdvisoryMatch`) trims it further.
+Delivery cost is bounded by the caching contract rather than the size: the
+document changes only on manifest refresh or config reload, so a client
+caches it machine-wide per registry base (shared across workspaces, like the
+store) and revalidates with `If-None-Match` — the steady-state cost of
+substitute mode is one `304` per resolution run. Should a catalog ever
+outgrow single-document delivery, the escape hatch is a filtered bulk lookup
+shaped like the audit bulk endpoint (the client posts the names it is
+resolving); that variant is deliberately out of scope until real catalog
+sizes demand it.
+
 ### Advisory screening of patched artifacts
 
 Aliasing moves the advisory problem rather than removing it, and the manifest
@@ -642,6 +659,10 @@ Tests should cover, at minimum:
   setting? How is its provenance surfaced (`pnpm why`, lockfile comment,
   install summary)? These belong in the pnpm follow-up RFC, but the answers
   shape the document format.
+- **Scale threshold for a filtered variant.** At what measured catalog size
+  (entries, compressed bytes) does the single cached document stop being the
+  right delivery, and is the fallback a name-filtered bulk lookup, a
+  chunked/delta encoding, or both?
 - **Default mode.** Is `advertise` the right default for `patching:`, with
   `substitute` as the explicit escalation? (This RFC assumes yes: changing
   what fresh resolutions receive should be a deliberate, visible deployment
