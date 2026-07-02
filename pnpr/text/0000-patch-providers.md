@@ -385,6 +385,23 @@ route cannot distinguish a fresh resolution from an old pinned one, so
 which is precisely what "no known-patchable vulnerable artifact leaves this
 registry" means. The default is `serve`.
 
+**Server-side and client-side resolution apply the same map at the same
+point.** The flow above is client-side resolution: pnpm reads packuments,
+picks versions locally, and consults its cached copy of the document
+post-pick. When resolution happens in pnpr itself — the resolution endpoint
+of the auth-aware resolution-cache design — the server applies the same
+pinned map at the same logical point: after version selection, before the
+resolution is returned or cached. Two requirements keep the two paths
+coherent, so a graph resolved partly on each side cannot disagree:
+
+- the resolve response reports **which entries were applied** and the
+  document digest they came from, so the client records them in the lockfile
+  section exactly as if it had applied them itself — a server-side
+  substitution must never be less traceable than a client-side one;
+- server-side **resolution-cache keys include the mount's patching policy
+  and the pinned snapshot digest** — otherwise a manifest refresh could keep
+  serving pre-refresh substitutions (or none) out of the cache.
+
 Costs and requirements, stated honestly:
 
 - **Automatic protection reaches only patch-aware clients.** npm and yarn
@@ -617,6 +634,12 @@ mount graph, routing, or the packument/tarball serving paths:
    `/-/pnpr/patched-versions` document with a digest/ETag, recompiled only on
    manifest refresh or config reload; implement `unawareClients: refuse` on
    the tarball route with the `403` reason body.
+5. **Server-side resolution integration.** Where pnpr resolves on the
+   client's behalf (the resolution endpoint of the auth-aware
+   resolution-cache design), apply the pinned map post-pick before a
+   resolution is returned or cached, report applied entries and the snapshot
+   digest in the resolve response, and include the patching policy and
+   snapshot digest in resolution-cache keys.
 
 Client-side follow-ups (separate pnpm RFC): `pnpm audit --fix` writing alias
 overrides from the enriched audit response, and the exact-version override
@@ -650,6 +673,9 @@ Tests should cover, at minimum:
   with `403` plus the suggested override, and leaving uncovered artifacts
   untouched;
 - the one-substituting-provider-per-original rule enforced at config load;
+- server-side resolution applying the same pinned snapshot as the served
+  document, reporting applied entries in resolve responses, and a manifest
+  refresh re-keying (never silently reusing) cached resolutions;
 - a manifest refresh changing the patched-versions document being logged, and
   previously aliased patched artifacts continuing to serve as long as the
   provider retains them;
@@ -734,11 +760,12 @@ Tests should cover, at minimum:
   The answers shape the document format.
 - **Lockfile recording shape.** The name and format of the lockfile section
   recording applied registry overrides (alongside the existing `overrides`
-  record), whether the document digest is recorded in addition to the
-  applied entries, and the adoption-timing default — is silently adopting a
-  newly published patch for an already-locked pick on the next non-frozen
-  install the right behavior, or should new adoptions require an explicit
-  gesture (`pnpm update --patches`-style) while only *withdrawn* entries act
+  record), the resolve-response field carrying server-applied entries,
+  whether the document digest is recorded in addition to the applied
+  entries, and the adoption-timing default — is silently adopting a newly
+  published patch for an already-locked pick on the next non-frozen install
+  the right behavior, or should new adoptions require an explicit gesture
+  (`pnpm update --patches`-style) while only *withdrawn* entries act
   automatically?
 - **Scale threshold for a filtered variant.** At what measured catalog size
   (entries, compressed bytes) does the single cached document stop being the
