@@ -385,6 +385,23 @@ route cannot distinguish a fresh resolution from an old pinned one, so
 which is precisely what "no known-patchable vulnerable artifact leaves this
 registry" means. The default is `serve`.
 
+**Resolution cost.** Matching is a map lookup per pick — free for the
+unpatched majority. A matched pick triggers resolving the alias target: an
+exact-version resolution against the patch-scope packument. That is a second
+resolution of *that dependency*, never of the graph, and the original pick
+is not wasted work — it is the key that selects the patch, and there is no
+way to learn that `^2.7.0` lands on `2.7.4` without performing the pick. The
+marginal cost over a hand-written alias override is therefore one extra
+packument fetch per patched package, against a packument that is small
+(patched versions only) and cached like any other. Even that fetch is
+optimizable to zero: the document derives from a manifest that already pins
+the patched tarball's integrity, so entries can optionally carry it — the
+canonical tarball URL is computable from registry config, letting the client
+construct the substituted resolution with no additional metadata request and
+read the manifest for subtree resolution from the tarball it will fetch
+regardless. Server-side, the map and the patch-scope metadata are local, so
+substitution is a lookup.
+
 **Server-side and client-side resolution apply the same map at the same
 point.** The flow above is client-side resolution: pnpm reads packuments,
 picks versions locally, and consults its cached copy of the document
@@ -771,6 +788,10 @@ Tests should cover, at minimum:
   (entries, compressed bytes) does the single cached document stop being the
   right delivery, and is the fallback a name-filtered bulk lookup, a
   chunked/delta encoding, or both?
+- **Document fast-path fields.** Should entries carry the patched artifact's
+  integrity (and possibly manifest essentials) so a client can construct the
+  substituted resolution without fetching the patch-scope packument — a
+  fatter document traded for zero extra metadata requests per substitution?
 - **Default mode.** Is `advertise` the right default for `patching:`, with
   `substitute` as the explicit escalation? (This RFC assumes yes: changing
   what fresh resolutions receive should be a deliberate, visible deployment
