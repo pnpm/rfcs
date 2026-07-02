@@ -120,7 +120,12 @@ https://<pnpr>/~<mount>/
 ```
 
 Mount IDs are pnpr route names, not npm package scopes. They must be path-safe,
-operator-controlled identifiers. The leading `~` keeps mount routes out of the
+operator-controlled identifiers, and pnpr enforces that at config load: a mount
+name must be a single URL-safe path segment (no separators, traversal, `%`,
+`?`, `#`, whitespace, control characters, or Windows drive prefixes), because
+it is addressed as one path segment and embedded verbatim in rewritten
+`dist.tarball` URLs. A name that cannot survive that round trip is a startup
+error, not an unreachable mount. The leading `~` keeps mount routes out of the
 normal npm package-name space and lets `@scope/pkg` keep its existing meaning
 under every mount.
 
@@ -170,7 +175,7 @@ required model is two concrete mount kinds and one composite:
 
 ```rust
 enum RegistryMount {
-    HostedOrg {
+    Hosted {
         org: OrgId,
         access: AccessPolicy,
     },
@@ -193,7 +198,7 @@ enum RegistryMount {
 
 struct Route {
     patterns: Vec<PackagePattern>,
-    source: MountId, // a HostedOrg or Upstream mount; never another Router member by existence
+    source: MountId, // a Hosted or Upstream mount; never another Router member by existence
 }
 ```
 
@@ -237,8 +242,11 @@ flat storage root, which keeps the bundled registry-mock fixtures working
 without moving seeded packages. Local filesystem storage and S3/R2-compatible
 storage both apply the same namespace, so two hosted mounts can publish or serve
 the same `name@version` without colliding. The `org` value is validated as a
-single path-safe segment before startup because it becomes a filesystem path or
-object-key component.
+single path-safe segment before startup (no separators, traversal, leading dot,
+or Windows drive prefix) because it becomes a filesystem path or object-key
+component, and two hosted mounts may not declare the same `org` — they would
+alias one storage namespace and break the declared-provenance isolation, so the
+collision is a config error.
 
 With the pnpr-native hosted store, the hosted mount is the only mount kind that
 accepts writes. Publishing, dist-tag updates, unpublish, token policy, audit
@@ -268,9 +276,11 @@ URL — that is the whole feature; the mirror operator owns the mirror's
 availability, and pnpr's cache (below) absorbs transient outages of the origin.
 
 `public: true` means the upstream is anonymous and world-readable: it cannot
-also declare `auth`, `access`, or an `Authorization` header. A non-public
-upstream must declare an `access` list naming which pnpr callers may use that
-mount; any upstream credential stays server-side.
+also declare `auth`, `access`, or **any** custom request header — a credential
+can ride in `X-Api-Key` or a cookie as easily as in `Authorization`, and a
+public origin is fetched anonymously and sends none. A non-public upstream must
+declare an `access` list naming which pnpr callers may use that mount; any
+upstream credential stays server-side.
 
 This is the current `~<uplink>` idea generalized into the primary origin model.
 The name "uplink" can remain as a compatibility term, but architecturally it is
@@ -356,6 +366,12 @@ pattern-set coverage is decidable for the router's restricted pattern language:
   `**` catch-all that is not the last route — already catches the dangerous
   common mistake, and full earlier-shadows-later coverage detection is the
   complete form.
+- **No shadowed pattern.** The same check applies per pattern, not only per
+  route: a single pattern strictly covered by an earlier route's pattern is
+  dead even when the rest of its route stays reachable, and is rejected by
+  name. Otherwise a route like `['@secret/foo', 'plainpkg']` declared after a
+  broad `@*/*` route would validate while silently sending `@secret/foo` to the
+  earlier source.
 - **No empty route.** A route with no patterns is rejected because it can never
   select a source.
 - **No duplicate or contradictory patterns** within one router.
@@ -554,6 +570,15 @@ namespace when caching is enabled. The client never needs credentials for a
 private upstream, and the lockfile never records a redirect or concrete upstream
 URL for canonical registry tarballs.
 
+A warm cache hit is served without re-reading the packument: the entry was
+bound to a declared version and integrity-verified when it was written, its
+namespace pins it to one declared origin, and the client re-verifies what it
+receives against its lockfile — re-parsing a multi-megabyte packument per
+tarball request would dominate warm serving for no additional guarantee. The
+packument bind runs when new bytes are fetched (that is what it protects), and
+before the cache read when OSV screening is enabled, since OSV needs the
+packument-resolved version.
+
 ### Search
 
 The npm search endpoint is not a router aggregate. PR 12747 keeps search
@@ -613,27 +638,45 @@ protected at the source) and would not close `/~npm-public/`. An unauthorized
 caller for a private hosted package receives `404`, not `403`, so private-package
 existence is not revealed.
 
+Any response that can vary by caller — one resolved through a private source,
+or one whose per-package ACL denies anonymous access even through a public
+source — carries `Cache-Control: private, no-store` and `Vary: Authorization`
+on every URL surface (`/~<mount>/` unconditionally; the path-less base when the
+resolution or the package ACL is caller-gated). A shared HTTP cache in front of
+pnpr therefore can never replay an authenticated response to an anonymous
+caller, while truly public resolutions on the path-less hot path stay
+cacheable.
+
 The Verdaccio-shaped `packages:` block no longer routes packages. It is an ACL
 layer only: `access`, `publish`, and `unpublish` rules are compiled into package
 policies and enforced centrally on mounted reads and writes, whether the selected
 source is hosted or upstream. A `proxy:` entry in `packages:` is not part of the
 mount model; package routing lives only in `mounts:` and `defaultTarget:`.
 
-Cache keys include the concrete mount identity:
+Cache keys include the concrete mount identity **and its declared origin**:
 
 - hosted organization packuments and tarballs are cached under the organization
   mount namespace (and stored there by the default storage backend);
 - public upstream metadata and tarballs use a stable, secret-free namespace keyed
-  by the mount name, so cache hits survive process restarts;
+  by the mount name and its upstream URL, so cache hits survive process
+  restarts;
 - private upstream metadata and tarballs use a secret-keyed namespace derived
-  from the mount and its effective upstream headers, so credential/header
-  rotation naturally moves future fetches to a new namespace;
+  from the mount, its upstream URL, and its effective upstream headers, so
+  credential/header rotation naturally moves future fetches to a new namespace;
+- because the URL is part of both keys, **repointing a mount's `url:` abandons
+  the previous origin's cache** — the cache is a mirror of one declared origin,
+  and bytes fetched from the old origin can never answer for the new one;
 - routers cache nothing of their own; metadata and tarballs belong to the
   resolved concrete source.
 
-This cache is also pnpr's outage resilience: once a source's packument or tarball
-is cached, an outage of that source does not block installs of cached content.
-Resilience is the cache's job, never a fall-through to a different origin.
+This cache is also pnpr's outage resilience: once a source's packument or
+tarball is cached, an outage of that source does not block installs of cached
+content. The stale-serving is scoped to genuine unavailability — a transport
+failure, a `5xx`, an open circuit. An authoritative `4xx` from the origin (auth
+revoked, `410 Gone`, throttled) is surfaced, never masked by stale cache, and a
+definitive upstream `404` purges the cached packument so an unpublished package
+cannot be resurrected later. Resilience is the cache's job, never a
+fall-through to a different origin.
 
 Policy checks also receive the concrete mount identity. This avoids pretending
 that `foo@1.0.0` from two registries is the same package for every policy
@@ -730,8 +773,10 @@ Verdaccio-shaped routing model.
 3. Implement the restricted `PackagePattern` language: `**`, `@*/*`, `@scope/*`,
    and exact package names. Reject unsupported wildcard forms.
 4. Validate routers statically: reject empty routes, duplicate patterns,
-   shadowed/unreachable routes (including a non-last `**`), unknown sources,
-   self-references, and routes whose source is another router.
+   shadowed/unreachable routes (including a non-last `**`), individually
+   shadowed patterns inside otherwise-reachable routes, unknown sources,
+   self-references, and routes whose source is another router. Validate every
+   mount name as a single URL-safe path segment.
 5. Route every mounted read through the mount graph. `/~<mount>/...` addresses
    that mount directly; the path-less base routes through `defaultTarget` when
    configured and returns `404` when it is not.
@@ -750,10 +795,12 @@ Verdaccio-shaped routing model.
 9. Enforce source and package access on mount-served reads and writes. Private
    hosted mounts hide unauthorized package existence with `404`; private upstream
    credentials stay server-side.
-10. Key upstream cache namespaces by mount identity: public upstreams use a
-    stable secret-free namespace, while private upstreams use a secret-keyed
-    digest of the mount and effective upstream headers. Remove shared mirror
-    failover/conditional-validator behavior from the registry serving path.
+10. Key upstream cache namespaces by mount identity and origin URL: public
+    upstreams use a stable secret-free namespace over the mount name and URL,
+    while private upstreams use a secret-keyed digest of the mount, its URL,
+    and its effective upstream headers — so repointing a mount abandons the
+    previous origin's cache. Remove shared mirror failover/conditional-validator
+    behavior from the registry serving path.
 11. Keep search local-storage-only. It scans the flat hosted store and filters
     results through package access policy; it does not query or merge upstream
     searches.
@@ -772,8 +819,11 @@ Tests should cover:
   catch-all never consulted for that matched package name;
 - config validation rejecting a router with a shadowed/unreachable route (a
   non-last `**`, or a later route fully covered by earlier ones) and failing a
-  reload that would introduce one, plus duplicate patterns, empty routes,
-  unknown sources, self-references, and router-as-source;
+  reload that would introduce one, plus a single shadowed pattern inside an
+  otherwise-reachable route, duplicate patterns, empty routes, unknown sources,
+  self-references, and router-as-source;
+- config validation rejecting URL-unsafe mount names and duplicate hosted
+  `org` namespaces;
 - a private/matched source being **down** returning an error, never a `404`;
 - hosted organization mounts not falling through to upstreams;
 - hosted storage namespaced by `org`, including an empty `org` mapping to the
@@ -781,8 +831,9 @@ Tests should cover:
 - publish, batch publish, dist-tag, and unpublish routing to the resolved hosted
   org and rejecting upstream write targets;
 - an upstream being exactly one URL with no secondary/mirror endpoint behavior;
-- public upstream mounts rejecting credentials/access gates, private upstream
-  mounts requiring access, and private upstream credentials staying server-side;
+- public upstream mounts rejecting credentials, access gates, and any custom
+  request header, private upstream mounts requiring access, and private
+  upstream credentials staying server-side;
 - a private source's access policy enforced both through a router and via the
   source's own `~<mount>/` URL, so an open router never exposes a gated source;
 - an unauthorized caller for a private hosted package receiving `404`, not
@@ -790,7 +841,14 @@ Tests should cover:
 - tarball URLs rewritten to the addressed registry base (path-less or
   `/~<mount>/`) and tarball requests routing back through the same mount graph;
 - cache namespace isolation by public mount name and private effective upstream
-  headers;
+  headers, and a repointed upstream `url:` abandoning the previous origin's
+  cached content;
+- caller-gated path-less responses (private source, or a package ACL denying
+  anonymous access through a public source) carrying private-cache headers
+  while public resolutions stay shared-cacheable;
+- stale cache serving on transient upstream failure only — an authoritative
+  `4xx` surfacing rather than being masked, and a definitive `404` purging the
+  cached packument;
 - search remaining flat-hosted-storage-only and filtered by package access
   policy;
 - router writes accepted only when the matched route targets a hosted source;
