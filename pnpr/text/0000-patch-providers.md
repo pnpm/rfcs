@@ -325,23 +325,24 @@ mounts:
       minSeverity: high      # only include fixes at/above this severity
 ```
 
-A patch-aware client applies the document **after version selection** —
-deliberately *not* as a spec-rewriting override. Today's overrides rewrite
-declared specs and match them by subset, so an exact-version key like
-`ejs@2.7.4` would never apply to a dependency declared as `^2.7.0` — and
-`^2.7.0` picking `2.7.4` is exactly the fresh-resolution case substitute mode
-exists for. The proposed client mechanism (a pnpm follow-up RFC) is a second
-override kind, **resolution overrides**: selectors matched against the
-**picked** version after the resolver has chosen it, replacing that pick with
-the target spec. Matching a concrete version is *simpler* than today's
-subset-against-declared-range semantics (`semver.satisfies(picked, selector)`),
-the substitution is applied exactly once (a substituted target is not
-re-matched, so maps cannot chain or cycle), and workspaces can declare
-resolution overrides of their own — the registry-provided document is merged
-beneath them as the lowest-precedence source. Version selection is never
-changed — only which *build* of the selected version is installed.
-Everything downstream is pnpm's already-shipped alias machinery, and that is
-the point:
+A patch-aware client applies the document **after version selection** as
+well. The proposed client mechanism (a pnpm follow-up RFC) is not a new
+override kind but a semantic extension of the existing one: **an override
+whose selector is an exact version also matches the *picked* version at
+resolution time.** Today such an override rewrites only declared specs, by
+subset — and the only range that is a subset of `2.7.4` is `2.7.4` itself,
+so a dependency declared as `^2.7.0` slips past it even when resolution
+picks `2.7.4`. The extension is therefore strictly additive: every case the
+spec rewrite already handles produces the identical result post-pick, and
+the new behavior covers exactly the picks that previously slipped through —
+which is what the override's author meant all along. The substitution is
+applied exactly once (a substituted target is not re-matched, so maps
+cannot chain or cycle). Because the document's entries are all
+exact-version→exact-spec, they are ordinary overrides under this extension,
+and the registry document is merged beneath the workspace's own overrides
+as the lowest-precedence source. Version selection is never changed — only
+which *build* of the selected version is installed. Everything downstream
+is pnpm's already-shipped alias machinery, and that is the point:
 
 - **The lockfile stays canonical and host-free.** A fresh resolution of
   `^2.7.0` picks `2.7.4`, the document redirects that pick, and the lockfile
@@ -357,10 +358,9 @@ the point:
   to `@echo-patch/ejs@2.7.4`; when a manifest refresh moves a patch to
   `-sp2`, the next non-frozen resolution produces a reviewable lockfile diff.
 - **Opting out is ordinary precedence.** A workspace that must keep a
-  vulnerable original declares its own resolution override for
-  `ejs@2.7.4` (mapping the pick to itself), which outranks the
-  registry-provided document — visible and reviewable, like every other
-  override.
+  vulnerable original declares its own override for `ejs@2.7.4` (mapping the
+  pick to itself), which outranks the registry-provided document — visible
+  and reviewable, like every other override.
 
 Clients that are not patch-aware never ask for the document and resolve the
 vulnerable original — no worse than today. Per-mount policy can escalate:
@@ -519,25 +519,30 @@ The registry-provided document subsumes both: the same information, one
 document beside the registry surface, zero changes to packument or tarball
 serving, and one client-side application point after version selection.
 
-### Applying the document as spec-rewriting overrides
+### Applying the document under today's override semantics, unchanged
 
 An earlier draft served the document *in overrides format* for the client to
-merge alongside workspace overrides. Rejected because the semantics do not
-line up. Overrides rewrite **declared specs** before resolution, and a
-selector matches a declared range by subset: `"ejs@2.7.4"` applies to a
-dependency declared as `2.7.4`, but not to `^2.7.0` — whose resolution to
-`2.7.4` is exactly the case that needs protection. Widening the selector
-cannot fix it: no range selector matches `^2.7.0` short of the bare name,
-and a bare-name override (`"ejs": "npm:@echo-patch/ejs@2.7.4"`) *changes
-version selection* — it forces every `ejs` in the graph to the patched
-`2.7.4`, downgrading a `^2.7.0` that would have picked a genuinely fixed
-`2.7.5`. Post-pick substitution has neither problem: the resolver picks
-whatever it would have picked, and only a picked version with a patch is
-swapped for its patched build of the *same* version. That is why the client
-mechanism is proposed as a second override kind matched after resolution —
-**resolution overrides** — rather than a reuse of spec rewriting: overrides
-stay the answer, applied at the stage where the question can actually be
-asked.
+merge alongside workspace overrides, with no semantic change. Rejected
+because today's semantics cannot express the goal. Overrides rewrite
+**declared specs** before resolution, and a selector matches a declared
+range by subset: `"ejs@2.7.4"` applies to a dependency declared as `2.7.4`,
+but not to `^2.7.0` — whose resolution to `2.7.4` is exactly the case that
+needs protection. Widening the selector cannot fix it: no range selector
+matches `^2.7.0` short of the bare name, and a bare-name override
+(`"ejs": "npm:@echo-patch/ejs@2.7.4"`) *changes version selection* — it
+forces every `ejs` in the graph to the patched `2.7.4`, downgrading a
+`^2.7.0` that would have picked a genuinely fixed `2.7.5`.
+
+The fix is the exact-version extension described in substitute mode, chosen
+over a *separate* post-resolution override kind because for exact-version
+selectors the two application points agree wherever both apply — the only
+subset of `2.7.4` is `2.7.4` itself — so post-pick matching is a strict
+widening of the same override, not a competing mechanism with its own
+precedence rules. The extension deliberately stops at exact selectors:
+applying a *range* selector to picked versions with a range replacement
+would re-open version selection after the resolver closed it and would
+silently reinterpret existing workspace configs, whereas the exact-selector
+case only starts covering picks that previously slipped through.
 
 ### Named-registry aliases: same name, same version, different registry
 
@@ -601,10 +606,11 @@ mount graph, routing, or the packument/tarball serving paths:
    the tarball route with the `403` reason body.
 
 Client-side follow-ups (separate pnpm RFC): `pnpm audit --fix` writing alias
-overrides from the enriched audit response, and the **resolution overrides**
-extension — override selectors matched against the picked version, applied
-exactly once, with workspace-declared entries outranking the
-registry-provided patched-versions document.
+overrides from the enriched audit response, and the exact-version override
+extension — an override whose selector is an exact version also matches the
+picked version at resolution time, applied exactly once, with the
+workspace's own overrides outranking the registry-provided patched-versions
+document.
 
 Tests should cover, at minimum:
 
@@ -704,14 +710,17 @@ Tests should cover, at minimum:
   over the authenticated registry connection, and how a client maps multiple
   configured registries to multiple documents (fetch from each base? default
   registry only?).
-- **Resolution-overrides design.** The pnpm-side follow-up must settle the
-  syntax (a separate field vs. an extension of the existing `overrides`
-  block), whether a registry-provided document is applied by default or
-  behind a setting, how provenance is surfaced (`pnpm why`, install
-  summary), the exact once-only application rule for substituted targets,
-  and how an existing lockfile interacts with a changed document —
-  re-resolve only on ordinary re-resolution events, or also when the
-  document digest changes? The answers shape the document format.
+- **Exact-version override extension design.** The pnpm-side follow-up must
+  settle how the semantic extension ships (silently, behind a setting, or in
+  a major release — existing configs with exact-version selectors start
+  covering picks they previously missed, which is intended but is a
+  behavior change), whether a registry-provided document is applied by
+  default or behind a setting, how provenance is surfaced (`pnpm why`,
+  install summary), the exact once-only application rule for substituted
+  targets, whether parent-scoped selectors (`a>b@1.0.0`) participate, and
+  how an existing lockfile interacts with a changed document — re-resolve
+  only on ordinary re-resolution events, or also when the document digest
+  changes? The answers shape the document format.
 - **Scale threshold for a filtered variant.** At what measured catalog size
   (entries, compressed bytes) does the single cached document stop being the
   right delivery, and is the fallback a name-filtered bulk lookup, a
