@@ -10,17 +10,18 @@ vendor is the declared origin), and a **patch scope** — the provider publishes
 patched artifacts under its own package namespace (`@echo-patch/ejs@2.7.4`),
 served through ordinary mounts and routes. A signed, pinned **patch
 manifest** ties the two names together, and a per-mount `patching:` policy
-applies it in one of two modes. Both serve the same per-version
-**annotation** on the vulnerable version's packument entry, which a
-patch-aware resolver acts on **after version selection**: whenever
-resolution picks an annotated version, it returns the provider's aliased
-artifact instead — recorded like an ordinary alias, with a canonical,
-host-free lockfile resolution — while already-pinned installs are never
-altered. The modes differ only in the client posture the annotation
-requests: **advertise** substitutes only for patches the workspace has
-explicitly accepted (discovered through audit enrichment, accepted by hand
-or via `pnpm audit --fix`), while **substitute** substitutes by default,
-with a per-package ignore list to refuse.
+applies it in one of two modes. Both end in the same client primitive — a
+**post-pick substitution rule** applied by a patch-aware resolver **after
+version selection**: whenever resolution picks a covered version, it
+returns the provider's aliased artifact instead, recorded like an ordinary
+alias with a canonical, host-free lockfile resolution, while already-pinned
+installs are never altered. The modes differ in where the rule comes from:
+in **advertise** mode nothing substitutes by default — patches are
+discovered through audit enrichment and adopted as explicit
+workspace-stored rules (written by hand or by `pnpm audit --fix`); in
+**substitute** mode pnpr **annotates** the vulnerable version's packument
+entry and the resolver substitutes by default, with a per-package ignore
+list to refuse.
 
 Notably, this requires **no new mount kind**. Both shapes are expressible
 with hosted/upstream/router mounts as already specified; the only
@@ -230,11 +231,9 @@ package versions to their patched counterparts:
 
 ### Advertise mode: discovery and explicit acceptance
 
-In `advertise` mode the registry surfaces available patches but substitutes
-nothing by default: adoption is an explicit, reviewable workspace decision.
-The mechanics are the same annotation and patch-aware resolver as substitute
-mode (below) — the annotation simply requests an **opt-in posture**. Three
-adoption paths:
+In `advertise` mode the registry substitutes nothing and serves no
+annotations: adoption is an explicit, reviewable workspace decision, and
+discovery flows through the audit endpoint. Three adoption paths:
 
 1. **Audit enrichment.** pnpr implements the npm audit endpoints
    (`/-/npm/v1/security/advisories/bulk`) against OSV plus the pinned
@@ -243,15 +242,19 @@ adoption paths:
    "an aliased fix exists", so pnpr adds a namespaced extension field
    carrying the mapping (`ejs@2.7.4 → npm:@echo-patch/ejs@2.7.4`); clients
    that do not know the field ignore it.
-2. **Explicit acceptance (patch-aware clients).** The workspace lists
-   accepted patches in its config — per entry, or per provider — and the
-   patch-aware resolver substitutes exactly as in substitute mode, but only
-   for accepted entries. `pnpm audit --fix` (pnpm follow-up, out of scope
-   here) becomes mechanical: read the enriched audit response, append
-   accept-list entries — reviewable in the PR that introduces them,
-   removable after upgrading away. Because acceptance is applied by the
-   resolver **after version selection**, it correctly covers picks reached
-   through ranges — the case overrides cannot express, below.
+2. **Explicit acceptance (patch-aware clients).** The workspace stores
+   accepted substitutions in its config, each entry a self-contained
+   mapping (`"ejs@2.7.4": "npm:@echo-patch/ejs@2.7.4"`), and the
+   patch-aware resolver (see substitute mode) applies them **after version
+   selection**, exactly as it applies substitute-mode annotations — which
+   is what makes acceptance correct for picks reached through ranges, the
+   case overrides cannot express (below). `pnpm audit --fix` (pnpm
+   follow-up, out of scope here) becomes mechanical: copy the mappings from
+   the enriched audit response into config — reviewable in the PR that
+   introduces them, removable after upgrading away. A stored rule pins the
+   patch *revision*: when a provider re-issues (`-sp2`), the next
+   `pnpm audit` reports it and `--fix` updates the entry — an explicit,
+   reviewable update, in keeping with the mode.
 3. **Hand-written overrides (any npm-compatible client, today).** An alias
    override adopts a patch with no new client feature — but overrides
    rewrite *declared specs* by subset matching, and that has teeth:
@@ -264,7 +267,7 @@ adoption paths:
    ranges added later; a bare-name key is the same trade graph-wide. This
    path is honest and available, but it is a blunt instrument, not the
    mechanism this RFC builds on — and it is why `pnpm audit --fix` writes
-   accept-list entries rather than overrides.
+   post-pick substitution rules rather than overrides.
 
 What the alias buys over other encodings of "patched artifact":
 
@@ -290,11 +293,10 @@ substitute mode.
 
 ### Substitute mode: annotated packuments selected by the resolver
 
-Both modes put the mapping where the resolver is already looking: on the
-vulnerable version's entry in the packument. For every manifest entry the
-mount's policy accepts, pnpr serves the base packument with an annotation on
-that version — original metadata and `dist` untouched — carrying the mode's
-requested posture:
+`substitute` mode puts the mapping where the resolver is already looking:
+on the vulnerable version's entry in the packument. For every manifest
+entry the mount's policy accepts, pnpr serves the base packument with an
+annotation on that version — original metadata and `dist` untouched:
 
 ```jsonc
 // GET /~main/ejs — versions["2.7.4"], annotated on egress
@@ -303,8 +305,7 @@ requested posture:
   "_pnprPatch": {
     "patched": "npm:@echo-patch/ejs@2.7.4",
     "provider": "echo",
-    "fixes": ["GHSA-..."],
-    "apply": "default"        // advertise mode serves "opt-in"
+    "fixes": ["GHSA-..."]
   }
 }
 ```
@@ -327,11 +328,11 @@ mounts:
 The annotation is applied **on egress**: the cached upstream packument stays
 byte-identical to what the origin served, and the annotation is layered on
 at response time as a pure function of the pinned manifest snapshot. The
-field is inert for any client that does not know it. In advertise mode the
-identical annotation is served with `apply: opt-in` and the resolver
-substitutes only workspace-accepted entries (previous section); the rest of
-this section describes the default-on posture that gives substitute mode its
-name.
+field is inert for any client that does not know it. To the patch-aware
+resolver, an annotation is simply a registry-supplied **post-pick
+substitution rule** — the same primitive a workspace stores explicitly in
+advertise mode — applied by default, with the workspace's ignore list as
+the refusal surface.
 
 A patch-aware resolver (a pnpm follow-up RFC) selects the annotation
 *inside* the resolve call. pnpm's resolver already separates a dependency's
@@ -376,20 +377,27 @@ already-shipped alias machinery, and that is the point:
   manifest refresh moves a patch to `-sp2`, the next non-frozen resolution
   produces a reviewable lockfile diff in both places.
 - **Opting out is an explicit client setting.** With no override merge
-  involved, precedence cannot express refusal; the follow-up defines an
-  ignore list (per package, or per provider) that makes the resolver skip
-  the annotation — declared in workspace config, visible and reviewable
-  like an override.
+  involved, precedence cannot express refusal; the companion pnpm RFC
+  defines an ignore list (per package, or per provider) that makes the
+  resolver skip the annotation — declared in workspace config, visible and
+  reviewable like an override.
 
-Clients that are not patch-aware ignore the unknown field and resolve the
-vulnerable original — no worse than today. Per-mount policy can escalate:
-`unawareClients: refuse` makes the tarball route answer a manifest-covered
-vulnerable artifact with the explicit `403`-plus-suggested-override body
-instead of bytes. That is hard enforcement, stated honestly: the tarball
-route cannot distinguish a fresh resolution from an old pinned one, so
-`refuse` also blocks existing lockfiles that pin the vulnerable original —
-which is precisely what "no known-patchable vulnerable artifact leaves this
-registry" means. The default is `serve`.
+**Client choice is not a security boundary.** Clients that are not
+patch-aware ignore the unknown field and resolve the vulnerable original —
+no worse than today — and patch-aware clients can be configured not to
+substitute. Neither is a policy bypass, because the boundary a deployment
+can rely on is registry-side: with `enforcement: refuse`, the tarball route
+answers a manifest-covered vulnerable artifact with the explicit
+`403`-plus-suggested-patch body instead of bytes — for **every** client,
+patch-aware or not, opted out or not. Under `refuse`, an ignore-list entry
+can choose failure over substitution, but can never obtain the vulnerable
+bytes; client-side substitution is a protection and compatibility layer,
+never the enforcement mechanism. `refuse` is hard enforcement, stated
+honestly: the tarball route cannot distinguish a fresh resolution from an
+old pinned one, so it also blocks existing lockfiles that pin the
+vulnerable original — which is precisely what "no known-patchable
+vulnerable artifact leaves this registry" means. The default is
+`enforcement: serve`.
 
 **Resolution cost.** Discovering patches costs nothing: the mapping rides
 the packument the resolver already fetched, so unpatched packages — and
@@ -570,7 +578,8 @@ mechanism must act after version selection — spec rewriting cannot see the
 pick. The same fact rules out `pnpm audit --fix` emitting overrides: an
 exact-version key would not apply to range declarations, and range or
 bare-name keys freeze or force version selection — which is why the fix
-flow writes accept-list entries for the patch-aware resolver instead.
+flow writes post-pick substitution rules for the patch-aware resolver
+instead.
 
 ### A standalone patched-versions document plus an override extension
 
@@ -660,13 +669,12 @@ pristine cached packuments:
    suggested override spec when a pinned manifest covers a vulnerable
    version.
 4. **Per-mount `patching:` policy and the egress annotation.** Validate the
-   policy block (known provider, mode, severity gate, `unawareClients`, one
-   substituting provider per original `name@version` per mount); annotate
-   matched version entries of served packuments on egress with the mode's
-   requested posture (`apply: default` / `opt-in`), as a pure function of
-   the pinned snapshots, leaving cached upstream documents and every `dist`
-   object untouched; implement `unawareClients: refuse` on the tarball
-   route with the `403` reason body.
+   policy block (known provider, mode, severity gate, `enforcement`, one
+   substituting provider per original `name@version` per mount); in
+   substitute mode, annotate matched version entries of served packuments
+   on egress as a pure function of the pinned snapshots, leaving cached
+   upstream documents and every `dist` object untouched; implement
+   `enforcement: refuse` on the tarball route with the `403` reason body.
 5. **Server-side resolution integration.** Where pnpr resolves on the
    client's behalf (the resolution endpoint of the auth-aware
    resolution-cache design), apply the same annotation logic inside
@@ -674,13 +682,12 @@ pristine cached packuments:
    substitution marker, and include the patching policy and snapshot digest
    in resolution-cache keys.
 
-Client-side follow-ups (separate pnpm RFC): the patch-aware resolver —
-selecting `_pnprPatch` inside the resolve call, returning the aliased
-identity (`resolvedVia: registry-patch`), recording substituted entries in
-a dedicated lockfile section so satisfiability checks accept them, and
-honoring the posture through accept lists (opt-in annotations) and ignore
-lists (default annotations) — plus `pnpm audit --fix` writing accept-list
-entries from the enriched audit response.
+The client side — the patch-aware resolver applying post-pick substitution
+rules from two sources (workspace-stored mappings, and `_pnprPatch`
+annotations filtered by the ignore list), the lockfile record, and
+`pnpm audit --fix` — is specified in the companion pnpm RFC,
+[`text/0000-post-pick-substitution.md`](../../text/0000-post-pick-substitution.md),
+submitted alongside this one.
 
 Tests should cover, at minimum:
 
@@ -697,20 +704,19 @@ Tests should cover, at minimum:
   patch against the same base version;
 - audit bulk endpoint carrying the override-spec extension for a vulnerable
   version with a manifest entry, and omitting it otherwise;
-- matched version entries annotated on egress only for manifest-covered,
-  policy-accepted versions, as a pure function of the pinned snapshot,
-  carrying `apply: opt-in` in advertise mode and `apply: default` in
-  substitute mode;
+- matched version entries annotated on egress only in substitute mode, only
+  for manifest-covered, policy-accepted versions, as a pure function of the
+  pinned snapshot — and no annotations served in advertise mode;
 - cached upstream packuments staying byte-identical to origin (annotation
   on egress only), every `dist` object and all tarball responses identical
   with `patching:` enabled and disabled;
 - the patch-scope packument's `dist.integrity` for a manifest-listed version
   equaling the manifest's pinned integrity (the client-visible pin);
 - an existing lockfile pinning the vulnerable original installing unchanged
-  through a substitute-mode mount (with `unawareClients: serve`);
-- `unawareClients: refuse` answering manifest-covered vulnerable tarballs
-  with `403` plus the suggested override, and leaving uncovered artifacts
-  untouched;
+  through a substitute-mode mount (with `enforcement: serve`);
+- `enforcement: refuse` answering manifest-covered vulnerable tarballs with
+  `403` plus the suggested patch for every caller, and leaving uncovered
+  artifacts untouched;
 - the one-substituting-provider-per-original rule enforced at config load;
 - server-side resolution returning aliased resolutions from the same pinned
   snapshot as the served annotations, and a manifest refresh re-keying
@@ -829,9 +835,8 @@ Tests should cover, at minimum:
 - **Patch-aware resolver design.** The pnpm-side follow-up must settle
   whether annotations are honored by default when present or behind a
   setting, whether they are honored from *any* registry or only from
-  configured pnpr bases, the shape of the opt-in and opt-out surfaces
-  (accept list for `apply: opt-in` annotations, ignore list for
-  `apply: default` ones — per package or per provider), how provenance is
+  configured pnpr bases, the config shape of workspace substitution rules
+  and of the ignore list (per package or per provider), how provenance is
   surfaced (`pnpm why`, install summary, the `resolvedVia` marker), and the
   annotation field name (`_pnprPatch` vs. something vendor-neutral other
   resolvers could adopt).
