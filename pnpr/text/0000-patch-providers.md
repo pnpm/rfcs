@@ -13,17 +13,18 @@ manifest** ties the two names together, and a per-mount `patching:` policy
 applies it in one of two modes: **advertise**, where consumers adopt patches
 explicitly via package alias overrides
 (`"ejs@2.7.4": "npm:@echo-patch/ejs@2.7.4"`) surfaced through audit
-enrichment, and **substitute**, where the registry compiles the manifest into
-a ready-made **overrides object** served at a well-known endpoint, which
-patch-aware clients fetch and apply automatically at resolution — so *fresh
-resolutions* receive the patched artifact as an ordinary recorded alias with
-a canonical, host-free lockfile resolution, while already-pinned installs are
-never altered.
+enrichment, and **substitute**, where the registry serves a ready-made
+**patched-versions document** at a well-known endpoint, which patch-aware
+clients fetch and apply **after version selection**: whenever resolution
+picks a version the document covers, the client resolves the provider's
+aliased artifact instead — recorded like an ordinary alias, with a canonical,
+host-free lockfile resolution — while already-pinned installs are never
+altered.
 
 Notably, this requires **no new mount kind** and no changes to how packuments
 or tarballs are served. Both shapes are expressible with
 hosted/upstream/router mounts as already specified; what this RFC adds is the
-manifest protocol, a registry-served overrides document, and the
+manifest protocol, a registry-served patched-versions document, and the
 audit/advisory machinery around it.
 
 Both shapes extend the invariants of the registry-mounts RFC rather than
@@ -236,6 +237,17 @@ another:
 }
 ```
 
+One property of overrides matters here: an override rewrites the **declared
+specs** in `package.json` files, and its selector matches a declared range by
+subset. The exact-version key above therefore covers dependencies declared as
+`2.7.4` (typical for lockstep pins and many transitive declarations) but
+*not* a dependency declared as `^2.7.0` — no selector short of the bare name
+matches that, and a bare-name override
+(`"ejs": "npm:@echo-patch/ejs@2.7.4"`) also *forces* the version for every
+`ejs` in the graph. Both are legitimate hand-written choices — visible,
+reviewable, deliberate — but the range case is handled properly by substitute
+mode (below), which is applied after version selection instead of to specs.
+
 Three adoption paths, from least to most automatic:
 
 1. **Hand-written overrides**, as above. Works today with no pnpr or pnpm
@@ -278,19 +290,20 @@ never run `pnpm audit` never find out. When the deployment's intent is "no
 fresh resolution may pick a version we have a patch for", that is substitute
 mode.
 
-### Substitute mode: a registry-provided overrides object
+### Substitute mode: a registry-provided patched-versions document
 
 Advertise mode's audit enrichment already computes, per vulnerable version,
-the exact override a workspace should adopt. `substitute` mode serves that
+the substitution a workspace should adopt. `substitute` mode serves that
 same result wholesale: the registry compiles the pinned, policy-filtered
-manifests into one **overrides object** — in pnpm's own overrides format —
-at a well-known endpoint on each registry base that enables it:
+manifests into one **patched-versions document** — a flat map from exact
+original versions to alias specs — at a well-known endpoint on each registry
+base that enables it:
 
 ```jsonc
-// GET <registry base>/-/pnpr/overrides
+// GET <registry base>/-/pnpr/patched-versions
 {
-  "schema": "pnpr-overrides/1",
-  "overrides": {
+  "schema": "pnpr-patched-versions/1",
+  "versions": {
     "ejs@2.7.4": "npm:@echo-patch/ejs@2.7.4",
     "lodash@4.17.20": "npm:@echo-patch/lodash@4.17.20"
   }
@@ -313,27 +326,34 @@ mounts:
 ```
 
 A patch-aware client (a small pnpm follow-up) fetches the document once per
-resolution run and merges it at the **lowest precedence** — anything the
-workspace declares wins — exactly as if the workspace had written those
-overrides by hand. Everything downstream is pnpm's already-shipped alias
+resolution run and applies it **after version selection** — deliberately
+*not* as a pnpm override. Overrides rewrite declared specs and match them by
+subset, so an exact-version key like `ejs@2.7.4` would never apply to a
+dependency declared as `^2.7.0` — and `^2.7.0` picking `2.7.4` is exactly the
+fresh-resolution case substitute mode exists for. Instead, the client
+resolves every spec exactly as it does today, and when the **picked** version
+appears in the document, it resolves the mapped alias target in its place.
+Version selection is never changed — only which *build* of the selected
+version is installed. Everything downstream is pnpm's already-shipped alias
 machinery, and that is the point:
 
 - **The lockfile stays canonical and host-free.** A fresh resolution of
-  `^2.7.0` picks `2.7.4`, the override redirects it, and the lockfile records
-  the aliased package `@echo-patch/ejs@2.7.4` with a canonical resolution —
-  integrity only, tarball URL recomputed from registry config at install
-  time. Nothing deployment-specific is persisted; portability is exactly that
-  of any aliased dependency.
-- **No pinned install ever changes.** Overrides act only when a resolution is
-  made. An existing lockfile entry is never touched, and a
+  `^2.7.0` picks `2.7.4`, the document redirects that pick, and the lockfile
+  records the aliased package `@echo-patch/ejs@2.7.4` with a canonical
+  resolution — integrity only, tarball URL recomputed from registry config at
+  install time. Nothing deployment-specific is persisted; portability is
+  exactly that of any aliased dependency.
+- **No pinned install ever changes.** Substitution acts only when a
+  resolution is made. An existing lockfile entry is never touched, and a
   `--frozen-lockfile` install neither fetches nor applies the document.
   Substitute at resolution, never at fetch.
 - **Provenance is legible and diffable.** The lockfile shows `ejs` resolving
   to `@echo-patch/ejs@2.7.4`; when a manifest refresh moves a patch to
   `-sp2`, the next non-frozen resolution produces a reviewable lockfile diff.
-- **Opting out is ordinary config.** A workspace that must keep the
-  vulnerable original pins it with its own override, which outranks the
-  registry-provided one — visible and reviewable, like every other override.
+- **Opting out is explicit workspace config.** A workspace that must keep a
+  vulnerable original declares the exclusion in its own config (the pnpm
+  follow-up defines the exact setting — e.g., an ignore list for registry
+  patches), visible and reviewable like an override.
 
 Clients that are not patch-aware never ask for the document and resolve the
 vulnerable original — no worse than today. Per-mount policy can escalate:
@@ -349,9 +369,10 @@ Costs and requirements, stated honestly:
 
 - **Automatic protection reaches only patch-aware clients.** npm and yarn
   users get advertise-mode discovery (and `refuse`, where enabled). pnpr is
-  pnpm-first, and the document is deliberately pnpm's overrides shape so
-  other tools can consume it too — an org can even paste it into a shared
-  config today.
+  pnpm-first, and the document format is deliberately trivial — exact version
+  in, alias spec out — so other tools can consume it, and an org can still
+  mechanically derive blunt bare-name overrides from it for clients that
+  predate the feature.
 - **Provider retention becomes load-bearing.** A lockfile aliasing
   `@echo-patch/ejs@2.7.4` installs only while that artifact remains
   available. Providers must treat their patch namespaces as immutable and
@@ -364,15 +385,15 @@ Costs and requirements, stated honestly:
   intent — but it is one more reason registry identity belongs in package
   identity.
 
-Determinism and conflicts: the served overrides object is a pure function of
-the mount's `patching:` config plus the pinned manifest snapshots — the same
+Determinism and conflicts: the served document is a pure function of the
+mount's `patching:` config plus the pinned manifest snapshots — the same
 determinism contract as router routes. A refresh that changes it is logged
 and diffable, and the document carries a digest/ETag so clients cache it
 cheaply. Within one mount, at most one provider may claim a given original
 `name@version`; two manifests colliding is a config error, not a precedence
 guess. And substitution composes with advertise-mode machinery — the audit
 endpoint still reports the mapping, so a workspace can see which of its
-resolutions came from the registry's overrides and pin them explicitly if it
+resolutions came from the registry's document and pin them explicitly if it
 prefers.
 
 **Document size.** The document grows linearly with the provider's patch
@@ -427,8 +448,8 @@ name change. It is rejected as the primary mechanism because:
 - **It synthesizes metadata.** The overlay serves a packument that no single
   origin published — base metadata with foreign *version entries* spliced
   into the version list. The alias model never modifies a served packument in
-  any mode: the overrides document lives beside the registry surface, not
-  inside another origin's metadata — yet grafting buys neither automatic
+  any mode: the patched-versions document lives beside the registry surface,
+  not inside another origin's metadata — yet grafting buys neither automatic
   protection (last bullet below) nor a cleaner adoption story.
 - **It requires a new composite mount kind**, with its own validation, routing,
   write-rejection, and access-composition rules. The alias model is ordinary
@@ -471,7 +492,7 @@ where the vendor owns the identity end to end.
 ### Serving the substitution inside packuments
 
 Two earlier shapes of substitute mode put the mapping into the served
-packument itself instead of a separate overrides document:
+packument itself instead of a separate document:
 
 - **Rewrite the vulnerable version's `dist`** to the patched artifact's
   tarball URL and integrity. Its appeal is universality — every npm client
@@ -487,10 +508,25 @@ packument itself instead of a separate overrides document:
   origin's metadata on the serving path, and the client must discover
   patches one packument at a time.
 
-The registry-provided overrides object subsumes both: the same information,
-one standard-shaped document beside the registry surface, zero changes to
-packument or tarball serving — and the client-side behavior it enables is
-identical to overrides the workspace could have written itself.
+The registry-provided document subsumes both: the same information, one
+document beside the registry surface, zero changes to packument or tarball
+serving, and one client-side application point after version selection.
+
+### Applying the document as literal pnpm overrides
+
+An earlier draft served the document *in overrides format* for the client to
+merge alongside workspace overrides. Rejected because the semantics do not
+line up. Overrides rewrite **declared specs** before resolution, and a
+selector matches a declared range by subset: `"ejs@2.7.4"` applies to a
+dependency declared as `2.7.4`, but not to `^2.7.0` — whose resolution to
+`2.7.4` is exactly the case that needs protection. Widening the selector
+cannot fix it: no range selector matches `^2.7.0` short of the bare name,
+and a bare-name override (`"ejs": "npm:@echo-patch/ejs@2.7.4"`) *changes
+version selection* — it forces every `ejs` in the graph to the patched
+`2.7.4`, downgrading a `^2.7.0` that would have picked a genuinely fixed
+`2.7.5`. Post-pick substitution has neither problem: the resolver picks
+whatever it would have picked, and only a picked version with a patch is
+swapped for its patched build of the *same* version.
 
 ### Named-registry aliases: same name, same version, different registry
 
@@ -545,17 +581,17 @@ mount graph, routing, or the packument/tarball serving paths:
    endpoint from OSV data, adding the namespaced extension field with the
    suggested override spec when a pinned manifest covers a vulnerable
    version.
-4. **Per-mount `patching:` policy and the overrides endpoint.** Validate the
-   policy block (known provider, mode, severity gate, `unawareClients`, one
-   substituting provider per original `name@version` per mount); compile the
-   pinned, policy-filtered manifests into the `/-/pnpr/overrides` document
-   with a digest/ETag, recompiled only on manifest refresh or config reload;
-   implement `unawareClients: refuse` on the tarball route with the `403`
-   reason body.
+4. **Per-mount `patching:` policy and the patched-versions endpoint.**
+   Validate the policy block (known provider, mode, severity gate,
+   `unawareClients`, one substituting provider per original `name@version`
+   per mount); compile the pinned, policy-filtered manifests into the
+   `/-/pnpr/patched-versions` document with a digest/ETag, recompiled only on
+   manifest refresh or config reload; implement `unawareClients: refuse` on
+   the tarball route with the `403` reason body.
 
 Client-side follow-ups (separate pnpm RFC): `pnpm audit --fix` writing alias
-overrides from the enriched audit response, and fetch-and-merge of the
-registry-provided overrides document at lowest precedence during resolution.
+overrides from the enriched audit response, and post-pick substitution from
+the registry-provided patched-versions document during resolution.
 
 Tests should cover, at minimum:
 
@@ -572,7 +608,7 @@ Tests should cover, at minimum:
   patch against the same base version;
 - audit bulk endpoint carrying the override-spec extension for a vulnerable
   version with a manifest entry, and omitting it otherwise;
-- the overrides document compiled from pinned manifests, filtered by
+- the patched-versions document compiled from pinned manifests, filtered by
   `minSeverity`, stable between refreshes, and served with a digest/ETag;
 - packuments and tarball responses byte-identical with `patching:` enabled
   and disabled — substitute mode touches neither serving path;
@@ -582,7 +618,7 @@ Tests should cover, at minimum:
   with `403` plus the suggested override, and leaving uncovered artifacts
   untouched;
 - the one-substituting-provider-per-original rule enforced at config load;
-- a manifest refresh changing the overrides document being logged, and
+- a manifest refresh changing the patched-versions document being logged, and
   previously aliased patched artifacts continuing to serve as long as the
   provider retains them;
 - vendor-as-origin deployments (Seal-style `-spN` packuments) proxying
@@ -605,9 +641,10 @@ Tests should cover, at minimum:
   than a client feature.
 - **pnpm's config dependencies** (RFC 0004) already distribute shared
   overrides to many repositories through an installed package; the
-  registry-provided overrides document is the same idea with the registry as
-  the distribution channel, and the two can coexist (an org can compile the
-  document into a config dependency for clients that predate the endpoint).
+  registry-provided patched-versions document is the same idea with the
+  registry as the distribution channel, and the two can coexist (an org can
+  derive overrides from the document into a config dependency for clients
+  that predate the endpoint).
 - **vlt's DepID** (registry as a component of package identity) is the prior
   art for the deferred named-registry encoding.
 - **Socket Certified Patches** demonstrates the repo-local patching shape;
@@ -646,19 +683,22 @@ Tests should cover, at minimum:
   is the provider's attestation the right carrier?
 - **Named-registry encoding timing.** Revisit `echo:ejs@2.7.4`-style
   overrides once the pnpm lockfile registry-identity follow-up lands; the
-  overrides document could then carry registry-qualified specs as an
+  patched-versions document could then carry registry-qualified specs as an
   alternative encoding.
-- **Overrides endpoint discovery and trust.** The exact path
-  (`/-/pnpr/overrides` vs. a capabilities document), whether the document is
-  signed with the pnpr instance key in addition to being served over the
-  authenticated registry connection, and how a client maps multiple
+- **Document endpoint discovery and trust.** The exact path
+  (`/-/pnpr/patched-versions` vs. a capabilities document), whether the
+  document is signed with the pnpr instance key in addition to being served
+  over the authenticated registry connection, and how a client maps multiple
   configured registries to multiple documents (fetch from each base? default
   registry only?).
 - **pnpm-side application semantics.** Does pnpm apply a registry-provided
-  overrides document by default when the registry offers one, or behind a
-  setting? How is its provenance surfaced (`pnpm why`, lockfile comment,
-  install summary)? These belong in the pnpm follow-up RFC, but the answers
-  shape the document format.
+  patched-versions document by default when the registry offers one, or
+  behind a setting? What is the per-package opt-out surface, and how is
+  provenance surfaced (`pnpm why`, install summary)? How does an existing
+  lockfile interact with a changed document — re-resolve only on ordinary
+  re-resolution events, or also when the document digest changes? These
+  belong in the pnpm follow-up RFC, but the answers shape the document
+  format.
 - **Scale threshold for a filtered variant.** At what measured catalog size
   (entries, compressed bytes) does the single cached document stop being the
   right delivery, and is the fallback a name-filtered bulk lookup, a
