@@ -211,9 +211,15 @@ package versions to their patched counterparts:
 - **Scope-bound.** Every `patched` entry must name a package inside the
   provider's declared scope; an entry pointing anywhere else is rejected at
   validation. A provider can describe only its own namespace.
-- **Integrity-pinned.** The manifest's integrity for the patched artifact must
-  match what the patch source serves; a mismatch is an error, never a
-  fall-through to the vulnerable original.
+- **Integrity-pinned, enforced at the serving path.** The patched content
+  originates from the provider's infrastructure — an origin the deployment
+  does not control — so pnpr is the boundary where the provider's signed
+  promise is enforced. For every manifest-listed version, the patch-scope
+  packument's `dist.integrity` must equal the manifest's pin, and fetched
+  tarball bytes are verified against it; a mismatch is an error, never a
+  fall-through to the vulnerable original. A compromised patch source can
+  therefore refuse to serve, but cannot serve different bytes through pnpr
+  than the signed manifest promised.
 - **Patch re-issues stay inside the namespace.** If a patch itself needs a
   second revision (a new CVE lands on the same base version), the provider
   publishes `@echo-patch/ejs@2.7.4-sp2` and updates the manifest entry.
@@ -395,16 +401,18 @@ dependency*, never of the graph, and the original pick is not wasted work —
 it is the key that selects the patch; there is no way to learn that
 `^2.7.0` lands on `2.7.4` without performing the pick. A fetch-free variant
 — carrying each patched tarball's integrity in the document so the client
-constructs the resolution directly — was considered and rejected: a
-hand-written override will never carry an integrity, so the mechanism would
-fork into two systems (or grow an object-form override type), and it
-crosses no trust boundary, because the document and the patch-scope
-packument are served by the same registry origin — pinning one to the other
-adds nothing a compromised registry could not rewrite in both. The
-end-to-end pin lives where it belongs: pnpr verifies patch-source bytes
-against the provider's *signed manifest* before serving them. Server-side,
-the map and the patch-scope metadata are local, so substitution is a lookup
-there.
+constructs the resolution directly — was considered and set aside: a
+hand-written override will never carry an integrity, so making integrity
+part of override semantics would fork the mechanism into two systems (or
+grow an object-form override type). The trust boundary it would police —
+the patch source's infrastructure, which the deployment does not control —
+is already policed server-side, where pnpr verifies both the patch-scope
+metadata and the tarball bytes against the provider's *signed manifest*
+before serving them (see the manifest rules). Client-carried integrity
+would defend only against pnpr itself failing to enforce that check —
+defense in depth, not a new guarantee — and is parked as an open question
+rather than a mechanism change. Server-side, the map and the patch-scope
+metadata are local, so substitution is a lookup there.
 
 **Server-side and client-side resolution apply the same map at the same
 point.** The flow above is client-side resolution: pnpm reads packuments,
@@ -795,6 +803,15 @@ Tests should cover, at minimum:
   (entries, compressed bytes) does the single cached document stop being the
   right delivery, and is the fallback a name-filtered bulk lookup, a
   chunked/delta encoding, or both?
+- **Client-side integrity as defense in depth.** The patched content
+  originates from the provider's infrastructure, and pnpr's serving-path
+  verification is what stands between a compromised patch source and
+  clients. Should the document optionally carry each entry's
+  manifest-pinned integrity as a *verification sidecar* — not part of
+  override semantics, so the mechanism does not fork — letting patch-aware
+  clients double-check substituted tarballs against the provider's signed
+  manifest even if pnpr's enforcement failed? Costs document size (hashes
+  do not compress) for a redundant check; deliberately undecided.
 - **Default mode.** Is `advertise` the right default for `patching:`, with
   `substitute` as the explicit escalation? (This RFC assumes yes: changing
   what fresh resolutions receive should be a deliberate, visible deployment
