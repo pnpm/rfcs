@@ -354,9 +354,22 @@ is pnpm's already-shipped alias machinery, and that is the point:
   resolution is made. An existing lockfile entry is never touched, and a
   `--frozen-lockfile` install neither fetches nor applies the document.
   Substitute at resolution, never at fetch.
+- **Applied registry overrides are recorded in the lockfile.** pnpm already
+  records the overrides a resolution used, and registry-provided entries
+  must leave the same trace: every entry that actually affected the graph is
+  written to a dedicated lockfile section (entry plus source registry) —
+  but *only* applied entries, so the lockfile grows with the workspace's
+  substitutions, not with the org's whole patch catalog. The record serves
+  both audiences: humans and SBOM tooling see *why* `ejs` resolves to
+  `@echo-patch/ejs@2.7.4`, and pnpm gets change detection — a changed or
+  withdrawn entry re-resolves exactly the affected packages, and a new
+  document entry covering a currently locked vulnerable pick adopts the
+  patch on the next non-frozen install (a map lookup over locked
+  `name@version` pairs, no re-resolution sweep).
 - **Provenance is legible and diffable.** The lockfile shows `ejs` resolving
-  to `@echo-patch/ejs@2.7.4`; when a manifest refresh moves a patch to
-  `-sp2`, the next non-frozen resolution produces a reviewable lockfile diff.
+  to `@echo-patch/ejs@2.7.4` and the recorded entry that caused it; when a
+  manifest refresh moves a patch to `-sp2`, the next non-frozen resolution
+  produces a reviewable lockfile diff in both places.
 - **Opting out is ordinary precedence.** A workspace that must keep a
   vulnerable original declares its own override for `ejs@2.7.4` (mapping the
   pick to itself), which outranks the registry-provided document — visible
@@ -717,10 +730,16 @@ Tests should cover, at minimum:
   behavior change), whether a registry-provided document is applied by
   default or behind a setting, how provenance is surfaced (`pnpm why`,
   install summary), the exact once-only application rule for substituted
-  targets, whether parent-scoped selectors (`a>b@1.0.0`) participate, and
-  how an existing lockfile interacts with a changed document — re-resolve
-  only on ordinary re-resolution events, or also when the document digest
-  changes? The answers shape the document format.
+  targets, and whether parent-scoped selectors (`a>b@1.0.0`) participate.
+  The answers shape the document format.
+- **Lockfile recording shape.** The name and format of the lockfile section
+  recording applied registry overrides (alongside the existing `overrides`
+  record), whether the document digest is recorded in addition to the
+  applied entries, and the adoption-timing default — is silently adopting a
+  newly published patch for an already-locked pick on the next non-frozen
+  install the right behavior, or should new adoptions require an explicit
+  gesture (`pnpm update --patches`-style) while only *withdrawn* entries act
+  automatically?
 - **Scale threshold for a filtered variant.** At what measured catalog size
   (entries, compressed bytes) does the single cached document stop being the
   right delivery, and is the fallback a name-filtered bulk lookup, a
