@@ -748,6 +748,39 @@ Tests should cover, at minimum:
   tooling and rots; serving real artifacts from a registry does not.
 - **npm audit's bulk advisory endpoint** is the existing client-visible
   surface this RFC enriches rather than replaces.
+- **Go's `replace` directive with a left-side version**
+  (`replace ejs v2.7.4 => patched v2.7.4`) is the closest living precedent
+  for the exact-version override extension: it applies **only when minimal
+  version selection selects exactly that version**, other versions are
+  untouched, and it is honored only in the main module — the same
+  substitute-the-selected-pick, workspace-holds-authority shape proposed
+  here.
+- **Cargo's `[replace]`** was post-resolution exact-version substitution
+  almost verbatim: keyed by an exact package id, it swapped the *source* of
+  an already-resolved node, and the replacement was required to keep the
+  same name and version — precisely the same-version-different-build
+  contract of a security patch. It was deprecated in favor of `[patch]`
+  because users wanted *version-changing* overrides (unpublished bumps),
+  which `[replace]` could not express — a need this design leaves with
+  pnpm's existing spec-rewriting overrides, keeping the post-pick mechanism
+  for the case where even Cargo's docs note `[patch]` merely "acts just
+  like `[replace]`": identical name and version, different source.
+- **npm's overrides (RFC 0036)** are the cautionary tale for *where* to
+  match. npm's version-keyed overrides do try to match resolved versions
+  ("a match if the named package specifier would be satisfied by the
+  dependency being considered"), but the matching runs during arborist tree
+  construction, when nodes may not have versions yet — a timing entanglement
+  that produced years of bugs, including two consecutive `npm install` runs
+  emitting different lockfiles (broken from 8.3.0, fixed in 11.2.0). The
+  extension proposed here matches at one well-defined point, after the pick.
+  npm's rule that the override *value* also counts as a match (so versions
+  cannot be swapped in cycles) is the analogue of this design's
+  applied-exactly-once rule.
+- **yarn's `resolutions`** (Berry) match the *declared descriptor* — a
+  `foo@^1.0.0` key matches dependents that declared `^1.0.0`, not picks that
+  land in it — confirming that every JS package manager's override surface
+  is declaration-level today, and none can express "the version resolution
+  actually chose" without an extension like the one proposed.
 
 ## Unresolved Questions and Bikeshedding
 
