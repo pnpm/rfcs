@@ -4,23 +4,23 @@
 
 pnpr should screen the artifacts it serves. A per-artifact analysis pipeline —
 advisory lookup, static capability analysis, and an optional AI review agent —
-writes signed verdicts into a content-addressed **verdict store**. Per-mount
+writes signed verdicts into a content-addressed **verdict store**. Per-registry
 policy turns verdicts into serve/hold/block decisions, adds a **cooldown**
 that refuses to serve freshly published versions, and quarantines suspicious
 artifacts for human disposition. AI review is incremental by default: a new
 version is reviewed as a diff against the last verified version of the same
 package, with defined escalation to full review.
 
-Screening extends the invariants of the registry-mounts RFC rather than
+Screening extends the invariants of the pnpr registries RFC rather than
 weakening them:
 
 > **Blocked is not "not found".** A screening or policy denial is an explicit,
 > machine-readable refusal, never a `404` that invites a client or downstream
 > proxy to fall through to a different origin.
 >
-> **Verdicts attach to bytes; policy attaches to mounts.** A verdict is keyed
+> **Verdicts attach to bytes; policy attaches to registries.** A verdict is keyed
 > by content integrity, so the same bytes reached through any origin carry the
-> same analysis. What to *do* about a verdict is declared per mount.
+> same analysis. What to *do* about a verdict is declared per registry.
 
 ## Motivation
 
@@ -30,7 +30,7 @@ Every artifact an organization installs passes through its registry — every
 developer machine, every CI job, every transitive dependency. A protection
 applied there is applied once, centrally, with no per-repository configuration
 and no gaps for the repo that forgot to install a wrapper CLI. pnpr already
-screens upstream artifacts against OSV advisories per mount; this RFC grows
+screens upstream artifacts against OSV advisories per registry; this RFC grows
 that hook into a real policy surface.
 
 The npm ecosystem is where this matters most: the large majority of newly
@@ -84,8 +84,8 @@ integrity:
 }
 ```
 
-Keying by content hash — not by `name@version`, and not by mount — means the
-same bytes reached through any mount reuse the verdict, verdicts survive
+Keying by content hash — not by `name@version`, and not by registry — means the
+same bytes reached through any registry reuse the verdict, verdicts survive
 cache eviction and re-fetch, and verdict sets are exportable: a signed verdict
 bundle from one pnpr instance can be imported by another that chooses to trust
 that instance's key. (A shared verdict exchange between deployments is a
@@ -101,7 +101,7 @@ other policy event.
 ### Analyzers
 
 Three analyzer classes, run as a pipeline; each is independently useful and
-per-mount policy chooses which are required:
+per-registry policy chooses which are required:
 
 1. **Advisory lookup (exists today).** OSV/GHSA matching by name and version.
    Deterministic, cheap, catches only what is already reported.
@@ -124,7 +124,7 @@ per-mount policy chooses which are required:
 ### Incremental AI review
 
 The unit of review for a new version is the **normalized diff** against the
-last verified version of the same package (same name, same mount lineage):
+last verified version of the same package (same name, same registry lineage):
 
 - Both tarballs are unpacked; files are compared canonically (sorted paths,
   content diffs, mode changes, adds/removals), and `package.json` is diffed
@@ -176,11 +176,11 @@ requirements:
 
 ### Policy and enforcement
 
-Screening policy attaches per mount (verdicts are global; what to *do* about
-them is a mount decision):
+Screening policy attaches per registry (verdicts are global; what to *do* about
+them is a registry decision):
 
 ```yaml
-mounts:
+registries:
   npmjs:
     type: upstream
     url: https://registry.npmjs.org/
@@ -191,7 +191,7 @@ mounts:
       holdUntil: [advisory, static]  # verdicts required before first serve
       onMalicious: block
       onSuspicious: hold           # await operator disposition
-      onAnalyzerUnavailable: hold  # fail closed; 'allow' opts a mount out
+      onAnalyzerUnavailable: hold  # fail closed; 'allow' opts a registry out
 ```
 
 - **Cooldown.** A version whose publish time is younger than `cooldown` is
@@ -203,7 +203,7 @@ mounts:
   with `403` and a machine-readable body naming the policy and the verdict.
   Never `404`: reporting a policy block as "not found" invites the client's
   next-configured registry or a downstream proxy to fall through to an
-  unscreened origin, the exact vector the mount model exists to close. (If
+  unscreened origin, the exact vector the registry model exists to close. (If
   the separate patch-provider RFC lands, the reason body can additionally
   advertise a patched version that would satisfy the request — an optional
   integration, not a dependency.)
@@ -213,7 +213,7 @@ mounts:
   blocked version gets the explicit `403` reason rather than a confusing
   miss. (Cooldown-held versions are filtered the same way — to a resolver
   they do not exist yet.)
-- **Where scanning runs.** Hosted mounts scan at **publish time** and can
+- **Where scanning runs.** Hosted registries scan at **publish time** and can
   reject or quarantine before the version is ever visible. Upstream artifacts
   scan on **first fetch**, with `holdUntil` deciding what the first requester
   waits for; deployments may pre-warm watched packages so the cooldown window
@@ -279,9 +279,9 @@ All changes are in pnpr-server. Suggested decomposition:
    AI reviewer harness with artifact/diff preparation (normalized unpack,
    semantic package.json diff), the escalation rules as code, structured
    verdict schema, and a configurable model endpoint.
-3. **Screening policy engine.** Per-mount `screening:` config; cooldown and
+3. **Screening policy engine.** Per-registry `screening:` config; cooldown and
    packument filtering; hold/block `403` reason bodies; publish-time scanning
-   on hosted mounts; operator disposition records; revocation surfacing and
+   on hosted registries; operator disposition records; revocation surfacing and
    access-log correlation.
 
 Cooldown plus advisory/static analyzers are shippable without the AI
@@ -289,7 +289,7 @@ reviewer; the pipeline interface is what keeps the AI class pluggable.
 
 Tests should cover, at minimum:
 
-- verdict reuse across mounts for identical bytes, and re-analysis appending
+- verdict reuse across registries for identical bytes, and re-analysis appending
   rather than mutating;
 - verdict bundle export/import honoring the trust list;
 - diff-review chain validity (basis links), every mandatory escalation
@@ -302,7 +302,7 @@ Tests should cover, at minimum:
   packuments while pinned tarball requests get `403` with reason (never
   `404`);
 - `onAnalyzerUnavailable: hold` failing closed;
-- publish-time scanning rejecting/quarantining on hosted mounts;
+- publish-time scanning rejecting/quarantining on hosted registries;
 - post-serve `malicious` verdict blocking future serves and appearing in
   audit output.
 
@@ -336,7 +336,7 @@ Tests should cover, at minimum:
   a transparency-log shape?
 - **Escalation constants.** Diff-size thresholds, the re-anchor interval
   `K`, and cooldown defaults need empirical tuning; are they global,
-  per-mount, or per-package-tier (e.g., stricter for packages with install
+  per-registry, or per-package-tier (e.g., stricter for packages with install
   scripts)?
 - **Cumulative-diff review** since the last full anchor: required or
   recommended? It roughly doubles incremental review cost while directly
