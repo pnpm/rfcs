@@ -6,11 +6,11 @@ pnpr should model every origin it serves as a named **registry**. There are
 exactly two concrete registry kinds — a pnpr-**hosted** organization registry
 and an **upstream** registry proxying a single external origin — plus one
 composite, a **router** that presents an ordered list of concrete registries
-behind one URL. Every concrete registry declares the package-name **patterns**
-it serves — its namespace — and a router routes each package to the first
-listed source whose patterns claim it. Each registry is exposed at
-`https://<pnpr>/~<name>/`, so every origin has an explicit identity in the
-URL, in pnpr's internal routing, and in client resolution.
+behind one URL. Every concrete registry declares the **packages** it serves —
+a map from name patterns to per-package access rules — and a router
+routes each package to the first listed source that claims it. Each registry
+is exposed at `https://<pnpr>/~<name>/`, so every origin has an explicit
+identity in the URL, in pnpr's internal routing, and in client resolution.
 
 The design is governed by one invariant:
 
@@ -25,10 +25,13 @@ dependency-confusion class — and the model omits them by construction rather
 than mitigating them. Outage resilience comes from pnpr's own cache, never from
 trying a different origin.
 
-The namespace lives on the origin itself: a registry can neither serve nor
-accept a publish of a name outside its declared patterns, on any path to it.
-Routing is therefore *derived* from declared ownership — a router orders
-competing claims, it never assigns a name to a registry that does not claim it.
+The namespace and its authorization live on the origin itself: a registry can
+neither serve nor accept a publish of a name outside its declared packages, on
+any path to it, and every access decision is made by the rules of the concrete
+registry that serves the request. There is no global, name-keyed configuration
+anywhere — routing and authorization are both derived from declared ownership.
+A router orders competing claims; it never assigns a name to a registry that
+does not claim it.
 
 The pnpr-server implementation keeps lockfiles deployment-portable by serving
 canonical tarball URLs for the registry base the client addressed, so pnpm can
@@ -74,24 +77,42 @@ while the concrete registries themselves accepted any name. That decoupling
 has two costs:
 
 - **The hosted namespace is open.** A hosted registry accepts a publish of any
-  name (gated only by the identity-flavored `packages:` ACL, whose default is
-  permissive). A name no router routes to the registry becomes dormant stored
-  state: unreachable today, authoritative the moment an operator edits routes
-  or a client addresses `/~<name>/` directly. The static router validation
-  built to catch "a config mistake silently sends a name to the wrong origin"
-  cannot see stored state, so route edits are not as safe as the validation
-  implies. A typo'd scope published to the registry's own URL also succeeds
-  silently and then 404s through the router. And a private upstream registry
-  will fetch arbitrary public names through its server-owned credential for
-  any caller its `access:` admits.
+  name (gated only by an identity-flavored ACL whose default is permissive). A
+  name no router routes to the registry becomes dormant stored state:
+  unreachable today, authoritative the moment an operator edits routes or a
+  client addresses `/~<name>/` directly. The static router validation built to
+  catch "a config mistake silently sends a name to the wrong origin" cannot
+  see stored state, so route edits are not as safe as the validation implies.
+  A typo'd scope published to the registry's own URL also succeeds silently
+  and then 404s through the router. And a private upstream registry will fetch
+  arbitrary public names through its server-owned credential for any caller
+  its `access:` admits.
 - **Patterns are duplicated.** The names a registry is *for* and the names
   routed *to* it are the same fact, written in different places — on every
   router that includes the registry, and implicitly in what gets published to
   it — and the copies can drift.
 
-Declaring patterns on the registry itself closes both: the origin's namespace
-is one declaration, enforced at publish and serve time on every path to the
-registry, and routers derive their routing from it instead of restating it.
+Declaring the namespace on the registry itself closes both: the origin's
+namespace is one declaration, enforced at publish and serve time on every path
+to the registry, and routers derive their routing from it instead of restating
+it.
+
+### Authorization must be registry-scoped for the same reason
+
+Earlier iterations also kept Verdaccio's top-level `packages:` block as a
+**global** ACL layer: `access`/`publish`/`unpublish` rules keyed by package
+name alone, applied identically whichever registry served the name. But this
+design's central claim is that a package name is *not* a global identifier —
+the same name from two registries is two different packages. A name-keyed
+global ACL contradicts that, and it splits authorization across two places
+(the registry's own `access:` plus the global table), against the
+"authorize at the concrete source" rule the rest of the model follows.
+
+Scoping the ACL to the registry reveals that it is the *same declaration* as
+the namespace: one map whose keys say what the registry serves and
+whose values say who may read and write it. The namespace field and the ACL
+block merge into a per-registry `packages:` map, and no global, name-keyed
+configuration remains.
 
 ### pnpm cannot represent the same `name@version` from two registries today
 
@@ -135,11 +156,11 @@ The desired outcome is a design where:
 - `~acme` can serve only packages hosted by the `acme` organization;
 - `~npmjs` can serve the public npm registry;
 - `~corp` can serve a private upstream with pnpr-managed credentials;
-- every registry declares the package-name patterns it serves, and pnpr
-  enforces that namespace on the registry itself — an undeclared name can be
-  neither published to nor served from it;
+- every registry declares the packages it serves and the access rules for
+  them, and pnpr enforces both on the registry itself — an undeclared name can
+  be neither published to nor served from it;
 - a router can present several of these behind one URL, routing each package to
-  exactly one of them by the sources' declared patterns — never by guessing;
+  exactly one of them by the sources' declared packages — never by guessing;
 - private packages are declared (by scope/pattern or named registry), so a
   private name can never silently resolve to a public origin;
 - the path-less base URL is an optional, configurable default, never a
@@ -178,14 +199,18 @@ registries:
   acme:
     type: hosted
     org: acme
-    access: team:acme
-    patterns: ['@acme/*']
+    access: team:acme          # default for everything this registry serves
+    packages:
+      '@acme/secret':
+        access: acme-admins    # the most specific matching key wins
+        publish: acme-admins
+      '@acme/*': {}            # served with the registry defaults
 
   npmjs:
     type: upstream
     url: https://registry.npmjs.org/
     public: true
-    # No patterns: serves every name — the catch-all in any router.
+    # No packages map: serves every name — the catch-all in any router.
 
   corp:
     type: upstream
@@ -193,10 +218,11 @@ registries:
     auth:
       tokenEnv: CORP_NPM_TOKEN
     access: team:acme
-    patterns: ['@corp/*']
+    packages:
+      '@corp/*': {}
 
-  # One URL that routes each package to the first listed registry whose
-  # declared patterns claim it. No existence-based fallback.
+  # One URL that routes each package to the first listed registry that
+  # claims it. No existence-based fallback.
   main:
     type: router
     sources: [acme, corp, npmjs]
@@ -212,9 +238,10 @@ required model is two concrete registry kinds and one composite:
 enum Registry {
     Hosted {
         org: OrgId,
+        /// Default rules for everything this registry serves.
         access: AccessPolicy,
-        /// The names this registry serves. Empty = every name.
-        patterns: Vec<PackagePattern>,
+        /// Namespace + per-package rules. Empty = every name, default rules.
+        packages: PackageRules,
     },
     /// Exactly one external origin. Not a chain and not a set of endpoints:
     /// one URL, one credential generation, one cache namespace.
@@ -223,22 +250,26 @@ enum Registry {
         auth: Option<UpstreamAuth>,
         access: Option<AccessPolicy>,
         cache: CachePolicy,
-        /// The names this registry serves. Empty = every name.
-        patterns: Vec<PackagePattern>,
+        /// Namespace + per-package rules. Empty = every name, default rules.
+        packages: PackageRules,
     },
     /// An ordered list of concrete registries. A package resolves to the
-    /// first source whose declared patterns claim it — authoritatively. A
-    /// source's "not found" or "unavailable" is final; the router never tries
-    /// another.
+    /// first source that claims it — authoritatively. A source's "not found"
+    /// or "unavailable" is final; the router never tries another.
     Router {
         sources: Vec<RegistryName>, // Hosted or Upstream; never another Router
     },
 }
+
+/// Rules keyed by name pattern (access / publish / unpublish). The key set
+/// is the registry's namespace; the most specific matching key selects the
+/// rules, so entry order carries no meaning.
+struct PackageRules(Vec<(PackagePattern, PackagePolicy)>);
 ```
 
 A registry owns:
 
-- its declared package-name patterns — the namespace it serves;
+- its declared packages — the namespace it serves and the rules for it;
 - its authorization policy for the pnpr caller;
 - its upstream credential, if it has one;
 - its metadata and tarball cache namespace;
@@ -250,32 +281,62 @@ The important invariant is that a package request resolves to one concrete
 origin descriptor before metadata, tarballs, cache, or advisory decisions are
 made.
 
-### Registry namespaces (`patterns`)
+### The `packages:` map — namespace and rules in one declaration
 
-Every concrete registry may declare the package names it serves:
+Every concrete registry may declare the packages it serves as a map from name
+pattern to per-package rules:
 
-- **Small pattern language.** Patterns are deliberately restricted to four
+- **The key set is the namespace.** Keys are deliberately restricted to four
   statically decidable shapes: `**` for all packages, `@*/*` for all
   well-formed scoped packages, `@scope/*` for one concrete scope, and an exact
   package name such as `foo` or `@scope/foo`. Any other `*` form is a config
-  error, not a literal that silently never matches.
-- **Omitted patterns mean every name.** A registry with no `patterns:` serves
-  any package. This keeps the single-purpose cases free of ceremony: a pure
-  hosted registry, or a public npmjs upstream acting as a router's catch-all.
+  error, not a literal that silently never matches. Duplicate keys within one
+  registry are rejected.
+- **Omitted `packages:` means every name, default rules.** A registry with no
+  map serves any package under the registry-level defaults. This keeps the
+  single-purpose cases free of ceremony: a pure hosted registry, or a public
+  npmjs upstream acting as a router's catch-all.
 - **The namespace is enforced on the registry itself, on every path to it.** A
-  publish of a name outside the registry's patterns is rejected; a read of one
+  publish of a name outside the registry's packages is rejected; a read of one
   is a definitive `404`, answered before storage or the upstream is consulted
   — whether the request came through a router or addressed `/~<name>/`
   directly.
+- **Values are the per-package rules.** Each entry may set `access`,
+  `publish`, and `unpublish` permission lists (users, groups, and the built-in
+  `$all`/`$authenticated`/`$anonymous`). An omitted field falls back to the
+  registry-level default (`access:` on the registry), then to the safe
+  defaults: `access: $all`, `publish: $authenticated` (hosted only), and
+  `unpublish` denied. `publish`/`unpublish` entries on an upstream registry
+  are a config error — a write can never land there.
+- **The most specific entry wins — key order carries no meaning.** For any
+  name, the keys that can match it form a strict specificity chain — its
+  exact name, then its `@scope/*`, then `@*/*`, then `**` — and two distinct
+  keys of the same tier can never match the same name, so every name has
+  exactly one winning entry regardless of where it appears in the map. This
+  is deliberate: YAML mappings are formally unordered, and a formatter, a
+  `yq` round-trip, or a JSON conversion must not be able to change which
+  access rule applies. It also means no entry can be dead — an exact key
+  carves its name out of a scope key, which still serves the rest — so there
+  is no shadowed-entry validation to run inside a registry; a duplicate key
+  remains the only error. (Router `sources:` are different: a YAML *list* is
+  syntactically ordered, so source order stays meaningful there.)
 
-One declaration therefore does double duty: it is the registry's routing claim
-— what routers use to select a source — and its request filter. For a hosted
-registry the filter closes name squatting: a name outside the declared
-namespace cannot be published at all, so no dormant stored state can become
-authoritative when routes are later edited. For a private upstream registry
-the filter stops an authorized caller from pulling arbitrary public names
-through the registry's server-owned credential, spending its quota and filling
-its private cache namespace with content that belongs on a public route.
+One declaration therefore does triple duty: it is the registry's **routing
+claim** (what routers use to select a source), its **request filter**, and its
+**access policy**. For a hosted registry the filter closes name squatting: a
+name outside the declared namespace cannot be published at all, so no dormant
+stored state can become authoritative when routes are later edited. For a
+private upstream registry the filter stops an authorized caller from pulling
+arbitrary public names through the registry's server-owned credential,
+spending its quota and filling its private cache namespace with content that
+belongs on a public route.
+
+There is deliberately **no global, name-keyed ACL** beside this map — the
+top-level `packages:` block of the Verdaccio model is removed, not relocated
+(see [Rationale](#keep-a-global-packages-acl-beside-the-registry-namespaces)).
+Because silently ignoring a previously enforced ACL would be a security
+regression, a config that still contains a top-level `packages:` block is a
+**startup error** naming the per-registry replacement, not an ignored key.
 
 ### Hosted organization registries
 
@@ -295,10 +356,11 @@ name. This avoids a generic `~hosted` URL that describes implementation rather
 than ownership.
 
 Hosted organization registries have no upstream fallback. A request to
-`/~acme/foo` returns `foo` only if the registry's patterns claim `foo`, the
-`acme` organization hosts it, and the caller is authorized to read it. A
-publish is likewise accepted only for a claimed name, so the stored namespace
-can never grow beyond the declared one.
+`/~acme/foo` returns `foo` only if the registry's packages claim `foo`, the
+`acme` organization hosts it, and the matching entry's `access` rule admits
+the caller. A publish is likewise accepted only for a claimed name whose
+`publish` rule admits the caller, so the stored namespace can never grow
+beyond the declared one.
 
 The implemented hosted registry is pnpr-native storage with a per-org
 namespace. The YAML `org` field selects that namespace; an omitted or empty
@@ -340,19 +402,22 @@ to use a particular mirror of a registry, point an upstream at that mirror's
 URL — that is the whole feature; the mirror operator owns the mirror's
 availability, and pnpr's cache (below) absorbs transient outages of the origin.
 
-`public: true` means the origin is anonymous and world-readable: the registry
-cannot also declare `auth`, `access`, or **any** custom request header — a
-credential can ride in `X-Api-Key` or a cookie as easily as in
-`Authorization`, and a public origin is fetched anonymously and sends none. A
-non-public upstream must declare an `access` list naming which pnpr callers
-may use that registry; any upstream credential stays server-side.
+`public: true` describes the **upstream fetch**: the origin is anonymous and
+world-readable, so the registry cannot declare `auth`, a registry-level
+`access:` default, or **any** custom request header — a credential can ride in
+`X-Api-Key` or a cookie as easily as in `Authorization`, and a public origin
+is fetched anonymously and sends none. Per-package `access` rules in the
+`packages:` map remain permitted on a public upstream: they gate who may read
+*through pnpr*, not how pnpr fetches from the origin. A non-public upstream
+must declare a registry-level `access` list naming which pnpr callers may use
+that registry; any upstream credential stays server-side.
 
-An upstream registry's `patterns:` bound which names may be requested through
-it. This matters most for a private upstream: without a namespace bound, any
-caller the registry's `access:` admits could fetch arbitrary public package
-names through the registry's server-owned credential. With
-`patterns: ['@corp/*']`, `/~corp/lodash` is a `404`, and `lodash` reaches its
-declared public origin instead.
+An upstream registry's `packages:` keys bound which names may be requested
+through it. This matters most for a private upstream: without a namespace
+bound, any caller the registry's `access:` admits could fetch arbitrary public
+package names through the registry's server-owned credential. With
+`packages: {'@corp/*': {}}`, `/~corp/lodash` is a `404`, and `lodash` reaches
+its declared public origin instead.
 
 This is the earlier `~<uplink>` idea generalized into the primary origin
 model. The name "uplink" can remain as a historical term, but architecturally
@@ -361,7 +426,7 @@ it is an upstream registry.
 ### Routers
 
 A router presents several concrete registries behind one URL and selects
-exactly one of them per package, by the sources' own declared patterns:
+exactly one of them per package, by the sources' own declared packages:
 
 ```yaml
 registries:
@@ -374,15 +439,15 @@ This is the one-URL convenience of a Verdaccio facade, made safe by being
 **declarative and authoritative** rather than existence-based:
 
 - **A router restates nothing.** It is an ordered list of concrete source
-  registries; the patterns live on the sources. A router can order competing
+  registries; the namespaces live on the sources. A router can order competing
   claims, but it cannot assign a name to a registry that does not claim it —
   routing is derived from declared ownership, so a registry's namespace and
   its routing cannot drift apart.
 - **One package, one source.** A request resolves the package name by
-  evaluating the sources in declared order. The first source whose patterns
-  claim the name is authoritative; later sources are not consulted even if
-  their patterns would also match. A pattern-less source claims every name, so
-  it must be listed last — anything after it is unreachable and rejected by
+  evaluating the sources in declared order. The first source that claims the
+  name is authoritative; later sources are not consulted even if they would
+  also claim it. A source with no `packages:` map claims every name, so it
+  must be listed last — anything after it is unreachable and rejected by
   validation. A name no source claims is a definitive not-found.
 - **The matched source is authoritative.** If `@acme/foo` is claimed by `acme`
   and `acme` returns *not found*, the router returns not found. It does
@@ -399,9 +464,10 @@ This is the one-URL convenience of a Verdaccio facade, made safe by being
   credentials, and policy context.
 - **Writes route to a hosted source.** Publishing `@acme/foo` through the
   router selects `acme` (the first source claiming the name) and writes there
-  because `acme` is hosted. Publishing a name whose selected source is an
-  upstream is rejected with a clear "name a hosted registry" error — a write
-  can never land on an upstream.
+  because `acme` is hosted and its matching `publish` rule admits the caller.
+  Publishing a name whose selected source is an upstream is rejected with a
+  clear "name a hosted registry" error — a write can never land on an
+  upstream.
 
 Routing is deterministic from config, so the same name always resolves to the
 same concrete source until an operator edits the registries. That is the only
@@ -424,22 +490,22 @@ pnpr must therefore validate every router at config load and **refuse to start
 serve a private name from a public source. The checks are static, because
 pattern-set coverage is decidable for the restricted pattern language:
 
-- **No unreachable source.** A source all of whose patterns are covered by the
-  union of earlier sources' patterns can never be selected and is rejected. A
-  pattern-less source that is not last is the most important instance — it
+- **No unreachable source.** A source all of whose namespace keys are covered
+  by the union of earlier sources' keys can never be selected and is rejected.
+  A map-less source that is not last is the most important instance — it
   claims every name, so everything after it is dead.
-- **No shadowed pattern.** The same check applies per pattern, not only per
-  source: a single pattern of a later source strictly covered by an earlier
-  source's pattern is dead in this router even when the rest of the source
-  stays reachable, and is rejected by name. Otherwise a registry claiming
+- **No shadowed claim.** The same check applies per key, not only per source:
+  a single namespace key of a later source strictly covered by an earlier
+  source's key is dead in this router even when the rest of the source stays
+  reachable, and is rejected by name. Otherwise a registry claiming
   `['@secret/foo', 'plainpkg']` listed after a registry claiming `@*/*` would
   validate while silently sending `@secret/foo` to the earlier source. Two
   registries whose namespaces overlap in both directions cannot be ordered at
   all — that is genuinely ambiguous provenance, and the operator must adjust
   the declared namespaces rather than pick an order that silently reassigns
   part of one.
-- **No duplicate source** within one router, and no duplicate pattern within
-  one registry.
+- **No duplicate source** within one router, and no duplicate key within one
+  registry's `packages:` map.
 - **Every source resolves** to a defined concrete registry. A source cannot be
   unknown, the router itself, or another router.
 - **No empty router.** A router with no sources can never serve a package.
@@ -488,7 +554,7 @@ Rules:
 - **The default is an alias to one named registry.** With
   `defaultRegistry: main`, `<base>/foo` *is* `~main/foo`. If the default is a
   concrete registry, the path-less base serves that one origin; if it is a
-  router, it routes by its sources' declared patterns. Either way there is no
+  router, it routes by its sources' declared packages. Either way there is no
   ad-hoc blending and no existence-based fallback.
 - **There is no implicit hosted registry.** pnpr does not ship a magic
   `~hosted` default. Hosted orgs are explicit `~<org>` registries. A
@@ -516,7 +582,7 @@ Composition can happen on either side, and both are declarative — never
 existence-based:
 
 - **Server-side:** a router behind one URL (above). The client configures a
-  single registry; pnpr routes by pattern to one concrete source.
+  single registry; pnpr routes by declared claim to one concrete source.
 - **Client-side:** scoped and named registries pointing at concrete pnpr
   registries. The client makes the routing explicit in its own config:
 
@@ -630,14 +696,14 @@ credential generation, integrity verification, and advisory/OSV screening are
 all keyed by the resolved origin.
 
 A router serves tarballs at the same canonical base that served the packument
-and **internally routes** to the pattern-matched concrete source —
-deterministically the same source that served the metadata, so there is no risk
-of a tarball coming from a different origin than the metadata that selected it.
-pnpr fetches upstream tarballs through the selected registry, verifies them
-against that source's packument integrity, and caches them in the selected
-registry's namespace when caching is enabled. The client never needs
-credentials for a private upstream, and the lockfile never records a redirect
-or concrete upstream URL for canonical registry tarballs.
+and **internally routes** to the claimed concrete source — deterministically
+the same source that served the metadata, so there is no risk of a tarball
+coming from a different origin than the metadata that selected it. pnpr
+fetches upstream tarballs through the selected registry, verifies them against
+that source's packument integrity, and caches them in the selected registry's
+namespace when caching is enabled. The client never needs credentials for a
+private upstream, and the lockfile never records a redirect or concrete
+upstream URL for canonical registry tarballs.
 
 A warm cache hit is served without re-reading the packument: the entry was
 bound to a declared version and integrity-verified when it was written, its
@@ -651,8 +717,8 @@ packument-resolved version.
 ### Search
 
 The npm search endpoint is not a router aggregate. PR 12747 keeps search
-local-storage-only: it scans the hosted store, filters results through the
-per-package access policy, and never queries upstream registries or merges
+local-storage-only: it scans the hosted store, filters results through each
+registry's package rules, and never queries upstream registries or merges
 search results across sources. This keeps search aligned with the no-merge
 provenance model. Extending search across hosted org namespaces is an
 implementation detail; upstream search fan-out is intentionally not part of
@@ -673,7 +739,7 @@ those route identities explicit:
 - private proxied routes are private upstream registries with pnpr-managed
   credentials;
 - private access descriptors are derived from the resolved concrete registry
-  and its access policy or credential generation.
+  and its package rules or credential generation.
 
 The same registry identity should feed resolver cache keys, metadata cache
 keys, tarball cache namespaces, and the future lockfile registry identity, so
@@ -682,29 +748,29 @@ identity.
 
 ### Authorization, cache, and policy
 
-Authorization is checked at the resolved source and at the per-package policy
-layer. The caller's pnpr identity may authorize access to a hosted organization
-registry or to a private upstream registry, but it is not forwarded to
-third-party origins.
+Authorization lives entirely on the resolved concrete registry: its
+registry-level defaults and the per-package rules in its `packages:` map. The
+caller's pnpr identity may authorize access to a hosted organization registry
+or to a private upstream registry, but it is not forwarded to third-party
+origins.
 
 **Authorize at the concrete source.** Every registry is independently
-addressable at its own `~<name>/` URL, so a private package's access policy
+addressable at its own `~<name>/` URL, so a private package's access rules
 must live on the concrete source registry that holds it — that is the boundary
 a request cannot bypass. A router or the default registry is *not* where
 private packages are protected: the source is reachable directly at its own
-URL regardless of any router in front of it. In PR 12747 routers have no
-access list of their own; access composes from the resolved source registry
-plus the per-package `packages:` ACL layer. To make a whole deployment
-internal, every reachable registry needs an access policy, not just the router
-URL users are expected to use.
+URL regardless of any router in front of it. Routers have no rules of their
+own; a request is authorized by the resolved source's rules alone. To make a
+whole deployment internal, every reachable registry needs its rules set, not
+just the router URL users are expected to use.
 
 Worked example — private packages on a public registry (e.g. npm, which serves
 a private `@myorg` scope and all public packages from one origin). Two
 upstream registries point at the same `registry.npmjs.org`: an authenticated
 `npm-private` (`auth.tokenEnv: NPM_TOKEN`, `access: team:myorg`,
-`patterns: ['@myorg/*']`) and an anonymous, pattern-less `npm-public`
+`packages: {'@myorg/*': {}}`) and an anonymous, map-less `npm-public`
 (`public: true`), with a router `sources: [npm-private, npm-public]`. The
-`team:myorg` policy lives on `npm-private`, so both `/~main/@myorg/secret`
+`team:myorg` rule lives on `npm-private`, so both `/~main/@myorg/secret`
 (via the router) and `/~npm-private/@myorg/secret` (direct) are gated, while
 `lodash` stays open by either path — and `npm-private`'s namespace bound means
 `/~npm-private/lodash` is a `404` rather than a public fetch spent through the
@@ -714,20 +780,20 @@ protect `@myorg/*` (already protected at the source) and would not close
 `404`, not `403`, so private-package existence is not revealed.
 
 Any response that can vary by caller — one resolved through a private source,
-or one whose per-package ACL denies anonymous access even through a public
+or one whose package rule denies anonymous access even through a public
 source — carries `Cache-Control: private, no-store` and `Vary: Authorization`
 on every URL surface (`/~<name>/` unconditionally; the path-less base when the
-resolution or the package ACL is caller-gated). A shared HTTP cache in front of
-pnpr therefore can never replay an authenticated response to an anonymous
+resolution or the package rule is caller-gated). A shared HTTP cache in front
+of pnpr therefore can never replay an authenticated response to an anonymous
 caller, while truly public resolutions on the path-less hot path stay
 cacheable.
 
-The Verdaccio-shaped `packages:` block no longer routes packages. It is an ACL
-layer only: `access`, `publish`, and `unpublish` rules are compiled into
-package policies and enforced centrally on every served read and write,
-whether the selected source is hosted or upstream. A `proxy:` entry in
-`packages:` is not part of this model; package routing lives only in
-`registries:` and `defaultRegistry:`.
+The Verdaccio-shaped top-level `packages:` block is **gone entirely** — not
+relocated, removed. Its two jobs are absorbed by the registries: routing lives
+in the namespace keys, and `access`/`publish`/`unpublish` rules live in the
+values, scoped to the one registry that serves the name. A `proxy:` entry has
+no equivalent at all; package routing lives only in `registries:` and
+`defaultRegistry:`.
 
 Cache keys include the concrete registry identity **and its declared origin**:
 
@@ -767,13 +833,12 @@ logs can all refer to the registry that actually supplied the package.
 This preserves compatibility with Verdaccio configuration, but it keeps the
 wrong primitive at the center. Package-name rules plus existence-based fallback
 chains force pnpr to infer origin after the fact, and that inference is the
-dependency-confusion vector. PR 12747 makes the declared registries the only
-package-routing surface and keeps `packages:` as access policy only. A
-migration tool can help operators rewrite a Verdaccio config into explicit
-registries, but pnpr should not keep a live compatibility mode that interprets
-`packages: proxy:` as a fallback chain. The matched source is authoritative —
-pnpr does not merge metadata across uplinks or fall through to a public uplink
-when a private one misses or is down.
+dependency-confusion vector. This model makes the declared registries the only
+package-routing surface. A migration tool can help operators rewrite a
+Verdaccio config into explicit registries, but pnpr should not keep a live
+compatibility mode that interprets `packages: proxy:` as a fallback chain. The
+matched source is authoritative — pnpr does not merge metadata across uplinks
+or fall through to a public uplink when a private one misses or is down.
 
 ### Support existence-based fallback (private first, else public)
 
@@ -821,18 +886,38 @@ addressing `/~<name>/` directly — would surface as authoritative; a typo'd
 scope published to the registry URL succeeded silently and then 404'd through
 the router; and route-level patterns could not stop an authorized caller from
 pulling arbitrary public names through a private upstream's server-owned
-credential. The `packages:` ACL could be hand-written to plug the publish
-hole, but it is identity-flavored, decoupled from the registry, and permissive
-by default — nobody writes it unprompted.
+credential.
 
-Moving the patterns onto the registry makes the namespace one enforced
-declaration and reduces the router to the one fact that is genuinely
-per-router: precedence order. The expressiveness lost is per-router narrowing
-— two routers can no longer expose different slices of the same source. The
-identity dimension of that use case is already covered by the `packages:` ACL
-and groups; where distinct slices of one origin are truly needed, two upstream
-registries over the same URL express it. Per-source pattern overrides could be
-added later if a concrete need appears.
+Moving the namespace onto the registry makes it one enforced declaration and
+reduces the router to the one fact that is genuinely per-router: precedence
+order. The expressiveness lost is per-router narrowing — two routers can no
+longer expose different slices of the same source. The identity dimension of
+that use case is covered by per-package `access` rules; where distinct slices
+of one origin are truly needed, two upstream registries over the same URL
+express it. Per-source overrides could be added later if a concrete need
+appears.
+
+### Keep a global `packages:` ACL beside the registry namespaces
+
+The second iteration declared the namespace on each registry (as a separate
+`patterns:` list) but kept Verdaccio's top-level `packages:` block as a
+global ACL layer. Rejected: a name-keyed global ACL contradicts the model's
+central claim that package names are not global identifiers, and it splits
+authorization across two places when the rest of the design insists on
+authorizing at the concrete source. Worse, the two surfaces used different
+pattern languages — full globs in the ACL, the restricted decidable language
+in the namespaces — so the same-looking rule meant different things in each.
+
+Scoping the ACL to the registry showed the two declarations were one: the
+namespace is the key set of the rules map. Merging them into a per-registry
+`packages:` map removed a top-level concept, a second pattern language, and
+the interim `patterns:` field name in one move. The costs are accepted
+deliberately: per-package rule keys are now limited to the restricted pattern
+language (a within-name prefix shape such as `@acme/util-*` could be added
+later — prefix coverage stays statically decidable), and a blanket
+cross-registry rule ("deny `left-pad` everywhere") must be repeated on each
+registry that could serve the name — a job that belongs to the advisory/OSV
+policy layer anyway.
 
 ### Keep the `mounts:` name from PR 12747
 
@@ -860,88 +945,112 @@ server keep the isolation boundary explicit without a process per registry.
 ## Implementation
 
 PR 12747 implemented this model as a replacement of the legacy
-Verdaccio-shaped routing model, in the earlier route-level-pattern shape
-(`mounts:` with `routes: [{patterns, source}]` on routers and namespace-less
-concrete mounts). This revision moves the patterns onto the concrete
-registries, collapses routers to ordered `sources:` lists, and renames the
-config surface — `mounts:` → `registries:`, `defaultTarget:` →
-`defaultRegistry:` (see Rationale). pnpr is pre-1.0 and replaces the earlier
-shape outright — no compatibility mode for `mounts:` or `routes:`.
+Verdaccio-shaped routing model, in its first-iteration shape: `mounts:` with
+route-level patterns on routers, namespace-less concrete mounts, and the
+top-level `packages:` ACL kept as a global layer. This revision replaces that
+shape outright — pnpr is pre-1.0, no compatibility mode — with:
+
+- the per-registry `packages:` map (namespace keys + per-package rules),
+  absorbing both the route-level patterns and the global ACL;
+- routers as ordered `sources:` lists;
+- the rename `mounts:` → `registries:`, `defaultTarget:` → `defaultRegistry:`
+  (see Rationale).
 
 1. Add a tagged `registries:` config model (`type: hosted`, `type: upstream`,
    `type: router`) plus optional `defaultRegistry:`. This is the only package
    routing surface. Hosted and upstream registries take an optional
-   `patterns:` list (omitted = every name); a router is an ordered `sources:`
-   list of concrete registry names. `packages:` remains as access policy
-   (`access`, `publish`, `unpublish`) and does not proxy or fall through.
-2. Build a validated registry graph at config load. Hosted registries populate
-   a hosted table (`org`, `access`, `patterns`), upstream registries populate
-   the runtime upstream table with their patterns, and routers hold ordered
+   `packages:` map from name pattern to `access`/`publish`/`unpublish` rules
+   (omitted map = every name, default rules; the most specific matching key
+   selects the rules; omitted rule fields fall back to the registry-level
+   defaults, then the safe defaults). A router is an ordered `sources:` list
+   of concrete registry names.
+2. Remove the top-level `packages:` block. A config that still contains one is
+   a startup error naming the per-registry replacement — silently ignoring a
+   previously enforced ACL would be a security regression, so the key must not
+   be dropped like an unknown Verdaccio field.
+3. Implement the restricted `PackagePattern` language for the map keys: `**`,
+   `@*/*`, `@scope/*`, and exact package names. Reject unsupported wildcard
+   forms and duplicate keys within one registry. Reject `publish`/`unpublish`
+   rules on upstream registries.
+4. Build a validated registry graph at config load. Hosted registries populate
+   a hosted table (`org`, defaults, package rules), upstream registries
+   populate the runtime upstream table with theirs, and routers hold ordered
    source lists.
-3. Implement the restricted `PackagePattern` language: `**`, `@*/*`, `@scope/*`,
-   and exact package names. Reject unsupported wildcard forms and duplicate
-   patterns within one registry.
-4. Validate routers statically: reject empty routers, duplicate sources,
-   unreachable sources (all patterns covered by earlier sources' patterns,
-   including a non-last pattern-less source), individually shadowed patterns of
+5. Validate routers statically: reject empty routers, duplicate sources,
+   unreachable sources (all namespace keys covered by earlier sources' keys,
+   including a non-last map-less source), individually shadowed keys of
    otherwise-reachable sources, unknown sources, self-references, and sources
    that are another router. Validate every registry name as a single URL-safe
-   path segment.
-5. Route every read through the registry graph, and enforce the resolved
-   registry's `patterns:` at the registry itself: an unclaimed name is a
+   path segment. (Within one registry no order validation exists: rule
+   selection is by specificity, so no entry can be dead.)
+6. Route every read through the registry graph, and enforce the resolved
+   registry's `packages:` at the registry itself: an unclaimed name is a
    definitive `404` on reads and a rejection on writes, before storage or the
    upstream is consulted, on the direct `/~<name>/...` address and through any
-   router alike. The path-less base routes through `defaultRegistry` when
-   configured and returns `404` when it is not.
-6. Serve `dist.tarball` URLs canonical for the registry base the client
+   router alike; a claimed name is then gated by the matching entry's rules.
+   The path-less base routes through `defaultRegistry` when configured and
+   returns `404` when it is not.
+7. Serve `dist.tarball` URLs canonical for the registry base the client
    addressed, not the resolved concrete source. Tarball requests re-enter the
    same registry graph by package name, then fetch from the selected hosted or
    upstream source.
-7. Route writes through the same graph. A write is accepted only when the
-   resolved source is hosted and its patterns claim the name; a selection of an
-   upstream is rejected with a clear "name a hosted registry" error. Publish,
-   dist-tag, unpublish, and batch publish all write into the resolved hosted
-   org namespace.
-8. Namespace hosted storage by `org` for both local filesystem and S3/R2-backed
+8. Route writes through the same graph. A write is accepted only when the
+   resolved source is hosted, its packages claim the name, and the matching
+   `publish`/`unpublish` rule admits the caller; a selection of an upstream is
+   rejected with a clear "name a hosted registry" error. Publish, dist-tag,
+   unpublish, and batch publish all write into the resolved hosted org
+   namespace.
+9. Namespace hosted storage by `org` for both local filesystem and S3/R2-backed
    storage. An empty `org` keeps using the flat storage root for registry-mock
    fixtures. The publish journal records the org so recovery promotes staged
    packages into the correct namespace.
-9. Enforce source and package access on served reads and writes. Private
-   hosted registries hide unauthorized package existence with `404`; private
-   upstream credentials stay server-side.
-10. Key upstream cache namespaces by registry identity and origin URL: public
+10. Enforce the per-registry rules on served reads and writes. Private hosted
+    registries hide unauthorized package existence with `404`; private
+    upstream credentials stay server-side.
+11. Key upstream cache namespaces by registry identity and origin URL: public
     upstreams use a stable secret-free namespace over the registry name and
     URL, while private upstreams use a secret-keyed digest of the registry,
     its URL, and its effective upstream headers — so repointing a registry
     abandons the previous origin's cache. Remove shared mirror
     failover/conditional-validator behavior from the registry serving path.
-11. Keep search local-storage-only. It scans the flat hosted store and filters
-    results through package access policy; it does not query or merge upstream
-    searches.
-12. Leave pnpm/pacquet lockfile registry identity out of this PR. The server
+12. Keep search local-storage-only. It scans the flat hosted store and filters
+    results through the serving registry's package rules; it does not query or
+    merge upstream searches.
+13. Leave pnpm/pacquet lockfile registry identity out of this PR. The server
     side keeps lockfiles portable by returning canonical tarball URLs for the
     addressed base; the package-identity format change is a separate follow-up.
 
 Tests should cover:
 
-- tagged `registries:` config parsing (including registry-level `patterns:`
-  and router `sources:`), unknown `type:` rejection, undefined
-  `defaultRegistry` rejection, and `packages:` deriving ACLs without routing;
+- tagged `registries:` config parsing (including per-registry `packages:` maps
+  and router `sources:`), unknown `type:` rejection, and undefined
+  `defaultRegistry` rejection;
+- a present top-level `packages:` block failing startup with an error naming
+  the per-registry replacement;
 - pattern parsing for `**`, `@*/*`, `@scope/*`, and exact names, plus rejection
-  of unsupported wildcard forms and duplicate patterns within one registry;
-- a registry's patterns enforced at the registry itself: an off-pattern publish
-  rejected and an off-pattern read a `404` before storage or the upstream is
-  consulted, both through a router and at the registry's own `/~<name>/` URL;
-- a private upstream's patterns preventing a public name from being fetched
+  of unsupported wildcard forms and duplicate keys within one registry;
+- `publish`/`unpublish` rules on an upstream registry rejected at config load;
+- a registry's namespace enforced at the registry itself: an off-namespace
+  publish rejected and an off-namespace read a `404` before storage or the
+  upstream is consulted, both through a router and at the registry's own
+  `/~<name>/` URL;
+- per-package rule selection: the most specific matching key wins (exact over
+  `@scope/*` over `@*/*` over `**`) regardless of key order — including after
+  a key-reordering YAML round-trip; omitted rule fields falling back to
+  registry-level defaults, then the safe defaults (`access: $all`,
+  `publish: $authenticated`, `unpublish` denied);
+- a per-package `access` rule on a **public** upstream gating anonymous reads
+  through pnpr while the upstream fetch itself stays anonymous;
+- a private upstream's namespace preventing a public name from being fetched
   through its server-owned credential;
 - a private source returning not-found NOT falling through to a public source;
-- a private source listed before a pattern-less catch-all winning by source
-  order, with the catch-all never consulted for that claimed package name;
+- a private source listed before a map-less catch-all winning by source order,
+  with the catch-all never consulted for that claimed package name;
 - config validation rejecting a router with an unreachable source (a non-last
-  pattern-less source, or a source whose patterns are fully covered by earlier
-  sources) and failing a reload that would introduce one, plus a single
-  shadowed pattern of an otherwise-reachable source, duplicate sources, empty
-  routers, unknown sources, self-references, and router-as-source;
+  map-less source, or a source whose namespace keys are fully covered by
+  earlier sources) and failing a reload that would introduce one, plus a
+  single shadowed key of an otherwise-reachable source, duplicate sources,
+  empty routers, unknown sources, self-references, and router-as-source;
 - config validation rejecting URL-unsafe registry names and duplicate hosted
   `org` namespaces;
 - a private/matched source being **down** returning an error, never a `404`;
@@ -949,13 +1058,14 @@ Tests should cover:
 - hosted storage namespaced by `org`, including an empty `org` mapping to the
   flat storage root and path-traversal-like org names rejected at config load;
 - publish, batch publish, dist-tag, and unpublish routing to the resolved hosted
-  org and rejecting upstream write targets;
+  org, gated by the matching entry's `publish`/`unpublish` rules, and rejecting
+  upstream write targets;
 - an upstream being exactly one URL with no secondary/mirror endpoint behavior;
-- public upstream registries rejecting credentials, access gates, and any
-  custom request header, private upstream registries requiring access, and
-  private upstream credentials staying server-side;
-- a private source's access policy enforced both through a router and via the
-  source's own `~<name>/` URL, so an open router never exposes a gated source;
+- public upstream registries rejecting credentials, a registry-level `access:`
+  default, and any custom request header, private upstream registries
+  requiring one, and private upstream credentials staying server-side;
+- a private source's rules enforced both through a router and via the source's
+  own `~<name>/` URL, so an open router never exposes a gated source;
 - an unauthorized caller for a private hosted package receiving `404`, not
   `403`;
 - tarball URLs rewritten to the addressed registry base (path-less or
@@ -964,16 +1074,16 @@ Tests should cover:
 - cache namespace isolation by public registry name and private effective
   upstream headers, and a repointed upstream `url:` abandoning the previous
   origin's cached content;
-- caller-gated path-less responses (private source, or a package ACL denying
+- caller-gated path-less responses (private source, or a package rule denying
   anonymous access through a public source) carrying private-cache headers
   while public resolutions stay shared-cacheable;
 - stale cache serving on transient upstream failure only — an authoritative
   `4xx` surfacing rather than being masked, and a definitive `404` purging the
   cached packument;
-- search remaining flat-hosted-storage-only and filtered by package access
-  policy;
-- router writes accepted only when the selected source is hosted and claims
-  the name;
+- search remaining flat-hosted-storage-only and filtered by the serving
+  registry's package rules;
+- router writes accepted only when the selected source is hosted, claims the
+  name, and its matching rule admits the caller;
 - an unqualified publish to the path-less base rejected when the resolved target
   does not write to a hosted org, and the path-less base disabled entirely when
   no `defaultRegistry` is set.
@@ -1001,11 +1111,31 @@ prior art for select-one composition is conda's **strict channel priority**,
 which conda added for the same reason: stop mixing builds of one package across
 sources. A router is strict-priority routing keyed by name pattern.
 
+Most-specific-match selection (the `packages:` map rule) is the established
+choice wherever a restricted pattern language makes it decidable. npm's own
+client-side registry selection is the nearest precedent: `@scope:registry`
+beats the default registry, order-free — pnpr's map selection mirrors the
+other half of the same system. Go 1.22's `net/http` ServeMux uses "the most
+specific pattern wins" and makes registering two patterns where neither is
+more specific a registration-time error — the same pair of rules as this map
+(specificity plus duplicate-claim errors). IP longest-prefix routing, DNS
+wildcard precedence (RFC 4592), and the Servlet URL-mapping rules are the
+same shape. nginx marks the boundary condition: its prefix locations match
+longest-first, order-free, while its regex locations fall back to declaration
+order because regex overlap is undecidable — a restricted language is what
+makes order-free selection possible. Systems that genuinely need declaration
+order (`.gitignore`, ESLint overrides, iptables, `match` arms) need it
+because they support negation or incomparable overlap, both of which this
+pattern language deliberately omits.
+
 Verdaccio uses package rules and uplinks to let one registry facade proxy and
 merge other registries with existence-based fallback. The router covers its
 one-URL ergonomics, but deliberately omits the two unsafe behaviors —
 cross-uplink metadata merge and existence-based fall-through — in favor of
-authoritative, declared routing.
+authoritative, declared routing. Verdaccio's `packages:` block survives here
+only in spirit: its rule shape (`access`/`publish`/`unpublish` lists) moves
+into each registry's `packages:` map, scoped to the one origin that serves the
+name instead of keyed globally.
 
 Many hosted registries expose organization, project, or tenant boundaries in the
 URL. `~<org>` follows that product shape while staying compatible with npm
@@ -1016,21 +1146,25 @@ package names and scopes beneath the registry path.
 - PR 12747 uses `/~<name>/` for every registry, including hosted org
   registries; future path changes would be migrations rather than unresolved
   design.
-- This revision uses `registries:`, `type: router`, `sources`, registry-level
-  `patterns`, and `defaultRegistry:` (renamed from PR 12747's `mounts:` /
-  `routes:` / `defaultTarget:`); future renaming would be a migration, not an
-  unresolved implementation choice.
+- This revision uses `registries:`, `type: router`, `sources`, per-registry
+  `packages:` maps, and `defaultRegistry:` (replacing PR 12747's `mounts:` /
+  `routes:` / `defaultTarget:` and the top-level `packages:` ACL); future
+  renaming would be a migration, not an unresolved implementation choice.
 - The pattern language is fixed: `**`, `@*/*`, `@scope/*`, and exact names.
-  Future pattern extensions must keep static coverage decidable so
-  router-shadow validation remains possible. Precedence is not an open
-  question: sources are evaluated in declared order and the first source whose
-  patterns claim the name wins.
-- Should source selection eventually be specificity-based (an exact name beats
-  `@scope/*` beats `@*/*` beats `**`) instead of order-based? Specificity would
-  make `sources:` an unordered set and remove ordering mistakes entirely, at
-  the cost of a less obvious rule; the decidable pattern language keeps either
-  choice statically checkable, with identical-pattern claims in one router a
-  validation error either way. This revision keeps declared order.
+  Future extensions — a within-name prefix shape such as `@acme/util-*` is the
+  most likely candidate — must keep static coverage decidable so shadow
+  validation (across router sources and within one registry's rules) remains
+  possible. Precedence is not an open question: sources are evaluated in
+  declared order and the first source that claims the name wins.
+- Within one registry, the `packages:` map already selects by specificity — a
+  YAML mapping has no spec-guaranteed order to depend on. Should **router
+  source** selection eventually be specificity-based too (an exact claim
+  beats `@scope/*` beats `@*/*` beats a catch-all), making `sources:` an
+  unordered set? The same totality argument applies across the sources of one
+  router — identical claims are a validation error either way — but
+  `sources:` is a syntactically ordered *list*, so declared order is
+  available and is kept in this revision, with unreachable-source and
+  shadowed-claim validation catching misordering.
 - What exact lockfile encoding carries registry identity in package identity —
   a registry-qualified package key, a package-to-registry table, or another
   compact form — and how does it interoperate with the existing `name@version`
