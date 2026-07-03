@@ -99,7 +99,8 @@ registries:
     type: hosted
     org: acme
     access: team:acme
-    patterns: ['@acme/*']
+    packages:
+      '@acme/*': {}
 
   echo:
     type: upstream
@@ -107,7 +108,7 @@ registries:
     auth:
       tokenEnv: ECHO_NPM_TOKEN
     access: team:acme
-    # No patterns: serves every name — the router's catch-all.
+    # No packages map: serves every name — the router's catch-all.
 
   main:
     type: router
@@ -156,7 +157,7 @@ registries:
     type: upstream
     url: https://registry.npmjs.org/
     public: true
-    # No patterns: serves every name — the router's catch-all.
+    # No packages map: serves every name — the router's catch-all.
 
   echo-patches:
     type: upstream
@@ -164,7 +165,8 @@ registries:
     auth:
       tokenEnv: ECHO_NPM_TOKEN
     access: team:acme
-    patterns: ['@echo-patch/*']
+    packages:
+      '@echo-patch/*': {}
 
   main:
     type: router
@@ -185,16 +187,17 @@ patchProviders:
 
 No new registry kind and no fall-through anywhere: the patch scope is just
 packages. The patch-source registry **declares the provider's scope as its
-namespace** (`patterns: ['@echo-patch/*']`), so routers claim it from that
-declaration, and the namespace is enforced on every path to the registry —
-`/~echo-patches/lodash` is a definitive `404`, which also stops any caller
-from pulling arbitrary public names through the provider's server-owned
-credential. Caching and access policies are the existing per-registry ones.
-The new configuration surface is `patchProviders:`, which registers the
-**manifest** that ties the two namespaces together — and which a registry's
-`patching:` policy (below) chooses how to apply. Validation requires the
-provider's `scope` to be claimed by its source registry's declared
-`patterns`.
+namespace** (a `packages:` map claiming `@echo-patch/*`), so routers claim
+it from that declaration, and the namespace is enforced on every path to
+the registry — `/~echo-patches/lodash` is a definitive `404`, which also
+stops any caller from pulling arbitrary public names through the provider's
+server-owned credential. Per-package `access` rules in the same map remain
+available for finer gating. Caching and access policies are the existing
+per-registry ones. The new configuration surface is `patchProviders:`,
+which registers the **manifest** that ties the two namespaces together —
+and which a registry's `patching:` policy (below) chooses how to apply.
+Validation requires the provider's `scope` to be claimed by its source
+registry's declared `packages` namespace.
 
 ### The patch manifest
 
@@ -655,11 +658,11 @@ routing are untouched; substitute mode adds one egress annotation step
 layered over pristine cached packuments:
 
 1. **`patchProviders:` config and manifest machinery.** Parse/validate the
-   provider block (scope, source registry — whose declared `patterns` must
-   claim the scope — manifest URL, keys, policy); fetch/verify/pin
-   manifests on the refresh interval with logged diffs; reject entries
-   outside the provider's scope, without integrity, or (under
-   `requireAdvisoryMatch`) without a known advisory in `fixes`.
+   provider block (scope, source registry — whose declared `packages`
+   namespace must claim the scope — manifest URL, keys, policy);
+   fetch/verify/pin manifests on the refresh interval with logged diffs;
+   reject entries outside the provider's scope, without integrity, or
+   (under `requireAdvisoryMatch`) without a known advisory in `fixes`.
 2. **Advisory identity mapping.** Screen patch-scope artifacts as their
    manifest-mapped upstream identity, minus the `fixes` list for the pinned
    integrity; apply the same mapping wherever advisories are evaluated
@@ -692,9 +695,9 @@ submitted alongside this one.
 Tests should cover, at minimum:
 
 - provider config validation (unknown source registry, a scope the source
-  registry's `patterns` do not claim, scope collisions between providers,
-  unsigned/tampered manifests, out-of-scope entries, missing integrity,
-  `requireAdvisoryMatch` violations);
+  registry's `packages` map does not claim, scope collisions between
+  providers, unsigned/tampered manifests, out-of-scope entries, missing
+  integrity, `requireAdvisoryMatch` violations);
 - manifest refresh changing derived data only at refresh, with the change
   logged;
 - patch-scope packages serving through ordinary routing with the source
