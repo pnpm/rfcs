@@ -88,7 +88,7 @@ Semantics:
    *advertise* mode: `pnpm audit` reports available patches (the registry's
    audit enrichment carries the mapping), and `pnpm audit --fix` copies
    them into config, reviewable in the PR that introduces them.
-2. **Registry annotations.** A pnpr mount in *substitute* mode serves the
+2. **Registry annotations.** A pnpr registry in *substitute* mode serves the
    mapping as a `_pnprPatch` annotation on the vulnerable version's
    packument entry. To the resolver an annotation is a registry-supplied
    rule, applied by default and refused per package (or per provider)

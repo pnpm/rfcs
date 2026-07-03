@@ -5,11 +5,12 @@
 Vendors such as Echo, Seal Security, and Socket ship security-patched builds
 of vulnerable open-source package versions and want to deliver them through
 the registry the organization already uses. pnpr should support this in two
-shapes: a vendor registry as an ordinary **upstream mount** (works today, the
-vendor is the declared origin), and a **patch scope** — the provider publishes
-patched artifacts under its own package namespace (`@echo-patch/ejs@2.7.4`),
-served through ordinary mounts and routes. A signed, pinned **patch
-manifest** ties the two names together, and a per-mount `patching:` policy
+shapes: the vendor's registry as an ordinary **upstream registry** (works
+today, the vendor is the declared origin), and a **patch scope** — the
+provider publishes patched artifacts under its own package namespace
+(`@echo-patch/ejs@2.7.4`), served through ordinary registries and routers. A
+signed, pinned **patch manifest** ties the two names together, and a
+per-registry `patching:` policy
 applies it in one of two modes. Both end in the same client primitive — a
 **post-pick substitution rule** applied by a patch-aware resolver **after
 version selection**: whenever resolution picks a covered version, it
@@ -23,13 +24,13 @@ workspace-stored rules (written by hand or by `pnpm audit --fix`); in
 entry and the resolver substitutes by default, with a per-package ignore
 list to refuse.
 
-Notably, this requires **no new mount kind**. Both shapes are expressible
-with hosted/upstream/router mounts as already specified; the only
+Notably, this requires **no new registry kind**. Both shapes are expressible
+with hosted/upstream/router registries as already specified; the only
 serving-path addition is the annotation, layered onto affected packuments
 on egress over a pristine cache. What this RFC adds is the manifest
 protocol, that annotation, and the audit/advisory machinery around them.
 
-Both shapes extend the invariants of the registry-mounts RFC rather than
+Both shapes extend the invariants of the pnpr registries RFC rather than
 weakening them:
 
 > **Provenance is declared, never inferred.** Every `name@version` resolves to
@@ -40,7 +41,7 @@ weakening them:
 > **An identity's bytes are immutable.** pnpr never serves different bytes
 > under a `name@version` — or a tarball URL — a lockfile may already pin.
 > Choosing patched bytes means choosing either a different declared origin
-> (mount) or a distinct package identity — never a silent byte swap.
+> (registry) or a distinct package identity — never a silent byte swap.
 >
 > **Substitute at resolution, never at fetch.** Patching may change what a
 > *new resolution* is directed to — the same kind of event as a new publish
@@ -82,30 +83,33 @@ major-version migration:
 
 These vendors want a way to plug into pnpr, and pnpr deployments want to
 consume them without handing the vendor authority over every package. The
-mount model gives us the vocabulary to do that precisely.
+registry model gives us the vocabulary to do that precisely.
 
 ## Detailed Explanation
 
 ### Baseline: the vendor as a declared origin
 
-This works with mounts as already specified, with zero new machinery:
+This works with registries as already specified, with zero new machinery:
 
 ```yaml
-mounts:
+registries:
+  acme:
+    type: hosted
+    org: acme
+    access: team:acme
+    patterns: ['@acme/*']
+
   echo:
     type: upstream
     url: https://npm.echo.example/org-acme/
     auth:
       tokenEnv: ECHO_NPM_TOKEN
     access: team:acme
+    # No patterns: serves every name — the router's catch-all.
 
   main:
     type: router
-    routes:
-      - patterns: ['@acme/*']
-        source: acme
-      - patterns: ['**']
-        source: echo
+    sources: [acme, echo]
 ```
 
 The organization has chosen Echo as its artifact source for public packages.
@@ -126,8 +130,8 @@ Two consequences are worth stating:
 - **This makes the lockfile registry-identity follow-up urgent.** The same
   `name@version` now routinely exists with different bytes on `~npmjs` and
   `~echo`. pnpm's current `name@version` package key cannot represent both in
-  one graph (see the mounts RFC's motivation); a patched-registry deployment
-  will hit that gap on day one when a workspace mixes mounts.
+  one graph (see the registries RFC's motivation); a patched-registry
+  deployment will hit that gap on day one when a workspace mixes registries.
 
 ### Patch scopes: patched artifacts under the provider's namespace
 
@@ -145,11 +149,12 @@ original — its packument, versions, dist-tags, or bytes — is touched. pnpr
 serves the patch scope through completely ordinary configuration:
 
 ```yaml
-mounts:
+registries:
   npmjs:
     type: upstream
     url: https://registry.npmjs.org/
     public: true
+    # No patterns: serves every name — the router's catch-all.
 
   echo-patches:
     type: upstream
@@ -157,14 +162,11 @@ mounts:
     auth:
       tokenEnv: ECHO_NPM_TOKEN
     access: team:acme
+    patterns: ['@echo-patch/*']
 
   main:
     type: router
-    routes:
-      - patterns: ['@echo-patch/*']
-        source: echo-patches
-      - patterns: ['**']
-        source: npmjs
+    sources: [echo-patches, npmjs]
 
 patchProviders:
   echo:
@@ -179,12 +181,18 @@ patchProviders:
       requireAdvisoryMatch: true   # a patch must claim to fix a known advisory
 ```
 
-No new mount kind and no fall-through anywhere: the patch scope is just
-packages, routed by the existing router rules, cached in the existing
-per-mount namespaces, gated by the existing access policies. The new
-configuration surface is `patchProviders:`, which registers the **manifest**
-that ties the two namespaces together — and which a mount's `patching:`
-policy (below) chooses how to apply.
+No new registry kind and no fall-through anywhere: the patch scope is just
+packages. The patch-source registry **declares the provider's scope as its
+namespace** (`patterns: ['@echo-patch/*']`), so routers claim it from that
+declaration, and the namespace is enforced on every path to the registry —
+`/~echo-patches/lodash` is a definitive `404`, which also stops any caller
+from pulling arbitrary public names through the provider's server-owned
+credential. Caching and access policies are the existing per-registry ones.
+The new configuration surface is `patchProviders:`, which registers the
+**manifest** that ties the two namespaces together — and which a registry's
+`patching:` policy (below) chooses how to apply. Validation requires the
+provider's `scope` to be claimed by its source registry's declared
+`patterns`.
 
 ### The patch manifest
 
@@ -295,7 +303,7 @@ substitute mode.
 
 `substitute` mode puts the mapping where the resolver is already looking:
 on the vulnerable version's entry in the packument. For every manifest
-entry the mount's policy accepts, pnpr serves the base packument with an
+entry the registry's policy accepts, pnpr serves the base packument with an
 annotation on that version — original metadata and `dist` untouched:
 
 ```jsonc
@@ -311,14 +319,10 @@ annotation on that version — original metadata and `dist` untouched:
 ```
 
 ```yaml
-mounts:
+registries:
   main:
     type: router
-    routes:
-      - patterns: ['@echo-patch/*']
-        source: echo-patches
-      - patterns: ['**']
-        source: npmjs
+    sources: [echo-patches, npmjs]
     patching:
       provider: echo
       mode: substitute
@@ -428,8 +432,8 @@ the same logical point, so returned resolutions are natively aliased and a
 server-side substitution is exactly as traceable as a client-side one: the
 aliased resolution *is* the trace, carrying the same `resolvedVia` marker
 for the lockfile record. One requirement keeps the paths coherent:
-server-side **resolution-cache keys include the mount's patching policy and
-the pinned snapshot digest** — otherwise a manifest refresh could keep
+server-side **resolution-cache keys include the registry's patching policy
+and the pinned snapshot digest** — otherwise a manifest refresh could keep
 serving pre-refresh substitutions (or none) out of the cache.
 
 Costs and requirements, stated honestly:
@@ -443,19 +447,19 @@ Costs and requirements, stated honestly:
 - **Provider retention becomes load-bearing.** A lockfile aliasing
   `@echo-patch/ejs@2.7.4` installs only while that artifact remains
   available. Providers must treat their patch namespaces as immutable and
-  permanent (the manifest protocol should say so), and pnpr's per-mount cache
-  keeps serving cached patched artifacts through provider outages, like any
-  other mount content.
+  permanent (the manifest protocol should say so), and pnpr's per-registry
+  cache keeps serving cached patched artifacts through provider outages,
+  like any other registry content.
 - **Same range, different policies, different bytes.** Two workspaces
-  resolving the same range through mounts with different `patching:` policies
-  get the same version as different builds. That is the deployment's declared
-  intent — but it is one more reason registry identity belongs in package
-  identity.
+  resolving the same range through registries with different `patching:`
+  policies get the same version as different builds. That is the
+  deployment's declared intent — but it is one more reason registry identity
+  belongs in package identity.
 
 Determinism and conflicts: the annotations are a pure function of the
-mount's `patching:` config plus the pinned manifest snapshots — the same
-determinism contract as router routes — and a refresh that changes them is
-logged and diffable. Within one mount, at most one provider may claim a
+registry's `patching:` config plus the pinned manifest snapshots — the same
+determinism contract as router sources — and a refresh that changes them is
+logged and diffable. Within one registry, at most one provider may claim a
 given original `name@version`; two manifests colliding is a config error,
 not a precedence guess. And substitution composes with advertise-mode
 machinery — the audit endpoint reports the same mapping, so a workspace can
@@ -493,9 +497,10 @@ is what solves it. OSV advisories are keyed by the *original* package name:
 ### Prerelease-version grafting behind the original name
 
 The main alternative — and this RFC's own earlier draft — is an **overlay
-mount** that serves the base origin's packument with provider-patched versions
-grafted in as distinct prerelease-style versions (`ejs@2.7.4-sp1`), routing
-those versions to the patch source and everything else to the base.
+registry kind** that serves the base origin's packument with
+provider-patched versions grafted in as distinct prerelease-style versions
+(`ejs@2.7.4-sp1`), routing those versions to the patch source and everything
+else to the base.
 
 Its advantage is discoverability in one namespace: the patched versions appear
 in `npm view ejs versions`, and adoption is a version-only override with no
@@ -508,9 +513,9 @@ name change. It is rejected as the primary mechanism because:
   field on an existing version entry, acted on only by resolvers that opted
   in — yet grafting buys neither automatic protection (last bullet below)
   nor a cleaner adoption story.
-- **It requires a new composite mount kind**, with its own validation, routing,
-  write-rejection, and access-composition rules. The alias model is ordinary
-  packages through ordinary mounts.
+- **It requires a new composite registry kind**, with its own validation,
+  routing, write-rejection, and access-composition rules. The alias model is
+  ordinary packages through ordinary registries.
 - **Prerelease identifiers fight the ecosystem.** `2.7.4-sp1 < 2.7.4` in
   semver — useful for keeping ranges from matching accidentally, but the same
   property makes every prerelease-aware tool treat the patched artifact as
@@ -528,7 +533,7 @@ name change. It is rejected as the primary mechanism because:
 
 Providers that already ship same-name prerelease patches (Seal's `-spN`) are
 still fully served: their artifact server is a vendor-as-origin upstream
-mount, unchanged.
+registry, unchanged.
 
 ### Fetch-time byte substitution behind the original identity
 
@@ -542,9 +547,8 @@ happened. Substitute mode has none of these properties: the original
 canonical URL serves original bytes forever, and the patched artifact enters
 only through *new resolutions*, under its own aliased identity and integrity,
 recorded in the lockfile. Organizations that want fetch-level same-version
-patching have
-a coherent home for it: make the vendor the declared origin (upstream mount),
-where the vendor owns the identity end to end.
+patching have a coherent home for it: make the vendor the declared origin
+(upstream registry), where the vendor owns the identity end to end.
 
 ### Rewriting `dist` inside served packuments
 
@@ -553,7 +557,7 @@ to the patched artifact's tarball URL and integrity. Its appeal is
 universality — every npm client gets auto-patched with no client feature —
 but the patched URL is non-canonical for the original name, so clients
 persist the full URL, baking the deployment host into lockfiles: exactly
-what the mounts RFC's canonical-URL round-tripping exists to prevent, and a
+what the registries RFC's canonical-URL round-tripping exists to prevent, and a
 silent bytes-for-version change for clients that never asked for one. The
 chosen annotation differs in both respects: it *adds* an inert field
 instead of altering `dist`, only a resolver that understands it acts on it,
@@ -619,7 +623,8 @@ design conflicts with it.
 The most elegant encoding is arguably pnpm's named registries: override
 `ejs@2.7.4` with `echo:ejs@2.7.4` — identical name and version, provenance
 carried entirely by the registry component of the package identity, exactly
-the model vlt's DepID uses and the mounts RFC already endorses for lockfiles.
+the model vlt's DepID uses and the registries RFC already endorses for
+lockfiles.
 
 Deferred, not rejected: it depends on the lockfile registry-identity
 follow-up (today pnpm's `name@version` package key cannot hold `ejs@2.7.4`
@@ -651,14 +656,15 @@ except the specific, signed, advisory-matched artifacts the provider patched.
 
 ## Implementation
 
-All registry-side changes are in pnpr-server. The mount graph and routing
-are untouched; substitute mode adds one egress annotation step layered over
-pristine cached packuments:
+All registry-side changes are in pnpr-server. The registry graph and
+routing are untouched; substitute mode adds one egress annotation step
+layered over pristine cached packuments:
 
 1. **`patchProviders:` config and manifest machinery.** Parse/validate the
-   provider block (scope, source mount, manifest URL, keys, policy);
-   fetch/verify/pin manifests on the refresh interval with logged diffs;
-   reject entries outside the provider's scope, without integrity, or (under
+   provider block (scope, source registry — whose declared `patterns` must
+   claim the scope — manifest URL, keys, policy); fetch/verify/pin
+   manifests on the refresh interval with logged diffs; reject entries
+   outside the provider's scope, without integrity, or (under
    `requireAdvisoryMatch`) without a known advisory in `fixes`.
 2. **Advisory identity mapping.** Screen patch-scope artifacts as their
    manifest-mapped upstream identity, minus the `fixes` list for the pinned
@@ -668,9 +674,9 @@ pristine cached packuments:
    endpoint from OSV data, adding the namespaced extension field with the
    suggested override spec when a pinned manifest covers a vulnerable
    version.
-4. **Per-mount `patching:` policy and the egress annotation.** Validate the
-   policy block (known provider, mode, severity gate, `enforcement`, one
-   substituting provider per original `name@version` per mount); in
+4. **Per-registry `patching:` policy and the egress annotation.** Validate
+   the policy block (known provider, mode, severity gate, `enforcement`,
+   one substituting provider per original `name@version` per registry); in
    substitute mode, annotate matched version entries of served packuments
    on egress as a pure function of the pinned snapshots, leaving cached
    upstream documents and every `dist` object untouched; implement
@@ -691,13 +697,15 @@ submitted alongside this one.
 
 Tests should cover, at minimum:
 
-- provider config validation (unknown source mount, scope collisions between
-  providers, unsigned/tampered manifests, out-of-scope entries, missing
-  integrity, `requireAdvisoryMatch` violations);
+- provider config validation (unknown source registry, a scope the source
+  registry's `patterns` do not claim, scope collisions between providers,
+  unsigned/tampered manifests, out-of-scope entries, missing integrity,
+  `requireAdvisoryMatch` violations);
 - manifest refresh changing derived data only at refresh, with the change
   logged;
 - patch-scope packages serving through ordinary routing with the source
-  mount's access policy enforced;
+  registry's access policy and declared namespace enforced (a non-scope
+  name on the patch-source registry is a definitive `404`);
 - integrity mismatch between manifest and patch source surfacing as an error;
 - advisory mapping: a patched artifact not flagged by fixed advisories,
   flagged by unrelated ones, and flagged by advisories published *after* the
@@ -713,7 +721,7 @@ Tests should cover, at minimum:
 - the patch-scope packument's `dist.integrity` for a manifest-listed version
   equaling the manifest's pinned integrity (the client-visible pin);
 - an existing lockfile pinning the vulnerable original installing unchanged
-  through a substitute-mode mount (with `enforcement: serve`);
+  through a substitute-mode registry (with `enforcement: serve`);
 - `enforcement: refuse` answering manifest-covered vulnerable tarballs with
   `403` plus the suggested patch for every caller, and leaving uncovered
   artifacts untouched;
@@ -725,7 +733,7 @@ Tests should cover, at minimum:
   aliased patched artifacts continuing to serve as long as the provider
   retains them;
 - vendor-as-origin deployments (Seal-style `-spN` packuments) proxying
-  unchanged through an upstream mount.
+  unchanged through an upstream registry.
 
 ## Prior Art
 
