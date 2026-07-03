@@ -7,7 +7,7 @@ exactly two concrete registry kinds — a pnpr-**hosted** organization registry
 and an **upstream** registry proxying a single external origin — plus one
 composite, a **router** that presents an ordered list of concrete registries
 behind one URL. Every concrete registry declares the **packages** it serves —
-an ordered map from name patterns to per-package access rules — and a router
+a map from name patterns to per-package access rules — and a router
 routes each package to the first listed source that claims it. Each registry
 is exposed at `https://<pnpr>/~<name>/`, so every origin has an explicit
 identity in the URL, in pnpr's internal routing, and in client resolution.
@@ -109,7 +109,7 @@ global ACL contradicts that, and it splits authorization across two places
 "authorize at the concrete source" rule the rest of the model follows.
 
 Scoping the ACL to the registry reveals that it is the *same declaration* as
-the namespace: one ordered map whose keys say what the registry serves and
+the namespace: one map whose keys say what the registry serves and
 whose values say who may read and write it. The namespace field and the ACL
 block merge into a per-registry `packages:` map, and no global, name-keyed
 configuration remains.
@@ -202,7 +202,7 @@ registries:
     access: team:acme          # default for everything this registry serves
     packages:
       '@acme/secret':
-        access: acme-admins    # first matching entry wins
+        access: acme-admins    # the most specific matching key wins
         publish: acme-admins
       '@acme/*': {}            # served with the registry defaults
 
@@ -261,8 +261,9 @@ enum Registry {
     },
 }
 
-/// Ordered map: name pattern -> per-package rules (access / publish /
-/// unpublish). The key set is the registry's namespace.
+/// Rules keyed by name pattern (access / publish / unpublish). The key set
+/// is the registry's namespace; the most specific matching key selects the
+/// rules, so entry order carries no meaning.
 struct PackageRules(Vec<(PackagePattern, PackagePolicy)>);
 ```
 
@@ -282,8 +283,8 @@ made.
 
 ### The `packages:` map — namespace and rules in one declaration
 
-Every concrete registry may declare the packages it serves as an ordered map
-from name pattern to per-package rules:
+Every concrete registry may declare the packages it serves as a map from name
+pattern to per-package rules:
 
 - **The key set is the namespace.** Keys are deliberately restricted to four
   statically decidable shapes: `**` for all packages, `@*/*` for all
@@ -307,10 +308,18 @@ from name pattern to per-package rules:
   defaults: `access: $all`, `publish: $authenticated` (hosted only), and
   `unpublish` denied. `publish`/`unpublish` entries on an upstream registry
   are a config error — a write can never land there.
-- **First match wins, and a dead entry is a config error.** Entries are
-  evaluated in declared order; an entry whose key is strictly covered by an
-  earlier entry's key can never match and is rejected — the same coverage
-  machinery router validation uses, applied inside one registry.
+- **The most specific entry wins — key order carries no meaning.** For any
+  name, the keys that can match it form a strict specificity chain — its
+  exact name, then its `@scope/*`, then `@*/*`, then `**` — and two distinct
+  keys of the same tier can never match the same name, so every name has
+  exactly one winning entry regardless of where it appears in the map. This
+  is deliberate: YAML mappings are formally unordered, and a formatter, a
+  `yq` round-trip, or a JSON conversion must not be able to change which
+  access rule applies. It also means no entry can be dead — an exact key
+  carves its name out of a scope key, which still serves the rest — so there
+  is no shadowed-entry validation to run inside a registry; a duplicate key
+  remains the only error. (Router `sources:` are different: a YAML *list* is
+  syntactically ordered, so source order stays meaningful there.)
 
 One declaration therefore does triple duty: it is the registry's **routing
 claim** (what routers use to select a source), its **request filter**, and its
@@ -951,9 +960,10 @@ shape outright — pnpr is pre-1.0, no compatibility mode — with:
    `type: router`) plus optional `defaultRegistry:`. This is the only package
    routing surface. Hosted and upstream registries take an optional
    `packages:` map from name pattern to `access`/`publish`/`unpublish` rules
-   (omitted map = every name, default rules; omitted rule fields fall back to
-   the registry-level defaults, then the safe defaults). A router is an
-   ordered `sources:` list of concrete registry names.
+   (omitted map = every name, default rules; the most specific matching key
+   selects the rules; omitted rule fields fall back to the registry-level
+   defaults, then the safe defaults). A router is an ordered `sources:` list
+   of concrete registry names.
 2. Remove the top-level `packages:` block. A config that still contains one is
    a startup error naming the per-registry replacement — silently ignoring a
    previously enforced ACL would be a security regression, so the key must not
@@ -970,9 +980,9 @@ shape outright — pnpr is pre-1.0, no compatibility mode — with:
    unreachable sources (all namespace keys covered by earlier sources' keys,
    including a non-last map-less source), individually shadowed keys of
    otherwise-reachable sources, unknown sources, self-references, and sources
-   that are another router. Within one registry, reject a rule entry whose key
-   is strictly covered by an earlier entry (it can never match). Validate
-   every registry name as a single URL-safe path segment.
+   that are another router. Validate every registry name as a single URL-safe
+   path segment. (Within one registry no order validation exists: rule
+   selection is by specificity, so no entry can be dead.)
 6. Route every read through the registry graph, and enforce the resolved
    registry's `packages:` at the registry itself: an unclaimed name is a
    definitive `404` on reads and a rejection on writes, before storage or the
@@ -1024,10 +1034,11 @@ Tests should cover:
   publish rejected and an off-namespace read a `404` before storage or the
   upstream is consulted, both through a router and at the registry's own
   `/~<name>/` URL;
-- per-package rule selection: first matching entry wins in declared order; an
-  entry shadowed by an earlier entry rejected at config load; omitted rule
-  fields falling back to registry-level defaults, then the safe defaults
-  (`access: $all`, `publish: $authenticated`, `unpublish` denied);
+- per-package rule selection: the most specific matching key wins (exact over
+  `@scope/*` over `@*/*` over `**`) regardless of key order — including after
+  a key-reordering YAML round-trip; omitted rule fields falling back to
+  registry-level defaults, then the safe defaults (`access: $all`,
+  `publish: $authenticated`, `unpublish` denied);
 - a per-package `access` rule on a **public** upstream gating anonymous reads
   through pnpr while the upstream fetch itself stays anonymous;
 - a private upstream's namespace preventing a public name from being fetched
@@ -1100,6 +1111,23 @@ prior art for select-one composition is conda's **strict channel priority**,
 which conda added for the same reason: stop mixing builds of one package across
 sources. A router is strict-priority routing keyed by name pattern.
 
+Most-specific-match selection (the `packages:` map rule) is the established
+choice wherever a restricted pattern language makes it decidable. npm's own
+client-side registry selection is the nearest precedent: `@scope:registry`
+beats the default registry, order-free — pnpr's map selection mirrors the
+other half of the same system. Go 1.22's `net/http` ServeMux uses "the most
+specific pattern wins" and makes registering two patterns where neither is
+more specific a registration-time error — the same pair of rules as this map
+(specificity plus duplicate-claim errors). IP longest-prefix routing, DNS
+wildcard precedence (RFC 4592), and the Servlet URL-mapping rules are the
+same shape. nginx marks the boundary condition: its prefix locations match
+longest-first, order-free, while its regex locations fall back to declaration
+order because regex overlap is undecidable — a restricted language is what
+makes order-free selection possible. Systems that genuinely need declaration
+order (`.gitignore`, ESLint overrides, iptables, `match` arms) need it
+because they support negation or incomparable overlap, both of which this
+pattern language deliberately omits.
+
 Verdaccio uses package rules and uplinks to let one registry facade proxy and
 merge other registries with existence-based fallback. The router covers its
 one-URL ergonomics, but deliberately omits the two unsafe behaviors —
@@ -1128,12 +1156,15 @@ package names and scopes beneath the registry path.
   validation (across router sources and within one registry's rules) remains
   possible. Precedence is not an open question: sources are evaluated in
   declared order and the first source that claims the name wins.
-- Should source selection eventually be specificity-based (an exact name beats
-  `@scope/*` beats `@*/*` beats `**`) instead of order-based? Specificity would
-  make `sources:` an unordered set and remove ordering mistakes entirely, at
-  the cost of a less obvious rule; the decidable pattern language keeps either
-  choice statically checkable, with identical claims in one router a
-  validation error either way. This revision keeps declared order.
+- Within one registry, the `packages:` map already selects by specificity — a
+  YAML mapping has no spec-guaranteed order to depend on. Should **router
+  source** selection eventually be specificity-based too (an exact claim
+  beats `@scope/*` beats `@*/*` beats a catch-all), making `sources:` an
+  unordered set? The same totality argument applies across the sources of one
+  router — identical claims are a validation error either way — but
+  `sources:` is a syntactically ordered *list*, so declared order is
+  available and is kept in this revision, with unreachable-source and
+  shadowed-claim validation catching misordering.
 - What exact lockfile encoding carries registry identity in package identity —
   a registry-qualified package key, a package-to-registry table, or another
   compact form — and how does it interoperate with the existing `name@version`
