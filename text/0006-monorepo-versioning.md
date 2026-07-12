@@ -61,10 +61,10 @@ Because the check is a plain command over git and the workspace graph, enforceme
 ### Applying versions
 
 ```sh
-pnpm version -r [--filter <pattern>] [--dry-run] [--snapshot [<tag>]]
+pnpm version -r [--filter <pattern>] [--dry-run]
 ```
 
-(Command naming is bikeshed; see Unresolved Questions.) The flags follow pnpm's existing conventions — there is no new `--workspace` concept. `pnpm version` keeps its current npm-style meaning when given an explicit bump argument (`pnpm version patch`, recursively with `-r`); the **bare** recursive form is what consumes pending intents. `--filter` narrows the release to the selected packages' portion of the pending plan, with fixed-group companions and range-invalidated dependents of the selection pulled in — which is how one product line releases from a repository that hosts several.
+(Command naming is bikeshed; see Unresolved Questions.) The flags follow pnpm's existing conventions — there is no new `--workspace` concept. `pnpm version` keeps its current npm-style meaning when given an explicit bump argument (`pnpm version patch`, recursively with `-r`); the **bare** recursive form is what consumes pending intents. `pnpm version -r` is strictly the durable half of the pipeline — it mutates manifests, consumes intents, writes changelogs, and ledgers; the ephemeral snapshot form lives under `pnpm publish` instead (see "Snapshot releases"). `--filter` narrows the release to the selected packages' portion of the pending plan, with fixed-group companions and range-invalidated dependents of the selection pulled in — which is how one product line releases from a repository that hosts several.
 
 The bare recursive form:
 
@@ -189,9 +189,11 @@ Internal machinery (plan assembly, propagation, changelog composition) operates 
 
 ### Snapshot releases and registry lanes
 
-`pnpm version -r --snapshot [tag]` produces one-off `0.0.0-<tag>-<timestamp>` versions without consuming intent files or touching changelogs, matching `changeset version --snapshot` for CI preview publishing. Nothing is committed or ledgered — snapshots are the one release form that needs no repo mutation at all, which is what makes them safe to automate.
+`pnpm publish -r --snapshot [tag]` publishes one-off `0.0.0-<tag>-<timestamp>` versions without consuming intent files or touching changelogs, matching `changeset version --snapshot` for CI preview publishing — but as a single publish step, not a version-then-publish pair.
 
-That makes snapshots the producer for **registry lanes** — the proposed bit-registry capability where CI automatically publishes a branch's packages and the registry files them under a lane named for the branch. The flow is: snapshot with the branch name as the tag, publish with `--batch` (one `PUT /-/pnpm/v1/publish` request per registry, so the branch's packages land on the lane atomically), discard the manifest changes. Intents stay unconsumed on the branch and release normally after merge; a snapshot can never double-release because it never enters the ledger.
+Snapshot is a publish concern, not a version one. `pnpm version -r` is the durable half of the pipeline (mutate manifests, consume intents, write changelogs, ledger, commit); a snapshot mutates none of that. What it does need — assembling the target versions from intents and rewriting each package's `version` and its `workspace:` ranges to the snapshot version — is a **pack-time, in-memory manifest transform**, the exact category `pnpm publish` already owns: `exportable-manifest` materializes `workspace:` ranges at pack time without touching the working tree, and snapshot versions ride the same path. So `pnpm publish` calls the release-plan assembler in `releasing/versioning` (the same one `pnpm version` uses), packs against the derived versions, and publishes — the working tree is never dirtied, and there is no `version --snapshot` → `publish` → `git checkout .` dance with a stray snapshot version sitting on disk waiting to be committed by accident in CI. In normal mode `pnpm publish -r` ships the versions `pnpm version` wrote to disk; in snapshot mode it synthesizes an ephemeral release state in memory instead. `--dry-run` prints the plan for anyone who needs to inspect it.
+
+That makes snapshot publishing the producer for **registry lanes** — the proposed bit-registry capability where CI automatically publishes a branch's packages and the registry files them under a lane named for the branch. The whole flow is one command: `pnpm publish -r --batch --snapshot <branch>` (one `PUT /-/pnpm/v1/publish` request per registry, so the branch's packages land on the lane atomically). Intents stay unconsumed on the branch and release normally after merge; a snapshot can never double-release because it never enters the ledger.
 
 The hard requirement is on the registry: lane-published versions must stay **outside the package's main version list**, visible only when the lane is requested. Two mechanisms in this RFC assume the packument records only real releases — previous-version selection for changelog chaining ("highest published semver-lower version") and the ledger GC's registry confirmation — and both would misbehave if branch snapshots leaked into the default packument. Lane isolation is what makes automatic branch publishing safe at all; against a registry without it (npmjs), snapshots remain a manual, tag-hygiene-dependent affair, exactly as with changesets.
 
@@ -216,7 +218,7 @@ New code concentrates in a new `releasing/` workspace package (TypeScript) and a
 - **Intent reader**: parse `.changeset/*.md` frontmatter; resolve package names and directory-path references against the workspace, rejecting ambiguous names.
 - **Release-plan assembler**: direct bumps, dependent propagation via the existing project graph (`@pnpm/workspace.pkgs-graph`), fixed-group and epic-band constraints, lane versioning. For calibration, changesets' equivalent (`@changesets/assemble-release-plan`) is ~660 lines; this is the algorithmic core.
 - **Applier**: version-field updates through the existing format-preserving manifest reader/writer (dependency ranges are never touched — the `workspace:` protocol materializes them at pack time); changelog composition; intent-file lifecycle including per-package consumption state.
-- **CLI commands**: `pnpm change`, `pnpm change status`, `pnpm version -r`, `pnpm lane` (or final names), wired through the existing command infrastructure in `releasing/commands`, with config plumbed through `@pnpm/config`.
+- **CLI commands**: `pnpm change`, `pnpm change status`, `pnpm version -r`, `pnpm lane` (or final names), wired through the existing command infrastructure in `releasing/commands`, with config plumbed through `@pnpm/config`. The snapshot form is a `--snapshot` flag on the existing `pnpm publish -r`, which calls the same assembler and packs against the derived versions in memory.
 
 Existing machinery that needs no change: workspace discovery, the dependency graph, `pnpm publish -r` (topological order, provenance), git utilities, `exportable-manifest`.
 
