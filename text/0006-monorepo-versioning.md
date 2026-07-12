@@ -106,8 +106,11 @@ pnpm's own monorepo versions its internal TypeScript libraries in a *band* deriv
 versioning:
   epics:
     - lead: pnpm
-      packages: ["@pnpm/*"]
+      packages:
+        - "./pnpm11/**"   # directory selector: the TS product's tree
 ```
+
+Membership uses pnpm's existing package-selector syntax (what `--filter` accepts): name globs, directory selectors, and `!` negations. That precision matters because a monorepo can host products that share a name scope but not a version line — in pnpm's own repository, `@pnpm/napi` and the Rust CLI wrapper (12.0.0-alpha line), `@pnpm/pnpr` (0.1.0-alpha line), and the experimental `@pnpm/pnpr.client` (0.0.x track) all live outside the TS epic, so a naive `@pnpm/*` name glob would be wrong; a directory selector for the TS tree (or negations) expresses the real boundary. Conflicting membership is a configuration error, not a silent choice: a package matched by an epic while also belonging to a fixed group or prerelease line outside that epic fails validation, so an over-broad glob cannot quietly re-base an unrelated product into the band.
 
 - The lead package versions normally. A member's major is constrained to the band `lead-major × 100` through `lead-major × 100 + 99`.
 - Members move independently inside the band: patch and minor as usual, and a `major` intent bumps `1101.x` to `1102.0.0` — a library can break its own API without pretending the product did. This is what distinguishes an epic from a fixed group, which forces one shared version on every member.
