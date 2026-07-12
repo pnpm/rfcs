@@ -2,7 +2,7 @@
 
 ## Summary
 
-pnpm gains built-in release management for workspaces: recording change intents as files, consuming them to bump versions across the workspace (with dependent propagation, fixed groups, epics, and per-package release lanes), and writing changelogs. The intent-file format is compatible with [changesets](https://github.com/changesets/changesets), so existing repositories can adopt it by deleting a devDependency. Configuration lives in `pnpm-workspace.yaml`.
+pnpm gains built-in release management for workspaces: recording change intents as files, consuming them to bump versions across the workspace (with dependent propagation, fixed groups, epics, and per-package release lanes), and writing changelogs. The intent-file format is compatible with [changesets](https://github.com/changesets/changesets), so existing repositories can adopt it by deleting a devDependency; the one additive extension is package references by directory path, needed only when workspace projects share a published name. Configuration lives in `pnpm-workspace.yaml`.
 
 ## Motivation
 
@@ -174,6 +174,19 @@ While `@example/cli` is on the `alpha` lane, `pnpm version -r` computes the stab
 
 **Half-consumed intents fall out of the ledger's per-package shape** — the design corner that makes this impossible to retrofit into changesets. An intent may name both a main-lane package and a lane package: the stable half is consumed now (ledgered under the new stable version), and the lane half is consumed at each prerelease it enters (ledgered under `2.1.0-alpha.N`). The ledger is the single authoritative consumption record — there is no separate pending-changelog state: graduation composes the stable version's changelog section by collecting every intent the ledger recorded against the lane's prerelease versions. Intent-file deletion follows one rule in both storage modes — a file is deletable once every package it names has a ledger entry — with two exemptions: a file whose entries for a still-on-lane package are only against prerelease versions survives until that package graduates, and registry mode additionally waits for registry-confirmed archival (see Changelog storage). After graduation such files become ordinary GC candidates.
 
+### Package identity and name collisions
+
+The engine's unit of identity is the **workspace-relative project directory**, not the package name. Names are aliases resolved against the workspace at read time, and an alias that resolves to more than one project is a hard validation error listing the candidate directories — never a silent pick. This is the concrete fix for the name-keying flaw Motivation attributes to changesets, and it is not hypothetical: pnpm's own repository is heading toward two workspace projects publishing the same npm name — the TS CLI (`pnpm11/pnpm`, the 11.x line) and the Rust CLI (`pnpm/npm/pnpm`, the 12.x line) — releasing concurrently from one branch, the Rust line first via a lane and after graduation as a second stable line.
+
+Identity-by-directory surfaces in each serialized format:
+
+- **Intent files** may reference a package by workspace-relative path alongside bare names: `"./pnpm11/pnpm": patch`. This is the single additive extension to the changesets format; repositories without name collisions never need it, and `pnpm change` writes path references automatically when the chosen name is ambiguous, so contributors don't need to know the rule exists.
+- **Ledger entries** record the project directory alongside `package@version`. Colliding lines usually differ by major anyway (`pnpm@11.12.1` vs `pnpm@12.0.0-alpha.9`), but "usually unambiguous" is exactly the reasoning being retired.
+- **`versioning.lanes`** keys accept directory paths (`"./pnpm/npm/pnpm": alpha`); epic membership already uses full package-selector syntax, including directory selectors, for the same reason.
+- **Changelogs** live in each project directory, so they were never name-keyed.
+
+Internal machinery (plan assembly, propagation, changelog composition) operates on workspace projects and is directory-keyed by construction. The one place a bare name is structurally unavoidable — a `workspace:` dependency range naming an ambiguous package — is already a workspace-linking error at install time, so the release engine never encounters it.
+
 ### Snapshot releases
 
 `pnpm version -r --snapshot [tag]` produces one-off `0.0.0-<tag>-<timestamp>` versions without consuming intent files or touching changelogs, matching `changeset version --snapshot` for CI preview publishing.
@@ -196,14 +209,14 @@ All user-visible behavior lands in both CLI stacks of pnpm/pnpm (the TypeScript 
 
 New code concentrates in a new `releasing/` workspace package (TypeScript) and a matching crate (Rust):
 
-- **Intent reader**: parse `.changeset/*.md` frontmatter; validate package names against the workspace.
+- **Intent reader**: parse `.changeset/*.md` frontmatter; resolve package names and directory-path references against the workspace, rejecting ambiguous names.
 - **Release-plan assembler**: direct bumps, dependent propagation via the existing project graph (`@pnpm/workspace.pkgs-graph`), fixed-group and epic-band constraints, lane versioning. For calibration, changesets' equivalent (`@changesets/assemble-release-plan`) is ~660 lines; this is the algorithmic core.
 - **Applier**: version-field updates through the existing format-preserving manifest reader/writer (dependency ranges are never touched — the `workspace:` protocol materializes them at pack time); changelog composition; intent-file lifecycle including per-package consumption state.
 - **CLI commands**: `pnpm change`, `pnpm change status`, `pnpm version -r`, `pnpm lane` (or final names), wired through the existing command infrastructure in `releasing/commands`, with config plumbed through `@pnpm/config`.
 
 Existing machinery that needs no change: workspace discovery, the dependency graph, `pnpm publish -r` (topological order, provenance), git utilities, `exportable-manifest`.
 
-**Correctness oracle**: because the input format matches changesets, differential tests can run both engines against the same fixture workspaces and diff the resulting trees (manifests and changelogs) for every changesets feature this proposal adopts — fixtures declare internal dependencies with bare `workspace:` protocol specifiers, which both engines leave untouched; only the native extensions (per-package release lanes) need standalone specification.
+**Correctness oracle**: because the input format matches changesets, differential tests can run both engines against the same fixture workspaces and diff the resulting trees (manifests and changelogs) for every changesets feature this proposal adopts — fixtures declare internal dependencies with bare `workspace:` protocol specifiers, which both engines leave untouched; only the native extensions (per-package release lanes, directory-path package references) need standalone specification.
 
 Affected repositories: `pnpm/pnpm` (both stacks, docs for new commands and `pnpm-workspace.yaml` keys), `pnpm/pnpm.io` (documentation), and potentially a migration codemod (`.changeset/config.json` → `versioning:` key).
 
