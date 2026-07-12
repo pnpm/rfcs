@@ -2,7 +2,7 @@
 
 ## Summary
 
-pnpm gains built-in release management for workspaces: recording change intents as files, consuming them to bump versions across the workspace (with dependent propagation, fixed groups, and per-package prerelease lines), and writing changelogs. The intent-file format is compatible with [changesets](https://github.com/changesets/changesets), so existing repositories can adopt it by deleting a devDependency. Configuration lives in `pnpm-workspace.yaml`.
+pnpm gains built-in release management for workspaces: recording change intents as files, consuming them to bump versions across the workspace (with dependent propagation, fixed groups, epics, and per-package prerelease lines), and writing changelogs. The intent-file format is compatible with [changesets](https://github.com/changesets/changesets), so existing repositories can adopt it by deleting a devDependency. Configuration lives in `pnpm-workspace.yaml`.
 
 ## Motivation
 
@@ -98,6 +98,23 @@ Changesets' third grouping key, `linked` (packages sharing a version *number lin
 
 One constraint key is adopted from Rush's `lockedMajor` version policy: `versioning.maxBump` caps the bump a release from the current checkout may apply (`maxBump: patch` rejects intents declaring `minor` or `major`). Because `pnpm-workspace.yaml` is committed per branch, a maintenance branch such as `release/11.1` sets the cap once, and a cherry-picked intent carrying a larger bump fails `pnpm version -r` loudly — naming the offending intent file — instead of silently shipping a feature release from a patch line.
 
+### Epics: version bands tied to a lead package
+
+pnpm's own monorepo versions its internal TypeScript libraries in a *band* derived from the CLI's major: while `pnpm` is on major 11, every library's major lives in 1100–1199 (`1100.5.5`, `1101.0.0`, …); when pnpm 12 ships, they re-base to `1200.0.0`. Today a meta-updater plugin enforces this out of band. The scheme earns native support as an **epic**:
+
+```yaml
+versioning:
+  epics:
+    - lead: pnpm
+      packages: ["@pnpm/*"]
+```
+
+- The lead package versions normally. A member's major is constrained to the band `lead-major × 100` through `lead-major × 100 + 99`.
+- Members move independently inside the band: patch and minor as usual, and a `major` intent bumps `1101.x` to `1102.0.0` — a library can break its own API without pretending the product did. This is what distinguishes an epic from a fixed group, which forces one shared version on every member.
+- When a release plan takes the lead to a new stable major, every member re-bases to the band floor (`1200.0.0`) in the same plan. While the lead sits on a prerelease line (`12.0.0-alpha.N`), the re-base waits for the stable release — matching how pnpm's repository suspends the band check during prereleases.
+
+An epic answers "which product era does this library belong to" from the version alone, which matters once internal packages are published and appear in other repositories' dependency trees — and it turns a repo-specific lint into a constraint the release plan itself upholds.
+
 ### Changelog storage: the registry as the changelog archive
 
 Committed changelogs are derived data and a chronic source of friction: they dominate release-PR diffs, conflict on every cherry-pick and merge-back, and record nothing the repository doesn't already hold — every intent file's prose stays in git history after deletion, and the published packages carry the rendered result. `versioning.changelog.storage` selects where the accumulated history lives:
@@ -162,7 +179,7 @@ All user-visible behavior lands in both CLI stacks of pnpm/pnpm (the TypeScript 
 New code concentrates in a new `releasing/` workspace package (TypeScript) and a matching crate (Rust):
 
 - **Intent reader**: parse `.changeset/*.md` frontmatter; validate package names against the workspace.
-- **Release-plan assembler**: direct bumps, dependent propagation via the existing project graph (`@pnpm/workspace.pkgs-graph`), fixed-group constraints, prerelease-line versioning. For calibration, changesets' equivalent (`@changesets/assemble-release-plan`) is ~660 lines; this is the algorithmic core.
+- **Release-plan assembler**: direct bumps, dependent propagation via the existing project graph (`@pnpm/workspace.pkgs-graph`), fixed-group and epic-band constraints, prerelease-line versioning. For calibration, changesets' equivalent (`@changesets/assemble-release-plan`) is ~660 lines; this is the algorithmic core.
 - **Applier**: version-field updates through the existing format-preserving manifest reader/writer (dependency ranges are never touched — the `workspace:` protocol materializes them at pack time); changelog composition; intent-file lifecycle including per-package consumption state.
 - **CLI commands**: `pnpm change`, `pnpm change status`, `pnpm version -r` (or final names), `pnpm version pre enter/exit`, wired through the existing command infrastructure in `releasing/commands`, with config plumbed through `@pnpm/config`.
 
