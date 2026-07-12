@@ -78,8 +78,8 @@ versioning:
   ignore:
     - "@example/internal-fixtures"
   changelog:
-    format: github    # or a changelog-writer package resolved like a config dependency
-    storage: registry # or "repository" (default): see "Changelog storage" below
+    format: github      # or a changelog-writer package resolved like a config dependency
+    storage: repository # opts out of the default "registry" mode: see "Changelog storage" below
 ```
 
 Private packages without a `version` field are ignored automatically. The `fixed`/`linked`/`ignore` semantics match changesets so migration is mechanical.
@@ -88,14 +88,21 @@ Private packages without a `version` field are ignored automatically. The `fixed
 
 Committed changelogs are derived data and a chronic source of friction: they dominate release-PR diffs, conflict on every cherry-pick and merge-back, and duplicate what the published packages already carry. `versioning.changelog.storage` selects where the accumulated history lives:
 
-- **`repository`** (default, changesets-compatible): `CHANGELOG.md` is appended in place and committed, as today.
-- **`registry`**: no changelog file is committed at all. The intent files remain the only copy of the prose: `pnpm version --workspace` bumps manifests and, instead of deleting the consumed intent files, records their ids in a small committed ledger (mapping `package@version` → intent ids), so the tagged release commit is self-contained. At publish time, pnpm composes the release's changelog section from the ledgered intent files present at the tag, fetches the previously published version's tarball, prepends the new section to its `CHANGELOG.md`, and packs the concatenation into the new tarball. Consumed intents are garbage-collected by a later `pnpm version --workspace` run, and the timing is a safety property, not a convenience: until its release is published, the intent file in the repository is the only copy of the prose anywhere, so a file is deleted only when it is (a) ledgered, (b) recorded against a version the registry confirms is published, and (c) not still needed by a package on a prerelease line awaiting graduation. Deletion cannot happen at publish time because publish must not push commits; gating it on registry confirmation makes the lifecycle self-healing — a release that was versioned and tagged but never published keeps its intents (and their prose) intact for a rerun.
+- **`registry`** (default): no changelog file is committed at all. The intent files remain the only copy of the prose: `pnpm version --workspace` bumps manifests and, instead of deleting the consumed intent files, records their ids in a small committed ledger (mapping `package@version` → intent ids), so the tagged release commit is self-contained. At publish time, pnpm composes the release's changelog section from the ledgered intent files present at the tag, fetches the previously published version's tarball, prepends the new section to its `CHANGELOG.md`, and packs the concatenation into the new tarball. Consumed intents are garbage-collected by a later `pnpm version --workspace` run, and the timing is a safety property, not a convenience: until its release is published, the intent file in the repository is the only copy of the prose anywhere, so a file is deleted only when it is (a) ledgered, (b) recorded against a version the registry confirms is published, and (c) not still needed by a package on a prerelease line awaiting graduation. Deletion cannot happen at publish time because publish must not push commits; gating it on registry confirmation makes the lifecycle self-healing — a release that was versioned and tagged but never published keeps its intents (and their prose) intact for a rerun.
+- **`repository`** (opt-out, changesets-compatible): `CHANGELOG.md` is appended in place and committed, and intent files are deleted as they are consumed — changesets' behavior, unchanged.
 
 There is deliberately no committed rendering of the changelog in `registry` mode. The prose is reviewed once, in the PR that adds the intent file; the release PR's reviewable surface is the version bumps and the ledger entry, and `pnpm change status` / `--dry-run` renders the exact section that will be packed. Two alternative lifecycles were considered and rejected: committing the newest section into `CHANGELOG.md` duplicates the intent text for no review benefit (churn), and reconstructing deleted intent files from the release commit's diff at publish time breaks under shallow CI checkouts and rewritten release branches. Deleting intents at publish time instead of the next version run would require the publish step to push commits, which it must not.
 
 The **previous version** is the highest published version semver-lower than the one being published — never a dist-tag lookup. This makes concurrent release lines chain correctly on their own ancestry: `12.0.0-alpha.9` extends `12.0.0-alpha.8`'s changelog, a backport `11.1.5` extends the `11.1.x` line's history, and `11.13.0` extends `11.12.x` even when higher prereleases exist. If the previous version is unpublished, the next-highest is used; a first publish starts the history from the new section alone. The fetched tarball is integrity-verified against the registry metadata, exactly as an install would be.
 
-Trade-offs stated openly: the published artifact embeds registry-fetched content, so it is no longer byte-reproducible from the tagged sources alone; and the full history is no longer browsable in the repository (the published tarballs and GitHub releases become the archive). Repositories that value either property keep the default.
+The default rests on preconditions that hold for most workspaces but not all; `repository` mode is the opt-out for the ones where they don't:
+
+- **pnpm must be the publisher.** The composed section comes into existence only inside pnpm's pack/publish step; a version published by any other tool ships without it. To keep that mistake from destroying prose, the GC check verifies not just that the ledgered version exists on the registry but that its tarball's `CHANGELOG.md` actually contains the composed section — a foreign-published version therefore blocks intent deletion instead of losing the entries. Pipelines that pack or publish with other tools should opt out.
+- **Ecosystem tooling reads changelogs from the repository, not from tarballs.** Renovate and Dependabot surface release notes from committed changelog files and GitHub releases; a repo in `registry` mode needs GitHub releases (or equivalent) for its changes to stay visible in downstream update PRs.
+- **The published artifact embeds registry-fetched content**, so it is no longer byte-reproducible from the tagged sources alone — repositories that attest builds and consider that property load-bearing should opt out.
+- The full history is no longer browsable in the repository; the published tarballs and GitHub releases become the archive.
+
+For migrating changesets repositories, the codemod sets `changelog.storage: repository` when it finds committed `CHANGELOG.md` files, so adoption preserves their existing behavior; the default applies to setups initialized by pnpm.
 
 ### Per-package prerelease lines
 
@@ -172,4 +179,3 @@ Risks: versioning tools accrete edge cases (peer-dependency bump semantics, igno
 - **GitHub Action / bot story.** Does pnpm ship a first-party action equivalent to `changesets/action` (open a release PR, publish on merge), or document recipes only?
 - **Name for the intent directory.** Keep `.changeset/` for compatibility, or also read a pnpm-native location (`.pnpm-changes/`) with `.changeset/` as a fallback?
 - **Registry changelog mode: graduation base.** When a package graduates off a prerelease line (`2.1.0` after `2.1.0-alpha.N`), should its changelog chain from the last prerelease (keeping the alpha sections in the history) or from the last stable version (replacing them with the aggregated stable section)?
-- **Registry changelog mode: should `registry` be the default** for new setups, with `repository` as the compatibility mode — or is losing in-repo history browsing too surprising for a default?
