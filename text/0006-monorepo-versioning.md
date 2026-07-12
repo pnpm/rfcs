@@ -52,7 +52,7 @@ Format compatibility is a deliberate, load-bearing choice (see Rationale). Exist
 
 ### Enforcing coverage: `pnpm change check`
 
-Adopted from Yarn's `yarn version check`: a CI-runnable command that computes which workspace packages the branch's diff touches (against configurable base refs) and fails unless every touched package is either named in a pending intent file or explicitly declined. Declines are recorded in the intent frontmatter as a `none` strategy — an additive extension to the changesets format — so "this refactor needs no release" becomes a reviewable, per-package statement in the PR instead of a bot-comment convention or an opaque empty changeset. `versioning.check.ignorePatterns` exempts files that never warrant a release (tests, fixtures, docs). The interactive `pnpm change` preselects the same diff-derived package set.
+Adopted from Rush's `rush change --verify` and Yarn's `yarn version check`: a CI-runnable command that computes which workspace packages the branch's diff touches (against configurable base refs) and fails unless every touched package is either named in a pending intent file or explicitly declined. Declines are recorded in the intent frontmatter as a `none` strategy — an additive extension to the changesets format — so "this refactor needs no release" becomes a reviewable, per-package statement in the PR instead of a bot-comment convention or an opaque empty changeset. `versioning.check.ignorePatterns` exempts files that never warrant a release (tests, fixtures, docs). The interactive `pnpm change` preselects the same diff-derived package set.
 
 Because the check is a plain command over git and the workspace graph, enforcement works on any CI and any forge — no webhook bot required.
 
@@ -89,6 +89,8 @@ versioning:
 ```
 
 Private packages without a `version` field are ignored automatically. The `fixed`/`linked`/`ignore` semantics match changesets so migration is mechanical.
+
+One constraint key is adopted from Rush's `lockedMajor` version policy: `versioning.maxBump` caps the bump a release from the current checkout may apply (`maxBump: patch` rejects intents declaring `minor` or `major`). Because `pnpm-workspace.yaml` is committed per branch, a maintenance branch such as `release/11.1` sets the cap once, and a cherry-picked intent carrying a larger bump fails `pnpm version --workspace` loudly — naming the offending intent file — instead of silently shipping a feature release from a patch line.
 
 ### Changelog storage: the registry as the changelog archive
 
@@ -170,7 +172,7 @@ Risks: versioning tools accrete edge cases (peer-dependency bump semantics, igno
 
 - **changesets** — the intent-file model this RFC adopts; its global pre mode and name-keyed format are the structural limits addressed here.
 - **Lerna** (`lerna version`) — fixed/independent modes; couples versioning to its own workspace model; now maintained by Nx.
-- **Rush** (`rush change`) — per-PR change files enforced by CI, JSON format; the same intent-file idea with heavier ceremony.
+- **Rush** (`rush change` / version policies) — the intent-file idea with JSON ceremony, and the original diff-derived CI enforcement (`rush change --verify`, adopted here). Its version policies prefigure several pieces of this proposal: `lockStepVersion` is fixed groups with a policy-declared current version and `nextBump` (Rush's way of running prerelease lines like `1.0.0-dev.6`), and `individualVersion`'s `lockedMajor` constraint is the ancestor of the `maxBump` cap adopted here for maintenance branches.
 - **Yarn Berry** (`yarn version check` / deferred versions) — the closest prior art for a package manager owning versioning natively. Its diff-derived coverage check, explicit per-package declines, and ignore patterns are adopted here (`pnpm change check`). Its deferred files record bump strategies only — no prose — so Yarn has no changelog story; and it requires dependents of a released workspace to decide explicitly (bump or decline), where this proposal propagates mechanically.
 - **Nx release** — release groups are prior art for fixed/linked semantics; requires Nx.
 - **cargo-release / release-plz** — single-ecosystem release managers demonstrating changelog-from-intent and workspace propagation in Rust.
