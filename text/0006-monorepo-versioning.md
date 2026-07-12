@@ -50,6 +50,12 @@ Format compatibility is a deliberate, load-bearing choice (see Rationale). Exist
 
 `pnpm change status` reports pending intents and the release plan they would produce (the equivalent of `changeset status`).
 
+### Enforcing coverage: `pnpm change check`
+
+Adopted from Yarn's `yarn version check`: a CI-runnable command that computes which workspace packages the branch's diff touches (against configurable base refs) and fails unless every touched package is either named in a pending intent file or explicitly declined. Declines are recorded in the intent frontmatter as a `none` strategy — an additive extension to the changesets format — so "this refactor needs no release" becomes a reviewable, per-package statement in the PR instead of a bot-comment convention or an opaque empty changeset. `versioning.check.ignorePatterns` exempts files that never warrant a release (tests, fixtures, docs). The interactive `pnpm change` preselects the same diff-derived package set.
+
+Because the check is a plain command over git and the workspace graph, enforcement works on any CI and any forge — no webhook bot required.
+
 ### Applying versions
 
 ```
@@ -165,7 +171,7 @@ Risks: versioning tools accrete edge cases (peer-dependency bump semantics, igno
 - **changesets** — the intent-file model this RFC adopts; its global pre mode and name-keyed format are the structural limits addressed here.
 - **Lerna** (`lerna version`) — fixed/independent modes; couples versioning to its own workspace model; now maintained by Nx.
 - **Rush** (`rush change`) — per-PR change files enforced by CI, JSON format; the same intent-file idea with heavier ceremony.
-- **Yarn Berry** (`yarn version check` / deferred versions) — records deferred version bumps as workspace state and enforces them in CI; the closest prior art for a package manager owning versioning natively.
+- **Yarn Berry** (`yarn version check` / deferred versions) — the closest prior art for a package manager owning versioning natively. Its diff-derived coverage check, explicit per-package declines, and ignore patterns are adopted here (`pnpm change check`). Its deferred files record bump strategies only — no prose — so Yarn has no changelog story; and it requires dependents of a released workspace to decide explicitly (bump or decline), where this proposal propagates mechanically.
 - **Nx release** — release groups are prior art for fixed/linked semantics; requires Nx.
 - **cargo-release / release-plz** — single-ecosystem release managers demonstrating changelog-from-intent and workspace propagation in Rust.
 
@@ -178,4 +184,5 @@ Risks: versioning tools accrete edge cases (peer-dependency bump semantics, igno
 - **Git integration scope.** Should `pnpm version --workspace` create the release commit/tags itself (and what tag scheme for multi-package releases — `pkg@1.2.3` per package, one tag per run, or configurable), or stay filesystem-only and leave git to CI, as changesets does?
 - **GitHub Action / bot story.** Does pnpm ship a first-party action equivalent to `changesets/action` (open a release PR, publish on merge), or document recipes only?
 - **Name for the intent directory.** Keep `.changeset/` for compatibility, or also read a pnpm-native location (`.pnpm-changes/`) with `.changeset/` as a fallback?
+- **Coverage-check scope.** Yarn's check extends transitively: dependents of a released workspace must also declare a bump or a decline, surfacing semantic questions ("core changed behavior — does the CLI need a minor too?") that mechanical range-based propagation answers silently. This proposal checks only directly-touched packages and auto-propagates to dependents; is the Yarn-style explicit-dependent-decision mode worth offering behind a flag?
 - **Registry changelog mode: graduation base.** When a package graduates off a prerelease line (`2.1.0` after `2.1.0-alpha.N`), should its changelog chain from the last prerelease (keeping the alpha sections in the history) or from the last stable version (replacing them with the aggregated stable section)?
