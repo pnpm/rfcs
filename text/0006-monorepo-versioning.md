@@ -2,7 +2,7 @@
 
 ## Summary
 
-pnpm gains built-in release management for workspaces: recording change intents as files, consuming them to bump versions across the workspace (with dependent propagation, fixed/linked groups, and per-package prerelease lines), and writing changelogs. The intent-file format is compatible with [changesets](https://github.com/changesets/changesets), so existing repositories can adopt it by deleting a devDependency. Configuration lives in `pnpm-workspace.yaml`.
+pnpm gains built-in release management for workspaces: recording change intents as files, consuming them to bump versions across the workspace (with dependent propagation, fixed groups, and per-package prerelease lines), and writing changelogs. The intent-file format is compatible with [changesets](https://github.com/changesets/changesets), so existing repositories can adopt it by deleting a devDependency. Configuration lives in `pnpm-workspace.yaml`.
 
 ## Motivation
 
@@ -68,7 +68,7 @@ pnpm version -r [--filter <pattern>] [--dry-run] [--snapshot [<tag>]]
 
 The bare recursive form:
 
-1. **Assembles a release plan.** Direct bumps from intent files; propagation to dependents through the project graph pnpm already builds; fixed and linked group constraints applied.
+1. **Assembles a release plan.** Direct bumps from intent files; propagation to dependents through the project graph pnpm already builds; fixed-group constraints applied.
 2. **Writes manifests** with pnpm's format-preserving manifest writer — touching only `version` fields, never dependency ranges (see below).
 3. **Writes changelogs** — a `CHANGELOG.md` section per released package, composed from the consumed intent summaries.
 4. **Deletes consumed intent files** (with two exceptions below: packages on a prerelease line, and registry changelog storage, which defers deletion by one release).
@@ -85,16 +85,16 @@ Configuration lives in `pnpm-workspace.yaml` under a single key, replacing `.cha
 versioning:
   fixed:
     - ["@example/cli", "@example/cli-bindings"]
-  linked:
-    - ["@example/plugin-*"]
   ignore:
-    - "@example/internal-fixtures"
+    - "@example/frozen-legacy-pkg"
   changelog:
     format: github      # or a changelog-writer package resolved like a config dependency
     storage: repository # opts out of the default "registry" mode: see "Changelog storage" below
 ```
 
-Private packages without a `version` field are ignored automatically. The `fixed`/`linked`/`ignore` semantics match changesets so migration is mechanical.
+`fixed` groups always release together at one shared version — Lerna's lockstep, and a real need (pnpm's own repository ships its Rust CLI wrapper and NAPI addon this way). `ignore` permanently excludes packages from versioning and propagation; it is expected to be rare, because the engine automatically excludes what cannot release (private packages without a `version` field) while private packages *with* committed versions participate — changesets needs `ignore` mostly to shield private apps it would otherwise version, and that case disappears here. What remains for `ignore` is deliberately freezing an otherwise-releasable package, which is persistent config that a per-invocation `--filter` can't express. Both keys match changesets' semantics, so migration is mechanical.
+
+Changesets' third grouping key, `linked` (packages sharing a version *number line* but not release cadence: co-released members get the highest computed version, unchanged members are skipped, and a member releasing alone jumps onto the group's line), is deliberately not in v1. It is rarely used, its jump-to-highest semantics surprise, and it is purely additive to introduce later; a migrated config that uses it fails with a clear error instead of being silently accepted.
 
 One constraint key is adopted from Rush's `lockedMajor` version policy: `versioning.maxBump` caps the bump a release from the current checkout may apply (`maxBump: patch` rejects intents declaring `minor` or `major`). Because `pnpm-workspace.yaml` is committed per branch, a maintenance branch such as `release/11.1` sets the cap once, and a cherry-picked intent carrying a larger bump fails `pnpm version -r` loudly — naming the offending intent file — instead of silently shipping a feature release from a patch line.
 
@@ -162,13 +162,13 @@ All user-visible behavior lands in both CLI stacks of pnpm/pnpm (the TypeScript 
 New code concentrates in a new `releasing/` workspace package (TypeScript) and a matching crate (Rust):
 
 - **Intent reader**: parse `.changeset/*.md` frontmatter; validate package names against the workspace.
-- **Release-plan assembler**: direct bumps, dependent propagation via the existing project graph (`@pnpm/workspace.pkgs-graph`), fixed/linked constraints, prerelease-line versioning. For calibration, changesets' equivalent (`@changesets/assemble-release-plan`) is ~660 lines; this is the algorithmic core.
+- **Release-plan assembler**: direct bumps, dependent propagation via the existing project graph (`@pnpm/workspace.pkgs-graph`), fixed-group constraints, prerelease-line versioning. For calibration, changesets' equivalent (`@changesets/assemble-release-plan`) is ~660 lines; this is the algorithmic core.
 - **Applier**: version-field updates through the existing format-preserving manifest reader/writer (dependency ranges are never touched — the `workspace:` protocol materializes them at pack time); changelog composition; intent-file lifecycle including per-package consumption state.
 - **CLI commands**: `pnpm change`, `pnpm change status`, `pnpm version -r` (or final names), `pnpm version pre enter/exit`, wired through the existing command infrastructure in `releasing/commands`, with config plumbed through `@pnpm/config`.
 
 Existing machinery that needs no change: workspace discovery, the dependency graph, `pnpm publish -r` (topological order, provenance), git utilities, `exportable-manifest`.
 
-**Correctness oracle**: because the input format matches changesets, differential tests can run both engines against the same fixture workspaces and diff the resulting trees (manifests and changelogs) for every feature changesets supports — fixtures declare internal dependencies with bare `workspace:` protocol specifiers, which both engines leave untouched; only the native extensions (per-package prerelease lines) need standalone specification.
+**Correctness oracle**: because the input format matches changesets, differential tests can run both engines against the same fixture workspaces and diff the resulting trees (manifests and changelogs) for every changesets feature this proposal adopts — fixtures declare internal dependencies with bare `workspace:` protocol specifiers, which both engines leave untouched; only the native extensions (per-package prerelease lines) need standalone specification.
 
 Affected repositories: `pnpm/pnpm` (both stacks, docs for new commands and `pnpm-workspace.yaml` keys), `pnpm/pnpm.io` (documentation), and potentially a migration codemod (`.changeset/config.json` → `versioning:` key).
 
