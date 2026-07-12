@@ -152,7 +152,14 @@ Repository mode deletes intent files at version time as changesets does, but the
 
 ### Per-package prerelease lines
 
-The headline capability changesets structurally cannot offer. A package (or fixed group) is placed on a named prerelease line by declaring it in `pnpm-workspace.yaml` (`versioning.prereleases`) — the declaration **is** the interface, not state written by a mode-toggling command, so entering and exiting a line are ordinary reviewable manifest edits, and membership is **per package**, not per workspace:
+The headline capability changesets structurally cannot offer. A package (or fixed group) can be placed on a named prerelease line:
+
+```sh
+pnpm version unstable alpha --filter @example/cli...
+pnpm version stable --filter @example/cli...
+```
+
+Membership is recorded in `pnpm-workspace.yaml` (`versioning.prereleases`), and the commands are convenience editors for that key — hand-editing it is equally supported, since unlike changesets' `.changeset/pre.json` the key carries no generated bookkeeping (the ledger holds that). So the state is reviewable, and it is **per package**, not per workspace:
 
 ```yaml
 versioning:
@@ -160,9 +167,9 @@ versioning:
     "@example/cli": alpha
 ```
 
-Changesets' `pre enter`/`pre exit` commands exist because its equivalent state lives in a generated file (`.changeset/pre.json`) that also accumulates bookkeeping users must not hand-edit; here the ledger carries that bookkeeping, leaving nothing for a command to manage. (A dedicated subcommand was also rejected on collision grounds: the positional slot after `pnpm version` is npm's bump-keyword grammar, and `pre` is itself a valid node-semver increment type.) Exiting a line is deleting the key.
+The commands deliberately do not adopt changesets' `pre enter`/`pre exit` spelling: the positional slot after `pnpm version` is npm's bump-keyword grammar, where `pre` is itself a valid node-semver increment type (`inc(v, 'pre')`) and `prerelease` a documented bump — a mode-toggling `pre` sub-verb in that slot both reads oddly and shadows a real increment. `stable`/`unstable` instead name the state the selected packages move to, and collide with nothing in the bump vocabulary.
 
-While `@example/cli` is on the `alpha` line, `pnpm version -r` computes the stable target version from the intents as usual (say `2.1.0`), then emits `2.1.0-alpha.N`, incrementing `N` on each run. Packages not listed release stable versions from the same run. Exiting the line releases the accumulated stable version.
+While `@example/cli` is on the `alpha` line, `pnpm version -r` computes the stable target version from the intents as usual (say `2.1.0`), then emits `2.1.0-alpha.N`, incrementing `N` on each run. Packages not listed release stable versions from the same run. Returning a package to stable releases its accumulated stable version.
 
 **Half-consumed intents fall out of the ledger's per-package shape** — the design corner that makes this impossible to retrofit into changesets. An intent may name both a stable package and a prerelease-line package: the stable half is consumed now (ledgered under the new stable version), and the line half is consumed at each prerelease it enters (ledgered under `2.1.0-alpha.N`). The ledger is the single authoritative consumption record — there is no separate pending-changelog state: graduation composes the stable version's changelog section by collecting every intent the ledger recorded against the line's prerelease versions. Intent-file deletion follows one rule in both storage modes — a file is deletable once every package it names has a ledger entry — with two exemptions: a file whose entries for a still-on-line package are only against prerelease versions survives until that package graduates, and registry mode additionally waits for registry-confirmed archival (see Changelog storage). After graduation such files become ordinary GC candidates.
 
@@ -191,7 +198,7 @@ New code concentrates in a new `releasing/` workspace package (TypeScript) and a
 - **Intent reader**: parse `.changeset/*.md` frontmatter; validate package names against the workspace.
 - **Release-plan assembler**: direct bumps, dependent propagation via the existing project graph (`@pnpm/workspace.pkgs-graph`), fixed-group and epic-band constraints, prerelease-line versioning. For calibration, changesets' equivalent (`@changesets/assemble-release-plan`) is ~660 lines; this is the algorithmic core.
 - **Applier**: version-field updates through the existing format-preserving manifest reader/writer (dependency ranges are never touched — the `workspace:` protocol materializes them at pack time); changelog composition; intent-file lifecycle including per-package consumption state.
-- **CLI commands**: `pnpm change`, `pnpm change status`, `pnpm version -r` (or final names), wired through the existing command infrastructure in `releasing/commands`, with config plumbed through `@pnpm/config`. Prerelease-line membership needs no command — it is declared directly in `pnpm-workspace.yaml`.
+- **CLI commands**: `pnpm change`, `pnpm change status`, `pnpm version -r`, `pnpm version stable/unstable` (or final names), wired through the existing command infrastructure in `releasing/commands`, with config plumbed through `@pnpm/config`.
 
 Existing machinery that needs no change: workspace discovery, the dependency graph, `pnpm publish -r` (topological order, provenance), git utilities, `exportable-manifest`.
 
