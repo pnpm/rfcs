@@ -78,10 +78,24 @@ versioning:
   ignore:
     - "@example/internal-fixtures"
   changelog:
-    format: github   # or a changelog-writer package resolved like a config dependency
+    format: github    # or a changelog-writer package resolved like a config dependency
+    storage: registry # or "repository" (default): see "Changelog storage" below
 ```
 
 Private packages without a `version` field are ignored automatically. The `fixed`/`linked`/`ignore` semantics match changesets so migration is mechanical.
+
+### Changelog storage: the registry as the changelog archive
+
+Committed changelogs are derived data and a chronic source of friction: they dominate release-PR diffs, conflict on every cherry-pick and merge-back, and duplicate what the published packages already carry. `versioning.changelog.storage` selects where the accumulated history lives:
+
+- **`repository`** (default, changesets-compatible): `CHANGELOG.md` is appended in place and committed, as today.
+- **`registry`**: the committed `CHANGELOG.md` holds **only the newest release's section** — it is *replaced*, not appended, on each `pnpm version --workspace` run. At publish time, pnpm fetches the previously published version's tarball, takes its `CHANGELOG.md`, prepends the new section, and packs the concatenation into the new tarball. The full history lives in the published packages; the repository carries a small, constant-size, reviewable file.
+
+The newest-section file is load-bearing in `registry` mode: it is what makes the composed entries reviewable in the release PR, and it carries them across the gap between the version bump (when intent files are consumed) and publish (when the tarball is packed). A design with no committed changelog at all would have to reconstruct entries at publish time from already-deleted intent files, and is rejected for that reason.
+
+The **previous version** is the highest published version semver-lower than the one being published — never a dist-tag lookup. This makes concurrent release lines chain correctly on their own ancestry: `12.0.0-alpha.9` extends `12.0.0-alpha.8`'s changelog, a backport `11.1.5` extends the `11.1.x` line's history, and `11.13.0` extends `11.12.x` even when higher prereleases exist. If the previous version is unpublished, the next-highest is used; a first publish starts the history from the new section alone. The fetched tarball is integrity-verified against the registry metadata, exactly as an install would be.
+
+Trade-offs stated openly: the published artifact embeds registry-fetched content, so it is no longer byte-reproducible from the tagged sources alone; and the full history is no longer browsable in the repository (the published tarballs and GitHub releases become the archive). Repositories that value either property keep the default.
 
 ### Per-package prerelease lines
 
@@ -157,3 +171,5 @@ Risks: versioning tools accrete edge cases (peer-dependency bump semantics, igno
 - **Git integration scope.** Should `pnpm version --workspace` create the release commit/tags itself (and what tag scheme for multi-package releases — `pkg@1.2.3` per package, one tag per run, or configurable), or stay filesystem-only and leave git to CI, as changesets does?
 - **GitHub Action / bot story.** Does pnpm ship a first-party action equivalent to `changesets/action` (open a release PR, publish on merge), or document recipes only?
 - **Name for the intent directory.** Keep `.changeset/` for compatibility, or also read a pnpm-native location (`.pnpm-changes/`) with `.changeset/` as a fallback?
+- **Registry changelog mode: graduation base.** When a package graduates off a prerelease line (`2.1.0` after `2.1.0-alpha.N`), should its changelog chain from the last prerelease (keeping the alpha sections in the history) or from the last stable version (replacing them with the aggregated stable section)?
+- **Registry changelog mode: should `registry` be the default** for new setups, with `repository` as the compatibility mode — or is losing in-repo history browsing too surprising for a default?
