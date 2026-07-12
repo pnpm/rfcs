@@ -68,12 +68,14 @@ pnpm version -r [--filter <pattern>] [--dry-run] [--snapshot [<tag>]]
 
 The bare recursive form:
 
-1. **Assembles a release plan.** Direct bumps from intent files; propagation to dependents through the project graph pnpm already builds (a dependent whose dependency range no longer matches the new version — or that uses `workspace:*`/`workspace:^`/`workspace:~` — receives at least a patch bump); fixed and linked group constraints applied.
-2. **Writes manifests** with pnpm's format-preserving manifest writer, updating both `version` fields and internal dependency ranges (with native understanding of the `workspace:` protocol and catalogs).
+1. **Assembles a release plan.** Direct bumps from intent files; propagation to dependents through the project graph pnpm already builds; fixed and linked group constraints applied.
+2. **Writes manifests** with pnpm's format-preserving manifest writer — touching only `version` fields, never dependency ranges (see below).
 3. **Writes changelogs** — a `CHANGELOG.md` section per released package, composed from the consumed intent summaries.
 4. **Deletes consumed intent files** (with two exceptions below: packages on a prerelease line, and registry changelog storage, which defers deletion by one release).
 
 `pnpm publish -r` then completes the flow unchanged.
+
+**Internal dependency ranges are never rewritten.** The feature requires internal dependencies to be declared with the `workspace:` protocol. pnpm already materializes the concrete range at pack time (`workspace:^` → `^<version>`, `workspace:~` → `~<version>`, `workspace:*` → the exact version), so dependency entries stay byte-identical across releases and the range-rewrite machinery external tools carry does not exist here at all. An internal dependency declared as a plain semver range (or through a `catalog:` entry) fails `pnpm version -r` with an error naming the manifest entry — adopting `workspace:` is a prerequisite for the feature. Dependent propagation follows from the protocol modifier instead of range matching: `workspace:*` republishes dependents on any bump of the dependency, `workspace:~` on minor and above, `workspace:^` on major only — the dependent receives at least a patch bump so its next publish materializes a range that accepts the new version.
 
 ### Configuration
 
@@ -147,7 +149,7 @@ While `@example/cli` is on the `alpha` line, `pnpm version -r` computes the stab
 
 2. **Patch or fork changesets.** Analyzed for pnpm's own repo: the per-package pre-mode feature is implementable in a fork of `@changesets/assemble-release-plan` and friends, but the half-consumed-intent semantics have no clean answer within changesets' file lifecycle, and a fork of a release engine is a permanent maintenance liability for a narrow win. A `pnpm patch` of the engine pins exact versions and breaks on every upgrade.
 
-3. **A new, incompatible intent format.** Designing from scratch would allow richer intents (per-package summaries in one file, machine-readable metadata). But the changesets format has years of ecosystem inertia — bots that comment on PRs missing changesets, the changesets GitHub Action, contributor muscle memory. Compatibility means every existing changesets repo is a potential adopter at the cost of deleting a devDependency, and the format can be extended additively later. The richer-format experiments can live behind the same reader.
+3. **A new, incompatible intent format.** Designing from scratch would allow richer intents (per-package summaries in one file, machine-readable metadata). But the changesets format has years of ecosystem inertia — bots that comment on PRs missing changesets, the changesets GitHub Action, contributor muscle memory. Compatibility means every existing changesets repo is a potential adopter at the cost of deleting a devDependency (plus declaring internal dependencies with the `workspace:` protocol, which most pnpm workspaces already do), and the format can be extended additively later. The richer-format experiments can live behind the same reader.
 
 4. **Adopt/bless an existing alternative (Nx release, release-please, semantic-release).** These couple versioning to a task runner, a forge, or commit-message conventions respectively. pnpm should not require any of the three, and none solves per-package prerelease lines either.
 
@@ -161,12 +163,12 @@ New code concentrates in a new `releasing/` workspace package (TypeScript) and a
 
 - **Intent reader**: parse `.changeset/*.md` frontmatter; validate package names against the workspace.
 - **Release-plan assembler**: direct bumps, dependent propagation via the existing project graph (`@pnpm/workspace.pkgs-graph`), fixed/linked constraints, prerelease-line versioning. For calibration, changesets' equivalent (`@changesets/assemble-release-plan`) is ~660 lines; this is the algorithmic core.
-- **Applier**: manifest updates through the existing format-preserving manifest reader/writer; internal range updates with native `workspace:`/catalog awareness; changelog composition; intent-file lifecycle including per-package consumption state.
+- **Applier**: version-field updates through the existing format-preserving manifest reader/writer (dependency ranges are never touched — the `workspace:` protocol materializes them at pack time); changelog composition; intent-file lifecycle including per-package consumption state.
 - **CLI commands**: `pnpm change`, `pnpm change status`, `pnpm version -r` (or final names), `pnpm version pre enter/exit`, wired through the existing command infrastructure in `releasing/commands`, with config plumbed through `@pnpm/config`.
 
 Existing machinery that needs no change: workspace discovery, the dependency graph, `pnpm publish -r` (topological order, provenance), git utilities, `exportable-manifest`.
 
-**Correctness oracle**: because the input format matches changesets, differential tests can run both engines against the same fixture workspaces and diff the resulting trees (manifests and changelogs) for every feature changesets supports; only the native extensions (per-package prerelease lines) need standalone specification.
+**Correctness oracle**: because the input format matches changesets, differential tests can run both engines against the same fixture workspaces and diff the resulting trees (manifests and changelogs) for every feature changesets supports — fixtures declare internal dependencies with bare `workspace:` protocol specifiers, which both engines leave untouched; only the native extensions (per-package prerelease lines) need standalone specification.
 
 Affected repositories: `pnpm/pnpm` (both stacks, docs for new commands and `pnpm-workspace.yaml` keys), `pnpm/pnpm.io` (documentation), and potentially a migration codemod (`.changeset/config.json` → `versioning:` key).
 
