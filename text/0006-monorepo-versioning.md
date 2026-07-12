@@ -29,7 +29,7 @@ A native release command has been an open request since 2019 ([pnpm/pnpm#2225](h
 
 A new command records an intent file describing which packages a change affects, the bump type for each, and a human-written summary that becomes the changelog entry:
 
-```
+```sh
 pnpm change [--bump <type>] [--summary <text>] [<pkg>...]
 ```
 
@@ -60,7 +60,7 @@ Because the check is a plain command over git and the workspace graph, enforceme
 
 ### Applying versions
 
-```
+```sh
 pnpm version -r [--filter <pattern>] [--dry-run] [--snapshot [<tag>]]
 ```
 
@@ -75,7 +75,7 @@ The bare recursive form:
 
 `pnpm publish -r` then completes the flow unchanged.
 
-**Internal dependency ranges are never rewritten.** The feature requires internal dependencies to be declared with the `workspace:` protocol. pnpm already materializes the concrete range at pack time (`workspace:^` → `^<version>`, `workspace:~` → `~<version>`, `workspace:*` → the exact version), so dependency entries stay byte-identical across releases and the range-rewrite machinery external tools carry does not exist here at all. An internal dependency declared as a plain semver range (or through a `catalog:` entry) fails `pnpm version -r` with an error naming the manifest entry — adopting `workspace:` is a prerequisite for the feature. Dependent propagation follows from the protocol modifier instead of range matching: `workspace:*` republishes dependents on any bump of the dependency, `workspace:~` on minor and above, `workspace:^` on major only — the dependent receives at least a patch bump so its next publish materializes a range that accepts the new version.
+**Internal dependency ranges are never rewritten.** The feature requires internal dependencies to be declared with the `workspace:` protocol. pnpm already materializes the concrete range at pack time (`workspace:^` → `^<version>`, `workspace:~` → `~<version>`, `workspace:*` → the exact version), so dependency entries stay byte-identical across releases and the range-rewrite machinery external tools carry does not exist here at all. An internal dependency declared as a plain semver range (or through a `catalog:` entry) fails `pnpm version -r` with an error naming the manifest entry — adopting `workspace:` is a prerequisite for the feature. Dependent propagation follows from the *materialized* range: pnpm computes the range the modifier produced at the dependent's previous release (`^<prev>`, `~<prev>`, or the exact `<prev>`) and republishes the dependent — with at least a patch bump, so its next publish materializes an accepting range — whenever the dependency's new version falls outside it. Evaluating real semver ranges rather than a per-modifier rule of thumb keeps `0.x` semantics correct: `^0.2.0` does not accept `0.3.0`, so a minor bump of a `0.x` dependency propagates through `workspace:^` even though `^1.2.0` would absorb a minor.
 
 ### Configuration
 
@@ -96,7 +96,7 @@ versioning:
 
 Changesets' third grouping key, `linked` (packages sharing a version *number line* but not release cadence: co-released members get the highest computed version, unchanged members are skipped, and a member releasing alone jumps onto the group's line), is deliberately not in v1. It is rarely used, its jump-to-highest semantics surprise, and it is purely additive to introduce later; a migrated config that uses it fails with a clear error instead of being silently accepted.
 
-One constraint key is adopted from Rush's `lockedMajor` version policy: `versioning.maxBump` caps the bump a release from the current checkout may apply (`maxBump: patch` rejects intents declaring `minor` or `major`). Because `pnpm-workspace.yaml` is committed per branch, a maintenance branch such as `release/11.1` sets the cap once, and a cherry-picked intent carrying a larger bump fails `pnpm version -r` loudly — naming the offending intent file — instead of silently shipping a feature release from a patch line.
+One constraint key is adopted from Rush's `lockedMajor` version policy: `versioning.maxBump` caps the bump a release from the current checkout may apply. The cap is enforced on the **final assembled plan** — after dependent propagation, fixed-group resolution, and epic re-basing — not merely on declared intent types, since any of those can raise a package's effective bump above what its intents say. Because `pnpm-workspace.yaml` is committed per branch, a maintenance branch such as `release/11.1` sets `maxBump: patch` once, and a violation fails `pnpm version -r` loudly, naming both the offending intent file and the constraint chain (propagation, group, or epic) that raised the bump — instead of silently shipping a feature release from a patch line.
 
 ### Epics: version bands tied to a lead package
 
@@ -142,7 +142,7 @@ For migrating changesets repositories, the codemod sets `changelog.storage: repo
 
 Releasing from maintenance branches (`release/11.0`) alongside main is where changesets' file lifecycle breaks down, and pnpm's own repository had to build tooling on top of it: a committed ledger of consumed changeset ids that hides already-released changesets from `changeset version`. Without it, a changeset cherry-picked to a release branch and released there is applied a *second* time when the branch merges back into main; and a merge can equally resurrect intent files one line's release had deleted, or delete files another line still considered pending.
 
-This proposal absorbs that mechanism into the core lifecycle in every storage mode. Each `pnpm version -r` run records the consumed intent ids against the released `package@version` in an append-only, merge-friendly committed ledger, and the pending set is defined as *intent files whose id is not in the ledger* — on any line. The failure modes then resolve by construction:
+This proposal absorbs that mechanism into the core lifecycle in every storage mode. Each `pnpm version -r` run records the consumed intent ids against the released `package@version` in an append-only, merge-friendly committed ledger. Consumption is scoped **per package**, not globally per id: the pending set for a package is the intent files naming it whose id the ledger has not recorded against any of that package's released versions, and a file is fully consumed once every package it names has an entry. Honoring a ledger entry that arrived from another line cannot suppress a bump that line still needs, because an entry only ever travels inside the merge that also carries the release it records — the bumped `version` fields and (in repository mode) the changelog section arrive together, so re-applying the intent would double-bump rather than catch up. The failure modes then resolve by construction:
 
 - **Cherry-pick and release on a branch**: the intent file travels with the cherry-pick, isn't in the branch's ledger, and is consumed for the branch release — the backport gets its changelog entry.
 - **Merge-back resurrects a consumed file**: the merged ledger entry makes it inert; garbage collection removes it later.
@@ -154,7 +154,7 @@ Repository mode deletes intent files at version time as changesets does, but the
 
 The headline capability changesets structurally cannot offer. A package (or fixed group) can be placed on a named prerelease line:
 
-```
+```sh
 pnpm version pre enter alpha --filter @example/cli...
 pnpm version pre exit --filter @example/cli...
 ```
@@ -169,7 +169,7 @@ versioning:
 
 While `@example/cli` is on the `alpha` line, `pnpm version -r` computes the stable target version from the intents as usual (say `2.1.0`), then emits `2.1.0-alpha.N`, incrementing `N` on each run. Packages not listed release stable versions from the same run. Exiting the line releases the accumulated stable version.
 
-**Half-consumed intents are handled explicitly**, which is the design corner that makes this impossible to retrofit into changesets: an intent file may name both a stable package (its portion is consumed and the changelog written now) and a prerelease-line package (its portion must survive until graduation so the stable changelog aggregates every change since the line began). Instead of keeping or deleting whole files, consumption is tracked per package: when an intent is applied to a prerelease-line package, its summary is recorded into a per-package pending-changelog state (under `.changeset/`, exact shape TBD), and the file is deleted once every named package has consumed it. Graduation flushes the accumulated entries into the stable version's changelog section.
+**Half-consumed intents fall out of the ledger's per-package shape** — the design corner that makes this impossible to retrofit into changesets. An intent may name both a stable package and a prerelease-line package: the stable half is consumed now (ledgered under the new stable version), and the line half is consumed at each prerelease it enters (ledgered under `2.1.0-alpha.N`). The ledger is the single authoritative consumption record — there is no separate pending-changelog state: graduation composes the stable version's changelog section by collecting every intent the ledger recorded against the line's prerelease versions. Intent-file deletion follows one rule in both storage modes — a file is deletable once every package it names has a ledger entry — with two exemptions: a file whose entries for a still-on-line package are only against prerelease versions survives until that package graduates, and registry mode additionally waits for registry-confirmed archival (see Changelog storage). After graduation such files become ordinary GC candidates.
 
 ### Snapshot releases
 
