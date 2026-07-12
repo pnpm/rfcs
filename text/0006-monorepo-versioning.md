@@ -61,10 +61,12 @@ Because the check is a plain command over git and the workspace graph, enforceme
 ### Applying versions
 
 ```
-pnpm version --workspace [--dry-run] [--snapshot [<tag>]]
+pnpm version -r [--filter <pattern>] [--dry-run] [--snapshot [<tag>]]
 ```
 
-(Command naming is bikeshed; see Unresolved Questions.) This consumes pending intent files and:
+(Command naming is bikeshed; see Unresolved Questions.) The flags follow pnpm's existing conventions — there is no new `--workspace` concept. `pnpm version` keeps its current npm-style meaning when given an explicit bump argument (`pnpm version patch`, recursively with `-r`); the **bare** recursive form is what consumes pending intents. `--filter` narrows the release to the selected packages' portion of the pending plan, with fixed-group companions and range-invalidated dependents of the selection pulled in — which is how one product line releases from a repository that hosts several.
+
+The bare recursive form:
 
 1. **Assembles a release plan.** Direct bumps from intent files; propagation to dependents through the project graph pnpm already builds (a dependent whose dependency range no longer matches the new version — or that uses `workspace:*`/`workspace:^`/`workspace:~` — receives at least a patch bump); fixed and linked group constraints applied.
 2. **Writes manifests** with pnpm's format-preserving manifest writer, updating both `version` fields and internal dependency ranges (with native understanding of the `workspace:` protocol and catalogs).
@@ -92,13 +94,13 @@ versioning:
 
 Private packages without a `version` field are ignored automatically. The `fixed`/`linked`/`ignore` semantics match changesets so migration is mechanical.
 
-One constraint key is adopted from Rush's `lockedMajor` version policy: `versioning.maxBump` caps the bump a release from the current checkout may apply (`maxBump: patch` rejects intents declaring `minor` or `major`). Because `pnpm-workspace.yaml` is committed per branch, a maintenance branch such as `release/11.1` sets the cap once, and a cherry-picked intent carrying a larger bump fails `pnpm version --workspace` loudly — naming the offending intent file — instead of silently shipping a feature release from a patch line.
+One constraint key is adopted from Rush's `lockedMajor` version policy: `versioning.maxBump` caps the bump a release from the current checkout may apply (`maxBump: patch` rejects intents declaring `minor` or `major`). Because `pnpm-workspace.yaml` is committed per branch, a maintenance branch such as `release/11.1` sets the cap once, and a cherry-picked intent carrying a larger bump fails `pnpm version -r` loudly — naming the offending intent file — instead of silently shipping a feature release from a patch line.
 
 ### Changelog storage: the registry as the changelog archive
 
 Committed changelogs are derived data and a chronic source of friction: they dominate release-PR diffs, conflict on every cherry-pick and merge-back, and record nothing the repository doesn't already hold — every intent file's prose stays in git history after deletion, and the published packages carry the rendered result. `versioning.changelog.storage` selects where the accumulated history lives:
 
-- **`registry`** (default): no changelog file is committed at all. The intent files remain the only copy of the prose: `pnpm version --workspace` bumps manifests and, instead of deleting the consumed intent files, records their ids in a small committed ledger (mapping `package@version` → intent ids), so the tagged release commit is self-contained. At publish time, pnpm composes the release's changelog section from the ledgered intent files present at the tag, fetches the previously published version's tarball, prepends the new section to its `CHANGELOG.md`, and packs the concatenation into the new tarball. Consumed intents are garbage-collected by a later `pnpm version --workspace` run, and the timing is a safety property, not a convenience: until its release is published, the intent file in the repository is the only copy of the prose anywhere, so a file is deleted only when it is (a) ledgered, (b) recorded against a version the registry confirms is published, and (c) not still needed by a package on a prerelease line awaiting graduation. Deletion cannot happen at publish time because publish must not push commits; gating it on registry confirmation makes the lifecycle self-healing — a release that was versioned and tagged but never published keeps its intents (and their prose) intact for a rerun.
+- **`registry`** (default): no changelog file is committed at all. The intent files remain the only copy of the prose: `pnpm version -r` bumps manifests and, instead of deleting the consumed intent files, records their ids in a small committed ledger (mapping `package@version` → intent ids), so the tagged release commit is self-contained. At publish time, pnpm composes the release's changelog section from the ledgered intent files present at the tag, fetches the previously published version's tarball, prepends the new section to its `CHANGELOG.md`, and packs the concatenation into the new tarball. Consumed intents are garbage-collected by a later `pnpm version -r` run, and the timing is a safety property, not a convenience: until its release is published, the intent file in the repository is the only copy of the prose anywhere, so a file is deleted only when it is (a) ledgered, (b) recorded against a version the registry confirms is published, and (c) not still needed by a package on a prerelease line awaiting graduation. Deletion cannot happen at publish time because publish must not push commits; gating it on registry confirmation makes the lifecycle self-healing — a release that was versioned and tagged but never published keeps its intents (and their prose) intact for a rerun.
 - **`repository`** (opt-out, changesets-compatible): `CHANGELOG.md` is appended in place and committed, and intent files are deleted as they are consumed — changesets' behavior, unchanged.
 
 There is deliberately no committed rendering of the changelog in `registry` mode. The prose is reviewed once, in the PR that adds the intent file; the release PR's reviewable surface is the version bumps and the ledger entry, and `pnpm change status` / `--dry-run` renders the exact section that will be packed. Two alternative lifecycles were considered and rejected: committing the newest section into `CHANGELOG.md` duplicates the intent text for no review benefit (churn), and reconstructing deleted intent files from the release commit's diff at publish time breaks under shallow CI checkouts and rewritten release branches. Deleting intents at publish time instead of the next version run would require the publish step to push commits, which it must not.
@@ -131,13 +133,13 @@ versioning:
     "@example/cli": alpha
 ```
 
-While `@example/cli` is on the `alpha` line, `pnpm version --workspace` computes the stable target version from the intents as usual (say `2.1.0`), then emits `2.1.0-alpha.N`, incrementing `N` on each run. Packages not listed release stable versions from the same run. Exiting the line releases the accumulated stable version.
+While `@example/cli` is on the `alpha` line, `pnpm version -r` computes the stable target version from the intents as usual (say `2.1.0`), then emits `2.1.0-alpha.N`, incrementing `N` on each run. Packages not listed release stable versions from the same run. Exiting the line releases the accumulated stable version.
 
 **Half-consumed intents are handled explicitly**, which is the design corner that makes this impossible to retrofit into changesets: an intent file may name both a stable package (its portion is consumed and the changelog written now) and a prerelease-line package (its portion must survive until graduation so the stable changelog aggregates every change since the line began). Instead of keeping or deleting whole files, consumption is tracked per package: when an intent is applied to a prerelease-line package, its summary is recorded into a per-package pending-changelog state (under `.changeset/`, exact shape TBD), and the file is deleted once every named package has consumed it. Graduation flushes the accumulated entries into the stable version's changelog section.
 
 ### Snapshot releases
 
-`pnpm version --workspace --snapshot [tag]` produces one-off `0.0.0-<tag>-<timestamp>` versions without consuming intent files or touching changelogs, matching `changeset version --snapshot` for CI preview publishing.
+`pnpm version -r --snapshot [tag]` produces one-off `0.0.0-<tag>-<timestamp>` versions without consuming intent files or touching changelogs, matching `changeset version --snapshot` for CI preview publishing.
 
 ## Rationale and Alternatives
 
@@ -160,7 +162,7 @@ New code concentrates in a new `releasing/` workspace package (TypeScript) and a
 - **Intent reader**: parse `.changeset/*.md` frontmatter; validate package names against the workspace.
 - **Release-plan assembler**: direct bumps, dependent propagation via the existing project graph (`@pnpm/workspace.pkgs-graph`), fixed/linked constraints, prerelease-line versioning. For calibration, changesets' equivalent (`@changesets/assemble-release-plan`) is ~660 lines; this is the algorithmic core.
 - **Applier**: manifest updates through the existing format-preserving manifest reader/writer; internal range updates with native `workspace:`/catalog awareness; changelog composition; intent-file lifecycle including per-package consumption state.
-- **CLI commands**: `pnpm change`, `pnpm change status`, `pnpm version --workspace` (or final names), `pnpm version pre enter/exit`, wired through the existing command infrastructure in `releasing/commands`, with config plumbed through `@pnpm/config`.
+- **CLI commands**: `pnpm change`, `pnpm change status`, `pnpm version -r` (or final names), `pnpm version pre enter/exit`, wired through the existing command infrastructure in `releasing/commands`, with config plumbed through `@pnpm/config`.
 
 Existing machinery that needs no change: workspace discovery, the dependency graph, `pnpm publish -r` (topological order, provenance), git utilities, `exportable-manifest`.
 
@@ -182,11 +184,11 @@ Risks: versioning tools accrete edge cases (peer-dependency bump semantics, igno
 
 ## Unresolved Questions and Bikeshedding
 
-- **Command naming.** `pnpm change` vs `pnpm changeset` (familiar, but implies the third-party tool) for recording; `pnpm version --workspace` vs a new verb (`pnpm bump` reads well but any new top-level command shadows same-named `package.json` scripts — a real compat hazard, since e.g. pnpm/pnpm itself has a repo script named `bump`).
+- **Command naming.** `pnpm change` vs `pnpm changeset` (familiar, but implies the third-party tool) for recording; `pnpm version -r` vs a new verb (`pnpm bump` reads well but any new top-level command shadows same-named `package.json` scripts — a real compat hazard, since e.g. pnpm/pnpm itself has a repo script named `bump`).
 - **Config key.** `versioning:` vs `release:` vs `changes:` in `pnpm-workspace.yaml`.
 - **Changelog pluggability.** changesets supports custom changelog generators (`@changesets/changelog-github`); should pnpm resolve a changelog-writer package via config dependencies, or start with built-in `plain`/`github` formats only?
 - **Should `.changeset/config.json` be read for migration** (warn-and-translate) or is a codemod enough?
-- **Git integration scope.** Should `pnpm version --workspace` create the release commit/tags itself (and what tag scheme for multi-package releases — `pkg@1.2.3` per package, one tag per run, or configurable), or stay filesystem-only and leave git to CI, as changesets does?
+- **Git integration scope.** Should `pnpm version -r` create the release commit/tags itself (and what tag scheme for multi-package releases — `pkg@1.2.3` per package, one tag per run, or configurable), or stay filesystem-only and leave git to CI, as changesets does?
 - **GitHub Action / bot story.** Does pnpm ship a first-party action equivalent to `changesets/action` (open a release PR, publish on merge), or document recipes only?
 - **Name for the intent directory.** Keep `.changeset/` for compatibility, or also read a pnpm-native location (`.pnpm-changes/`) with `.changeset/` as a fallback?
 - **Interactive UX.** A checkbox TUI (changesets-style), or the `git rebase -i`-style editor buffer listing the touched packages with proposed next versions, as originally sketched in [pnpm/pnpm#2225](https://github.com/pnpm/pnpm/issues/2225)?
