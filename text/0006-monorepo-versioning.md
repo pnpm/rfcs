@@ -1,0 +1,159 @@
+# Native monorepo versioning
+
+## Summary
+
+pnpm gains built-in release management for workspaces: recording change intents as files, consuming them to bump versions across the workspace (with dependent propagation, fixed/linked groups, and per-package prerelease lines), and writing changelogs. The intent-file format is compatible with [changesets](https://github.com/changesets/changesets), so existing repositories can adopt it by deleting a devDependency. Configuration lives in `pnpm-workspace.yaml`.
+
+## Motivation
+
+pnpm already owns both ends of the release pipeline. It installs and links the workspace, understands the `workspace:` protocol, builds the project dependency graph, rewrites manifests at pack time (`publishConfig`, `workspace:` ranges, catalogs), and publishes recursively in topological order with provenance and trusted publishing. The one step in the middle — deciding *what version everything becomes next* — is delegated to external tools, most commonly changesets.
+
+That delegation has real costs:
+
+1. **A second tool with a second config.** Every workspace that releases packages carries `@changesets/cli` as a devDependency, a `.changeset/config.json` that duplicates knowledge pnpm already has (which packages exist, which are private, how they depend on each other), and a second mental model for contributors.
+
+2. **The external engine cannot use what pnpm knows.** Changesets re-derives the workspace through `@manypkg`, has its own partial understanding of the `workspace:` protocol, and knows nothing about catalogs. Dependent propagation ("bump the packages whose dependency ranges no longer match") is a graph question pnpm answers natively for `--filter` and topological builds.
+
+3. **Structural limitations show up in real repositories.** pnpm's own monorepo hit three while unifying its release process (pnpm/pnpm#12949):
+   - **Prerelease mode is global to the workspace.** Changesets' pre mode is a single `pre.json` for everything, so a repo cannot release stable versions of some packages while others sit on a prerelease line (e.g. `12.0.0-alpha.N`). pnpm's repo works around this with a script that re-derives prerelease versions after every `changeset version` run.
+   - **Everything is keyed by package name.** The changeset file format references packages by bare name, so the engine silently misbehaves when names collide, and there is no way to aggregate prerelease changelogs per package.
+   - **Only `X.Y.Z-tag.N` prerelease lines are expressible.** Any other scheme has to be abandoned or maintained by hand.
+
+4. **The ecosystem around versioning is consolidating away from neutral tools.** Lerna is maintained by Nx and steers toward Nx adoption; changesets is community-maintained with a slow release cadence. A package manager is the natural neutral home for this capability, the same way `pnpm patch`, catalogs, and workspace publishing absorbed adjacent territory.
+
+The expected outcome: a pnpm workspace can go from "PR merged" to "published with correct versions and changelogs" using pnpm alone, and repositories with per-package release trains (the situation pnpm's own monorepo is in) are supported natively instead of via wrapper scripts.
+
+## Detailed Explanation
+
+### Recording change intents
+
+A new command records an intent file describing which packages a change affects, the bump type for each, and a human-written summary that becomes the changelog entry:
+
+```
+pnpm change [--bump <type>] [--summary <text>] [<pkg>...]
+```
+
+Run without arguments it is interactive (select packages, select bump types, write the summary), mirroring `changeset add`. With flags it is scriptable.
+
+The on-disk format is the changesets format, unchanged — a Markdown file with YAML frontmatter in `.changeset/`:
+
+```markdown
+---
+"@example/ui": minor
+"@example/core": patch
+---
+
+Added a `variant` prop to `Button`.
+```
+
+Format compatibility is a deliberate, load-bearing choice (see Rationale). Existing `.changeset/*.md` files written by humans, bots, or the changesets CLI are consumed as-is.
+
+`pnpm change status` reports pending intents and the release plan they would produce (the equivalent of `changeset status`).
+
+### Applying versions
+
+```
+pnpm version --workspace [--dry-run] [--snapshot [<tag>]]
+```
+
+(Command naming is bikeshed; see Unresolved Questions.) This consumes pending intent files and:
+
+1. **Assembles a release plan.** Direct bumps from intent files; propagation to dependents through the project graph pnpm already builds (a dependent whose dependency range no longer matches the new version — or that uses `workspace:*`/`workspace:^`/`workspace:~` — receives at least a patch bump); fixed and linked group constraints applied.
+2. **Writes manifests** with pnpm's format-preserving manifest writer, updating both `version` fields and internal dependency ranges (with native understanding of the `workspace:` protocol and catalogs).
+3. **Writes changelogs** — a `CHANGELOG.md` section per released package, composed from the consumed intent summaries.
+4. **Deletes consumed intent files** (with the prerelease-line exception below).
+
+`pnpm publish -r` then completes the flow unchanged.
+
+### Configuration
+
+Configuration lives in `pnpm-workspace.yaml` under a single key, replacing `.changeset/config.json`:
+
+```yaml
+versioning:
+  fixed:
+    - ["@example/cli", "@example/cli-bindings"]
+  linked:
+    - ["@example/plugin-*"]
+  ignore:
+    - "@example/internal-fixtures"
+  changelog:
+    format: github   # or a changelog-writer package resolved like a config dependency
+```
+
+Private packages without a `version` field are ignored automatically. The `fixed`/`linked`/`ignore` semantics match changesets so migration is mechanical.
+
+### Per-package prerelease lines
+
+The headline capability changesets structurally cannot offer. A package (or fixed group) can be placed on a named prerelease line:
+
+```
+pnpm version pre enter alpha --filter @example/cli...
+pnpm version pre exit --filter @example/cli...
+```
+
+Membership is recorded in `pnpm-workspace.yaml` (`versioning.prereleases`), so it is reviewable state, and it is **per package**, not per workspace:
+
+```yaml
+versioning:
+  prereleases:
+    "@example/cli": alpha
+```
+
+While `@example/cli` is on the `alpha` line, `pnpm version --workspace` computes the stable target version from the intents as usual (say `2.1.0`), then emits `2.1.0-alpha.N`, incrementing `N` on each run. Packages not listed release stable versions from the same run. Exiting the line releases the accumulated stable version.
+
+**Half-consumed intents are handled explicitly**, which is the design corner that makes this impossible to retrofit into changesets: an intent file may name both a stable package (its portion is consumed and the changelog written now) and a prerelease-line package (its portion must survive until graduation so the stable changelog aggregates every change since the line began). Instead of keeping or deleting whole files, consumption is tracked per package: when an intent is applied to a prerelease-line package, its summary is recorded into a per-package pending-changelog state (under `.changeset/`, exact shape TBD), and the file is deleted once every named package has consumed it. Graduation flushes the accumulated entries into the stable version's changelog section.
+
+### Snapshot releases
+
+`pnpm version --workspace --snapshot [tag]` produces one-off `0.0.0-<tag>-<timestamp>` versions without consuming intent files or touching changelogs, matching `changeset version --snapshot` for CI preview publishing.
+
+## Rationale and Alternatives
+
+1. **Status quo: keep recommending changesets.** Zero implementation cost. But the pains in Motivation are structural, not bugs to wait out: global pre mode and name-keyed data cannot be fixed in changesets without changing its file format, which its ecosystem cannot absorb. pnpm's own monorepo already maintains a wrapper script re-implementing prerelease versioning after every changesets run — evidence that sophisticated workspaces outgrow the tool.
+
+2. **Patch or fork changesets.** Analyzed for pnpm's own repo: the per-package pre-mode feature is implementable in a fork of `@changesets/assemble-release-plan` and friends, but the half-consumed-intent semantics have no clean answer within changesets' file lifecycle, and a fork of a release engine is a permanent maintenance liability for a narrow win. A `pnpm patch` of the engine pins exact versions and breaks on every upgrade.
+
+3. **A new, incompatible intent format.** Designing from scratch would allow richer intents (per-package summaries in one file, machine-readable metadata). But the changesets format has years of ecosystem inertia — bots that comment on PRs missing changesets, the changesets GitHub Action, contributor muscle memory. Compatibility means every existing changesets repo is a potential adopter at the cost of deleting a devDependency, and the format can be extended additively later. The richer-format experiments can live behind the same reader.
+
+4. **Adopt/bless an existing alternative (Nx release, release-please, semantic-release).** These couple versioning to a task runner, a forge, or commit-message conventions respectively. pnpm should not require any of the three, and none solves per-package prerelease lines either.
+
+Native, format-compatible implementation is the only option that removes the second tool, exploits pnpm's own workspace knowledge, and fixes the structural limitations — while keeping the migration cost near zero.
+
+## Implementation
+
+All user-visible behavior lands in both CLI stacks of pnpm/pnpm (the TypeScript CLI and the Rust port), per that repository's parity rule; the two implementations share the file formats and can share test fixtures.
+
+New code concentrates in a new `releasing/` workspace package (TypeScript) and a matching crate (Rust):
+
+- **Intent reader**: parse `.changeset/*.md` frontmatter; validate package names against the workspace.
+- **Release-plan assembler**: direct bumps, dependent propagation via the existing project graph (`@pnpm/workspace.pkgs-graph`), fixed/linked constraints, prerelease-line versioning. For calibration, changesets' equivalent (`@changesets/assemble-release-plan`) is ~660 lines; this is the algorithmic core.
+- **Applier**: manifest updates through the existing format-preserving manifest reader/writer; internal range updates with native `workspace:`/catalog awareness; changelog composition; intent-file lifecycle including per-package consumption state.
+- **CLI commands**: `pnpm change`, `pnpm change status`, `pnpm version --workspace` (or final names), `pnpm version pre enter/exit`, wired through the existing command infrastructure in `releasing/commands`, with config plumbed through `@pnpm/config`.
+
+Existing machinery that needs no change: workspace discovery, the dependency graph, `pnpm publish -r` (topological order, provenance), git utilities, `exportable-manifest`.
+
+**Correctness oracle**: because the input format matches changesets, differential tests can run both engines against the same fixture workspaces and diff the resulting trees (manifests and changelogs) for every feature changesets supports; only the native extensions (per-package prerelease lines) need standalone specification.
+
+Affected repositories: `pnpm/pnpm` (both stacks, docs for new commands and `pnpm-workspace.yaml` keys), `pnpm/pnpm.io` (documentation), and potentially a migration codemod (`.changeset/config.json` → `versioning:` key).
+
+Risks: versioning tools accrete edge cases (peer-dependency bump semantics, ignored-package dependents, `workspace:` range edge cases at publish time). Scoping v1 to changesets-parity-plus-prerelease-lines bounds this; the differential oracle keeps parity honest.
+
+## Prior Art
+
+- **changesets** — the intent-file model this RFC adopts; its global pre mode and name-keyed format are the structural limits addressed here.
+- **Lerna** (`lerna version`) — fixed/independent modes; couples versioning to its own workspace model; now maintained by Nx.
+- **Rush** (`rush change`) — per-PR change files enforced by CI, JSON format; the same intent-file idea with heavier ceremony.
+- **Yarn Berry** (`yarn version check` / deferred versions) — records deferred version bumps as workspace state and enforces them in CI; the closest prior art for a package manager owning versioning natively.
+- **Nx release** — release groups are prior art for fixed/linked semantics; requires Nx.
+- **cargo-release / release-plz** — single-ecosystem release managers demonstrating changelog-from-intent and workspace propagation in Rust.
+
+## Unresolved Questions and Bikeshedding
+
+- **Command naming.** `pnpm change` vs `pnpm changeset` (familiar, but implies the third-party tool) for recording; `pnpm version --workspace` vs a new verb (`pnpm bump` reads well but any new top-level command shadows same-named `package.json` scripts — a real compat hazard, since e.g. pnpm/pnpm itself has a repo script named `bump`).
+- **Config key.** `versioning:` vs `release:` vs `changes:` in `pnpm-workspace.yaml`.
+- **Changelog pluggability.** changesets supports custom changelog generators (`@changesets/changelog-github`); should pnpm resolve a changelog-writer package via config dependencies, or start with built-in `plain`/`github` formats only?
+- **Should `.changeset/config.json` be read for migration** (warn-and-translate) or is a codemod enough?
+- **Git integration scope.** Should `pnpm version --workspace` create the release commit/tags itself (and what tag scheme for multi-package releases — `pkg@1.2.3` per package, one tag per run, or configurable), or stay filesystem-only and leave git to CI, as changesets does?
+- **GitHub Action / bot story.** Does pnpm ship a first-party action equivalent to `changesets/action` (open a release PR, publish on merge), or document recipes only?
+- **Name for the intent directory.** Keep `.changeset/` for compatibility, or also read a pnpm-native location (`.pnpm-changes/`) with `.changeset/` as a fallback?
