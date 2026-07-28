@@ -281,6 +281,15 @@ does not make that collision worse, but content addressing does not solve it.
 Until registry identity is represented unambiguously, one lockfile can contain
 only one selected registry and artifact for a given `name@version`.
 
+Revision ordinals are registry-scoped, not global. The same `name@version`
+may have different revision histories on different registries, so
+re-resolving a `+rN` spec against a different registry can select different
+bytes, a different ordinal for the same bytes, or fail. A frozen install
+stays safe regardless — it fetches by complete digest and verifies the bytes
+— but portability across registry configuration guarantees integrity, never
+availability or identical ordinal meaning. An ordinal-addressed spec is an
+assertion about the currently effective registry.
+
 ### Historical lockfile verification
 
 A historical lockfile may contain `?r1` while current metadata selects `?r2`:
@@ -395,6 +404,13 @@ Rules:
 - On a revision-aware registry the `r<digits>` build-metadata namespace is
   reserved for revision selection; specs carrying any other build metadata are
   ordinary specs.
+- Rewriting applies once: a `+rN` result — including a version-changing
+  target such as `2.7.5+r1` — is never re-matched against overrides, so
+  revision selection cannot chain or cycle.
+- Two specs demanding different revisions of the same `name@version` in one
+  graph (for example, parent-scoped overrides pinning `+r0` and `+r1`) are an
+  explicit resolution error until integrity becomes part of the package key;
+  pnpm must not silently unify them.
 
 Like any exact-selector override, a `+rN` override **pins the version**: a
 dependency declared `^2.7.0` stays on `2.7.4+r0` after upstream publishes a
@@ -453,7 +469,9 @@ separate pnpm policy choice.
 Current pnpm package keys permit only one artifact revision of a registry
 `name@version` in a graph. This RFC lets different lockfiles reproducibly pin
 different revisions and lets a registry move its selected revision. It does
-not allow `r1` and `r2` to coexist under one package key.
+not allow `r1` and `r2` to coexist under one package key. Overrides or specs
+demanding different revisions of one `name@version` therefore fail resolution
+with an explicit conflict rather than silently unifying.
 
 Adding integrity and registry identity to package keys would be a separate
 lockfile format change.
@@ -588,6 +606,10 @@ Tests should cover:
 - a `+r0` override applying to an intersecting declared range and pinning the
   original, and a positive `+rN` override adopting an advertised replacement;
 - a `+rN` spec declared directly as a dependency;
+- rewriting applied once: no re-matching of `+rN` results, no chains or
+  cycles through version-changing targets;
+- conflicting revision demands for one `name@version` failing with an
+  explicit error;
 - an override naming an unadvertised ordinal failing resolution;
 - a pinned revision resolving with its own dependency metadata;
 - revision refresh skipping override-pinned packages;

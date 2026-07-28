@@ -164,9 +164,12 @@ directly from registry plus integrity.
 3. **Every protocol-aware integrity is marked.** Every integrity served
    through this protocol ends in one canonical `?rN` option; the original is
    `?r0`.
-4. **Revision ordinals are stable.** A distinct accepted replacement receives
-   the next positive integer. Numbers are never reassigned. Selecting a
-   previously accepted artifact again uses its existing ordinal.
+4. **Revision ordinals are stable and uniquely allocated.** A distinct
+   accepted replacement receives the next positive integer. Numbers are never
+   reassigned. Selecting a previously accepted artifact again uses its
+   existing ordinal. Within one registry, `(name, version, digest)` maps to
+   exactly one ordinal; allocation is transactional, so concurrent refreshes
+   and retries cannot assign two ordinals to one digest.
 5. **History is append-only.** Selecting a revision never removes or mutates an
    older artifact record or object.
 6. **Content addressing is registry-scoped.** A digest locates an object inside
@@ -190,6 +193,7 @@ opaque tarball; that delivery encoding is not exposed to consumers:
 ```jsonc
 {
   "schema": "pnpr-patch-manifest/1",
+  "sequence": 42,
   "entries": {
     "ejs@2.7.4": {
       "revision": "echo-r2",
@@ -205,6 +209,15 @@ opaque tarball; that delivery encoding is not exposed to consumers:
 pnpr verifies the manifest signature, downloads the artifact, verifies its
 complete integrity, and stores it in the selected registry's
 content-addressed store before making it visible.
+
+The signed document carries a monotonic `sequence`. pnpr persists the highest
+sequence it has accepted per provider and rejects any manifest whose sequence
+is not greater: a valid signature over an older document must not be able to
+replay earlier selections and reselect a vulnerable revision. Moving selection
+backward — withdrawing a bad patch, restoring the original — therefore always
+requires either a new, higher-sequence manifest from the provider or an
+explicit, separately authorized operator operation, never a replayed
+document.
 
 The verified tarball must contain the original `name` and `version`. A provider
 may use aliases or revision identifiers in its distribution system, but the
@@ -277,10 +290,13 @@ tarballs, and keeps the endpoint independent of provider naming.
 
 The registry base remains load-bearing for security. A request to
 `/~main/-/tarballs/...` is authorized in `main` and succeeds only if that
-registry has an allowed reference to the digest. pnpr may deduplicate physical
-storage globally, but it must not expose an object merely because another
-organization or registry stored the same digest. Knowledge of a digest is not
-a bearer credential.
+registry references the digest through at least one package identity the
+requesting principal may access. When one registry serves packages under
+different access rules, the digest route evaluates the principal against
+those package-level rules; "the registry references this digest" alone is
+not sufficient. pnpr may deduplicate physical storage globally, but it must
+not expose an object merely because another organization or registry stored
+the same digest. Knowledge of a digest is not a bearer credential.
 
 Successful public responses are ordinary immutable CDN objects:
 
@@ -410,16 +426,20 @@ Each revision entry carries a `manifest` object holding the
 resolution-relevant fields of its artifact — the same per-version subset the
 abbreviated packument serves: `dependencies`, `optionalDependencies`,
 `peerDependencies`, `peerDependenciesMeta`, `bundledDependencies`, `bin`,
-`engines`, `os`, `cpu`, `libc`, `hasInstallScript`, and `deprecated`.
+`engines`, `os`, `cpu`, `libc`, and `hasInstallScript`.
 Revisions may legally differ in any of them, and the companion RFC lets a
 client resolve a non-selected revision — an override pinning `+rN` — without
 first downloading its tarball. These fields are always derived from the
 verified tarball's `package.json`, exactly as the selected projection is; a
 provider manifest cannot declare metadata that diverges from its artifact's
-bytes. The full packument may additionally carry all provenance fields.
-Abbreviated metadata should keep current `dist` plus the integrity, digest
-URL, and `manifest` of historical revisions, so revision pinning works from
-the metadata pnpm actually fetches. An unpatched version does not need a
+bytes. Registry-managed mutable metadata is deliberately excluded from the
+subset: `deprecated` can change after publication through `npm deprecate`,
+so it lives on the projected version entry as ordinary mutable registry
+metadata, never inside an immutable revision record. The full packument may
+additionally carry all provenance fields. Abbreviated metadata should keep
+current `dist` plus the integrity, digest URL, and `manifest` of historical
+revisions, so revision pinning works from the metadata pnpm actually
+fetches. An unpatched version does not need a
 `dist.revisions` array, but its `dist.tarball` still uses the digest URL and
 its `dist.integrity` still carries `?r0`.
 
@@ -536,6 +556,11 @@ refresh that accepts a distinct artifact follows this order:
 6. Atomically update the projected version entry and `dist`.
 7. Invalidate projected full and abbreviated packuments.
 
+Steps 4 through 6 execute as one transaction keyed by
+`(registry, name, version, digest)`: a retry after a partial failure observes
+the existing mapping and never allocates a second ordinal for the same
+digest, and two concurrent refreshes cannot both allocate.
+
 No tarball cache object is invalidated or overwritten. Metadata never advertises
 an integrity URL before it is available.
 
@@ -550,6 +575,17 @@ This matters for a vulnerable original. A reproducibility policy may retain it
 indefinitely; strict enforcement may deliberately block it even though an old
 lockfile then cannot install through that registry. Patch selection must not
 silently weaken a registry's separate screening policy.
+
+Immutability is a statement about bytes, not availability: a successful
+response for a digest URL always carries the same bytes, but policy may stop
+the URL from answering successfully. A transition to refusal is effective
+only once the edge stops serving, so deployments that publish long public
+cache lifetimes must purge affected objects on such transitions, and a
+registry whose policy may require immediate refusal should prefer
+authorization-aware (non-shared) caching for the affected class of artifacts
+over year-long shared caching. Policy applies to the artifact, never the
+route: the canonical URL and the digest URL must give the same answer for the
+same bytes, so the canonical route can never serve as a policy bypass.
 
 ### Auditing a revision
 
@@ -735,6 +771,12 @@ Tests should cover:
 - selected metadata derived from the verified tarball;
 - a dependency-changing revision updating snapshot and integrity together;
 - provider conflict rejection;
+- a replayed lower-sequence manifest rejected despite a valid signature;
+- concurrent refreshes and retries allocating exactly one ordinal per digest;
+- digest requests evaluated against the principal's package-level access, not
+  mere registry membership;
+- policy refusal answered identically on canonical and digest routes, with
+  edge purge or non-shared caching on the transition;
 - retention and screening policy on historical objects;
 - audit/VEX evaluation tied to exact integrity.
 
