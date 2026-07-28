@@ -3,40 +3,56 @@
 ## Summary
 
 pnpr should be able to project a provider's patched build directly over the
-original package's `name@version`, without exposing a provider package alias or
-inventing a version suffix. The projected package document keeps the ordinary
-canonical tarball URL and identifies the currently selected build through
-`dist.integrity`. It also advertises an append-only history of every artifact
-revision previously served for that `name@version`.
+original package's `name@version`, without exposing a provider alias or
+inventing a version suffix. Every accepted artifact is stored and served from
+an immutable, registry-scoped URL identified by its complete sha512 digest:
 
-The canonical URL is a movable pointer for clients that have not resolved the
-package before. Every underlying artifact is immutable and is additionally
-available from an integrity-addressed URL derived from the canonical URL.
-A client that already has an integrity pin can send that full SRI value in a
-`Pnpr-Expected-Integrity` request header, and pnpr returns or redirects to that
-exact historical revision. A companion pnpm change specifies this request
-header and a metadata-assisted fallback when an intermediary ignores it.
+```text
+https://registry.example/-/tarballs/sha512/<base64url-digest>
+```
 
-This makes the distinction explicit:
+The selected version's `dist.tarball` points directly at that URL and
+`dist.integrity` contains the corresponding SRI value. The package document
+also advertises an append-only history of the original artifact and every patch
+revision previously selected for that `name@version`.
 
-> `name@version` selects the registry's current artifact revision.
-> `name@version+integrity` identifies immutable bytes.
+Patched integrities may carry an optional, namespaced SRI option as a
+human-readable revision hint:
 
-Fresh resolutions receive the current patched build. Updated pnpm clients can
-keep existing lockfiles on exactly the bytes they pinned. The lockfile
-integrity is never silently replaced.
+```text
+sha512-<base64-digest>?pnpr-patch=echo-r2
+```
+
+The option is preserved in metadata and lockfiles but is not part of the
+content address or integrity comparison.
+
+The ordinary canonical npm URL
+`<registry>/<name>/-/<name>-<version>.tgz` never changes: it continues to serve
+the original upstream artifact. Consequently, old lockfiles remain
+reproducible in every existing npm-compatible client. Fresh resolutions in
+pnpm, npm, and Yarn receive the selected patched artifact directly from its
+immutable URL in one CDN request.
+
+This makes the identity split explicit:
+
+> `name@version` selects the registry's current approved revision.
+> The complete integrity identifies immutable bytes.
+
+The companion pnpm RFC specifies a host-portable relative lockfile encoding for
+these URLs, historical URL verification, and an operation that refreshes
+artifact revisions without changing package versions.
 
 ## Motivation
 
-### Patch providers deliberately preserve the original version
+### Patch providers preserve the original version
 
 Vendors such as Echo produce security-remediated builds of existing package
-versions. The application asked for `ejs@2.7.4`, the patched package still
-reports `ejs@2.7.4`, and ordinary semver ranges and peer dependency checks
-should continue to see `2.7.4`.
+versions. An application asked for `ejs@2.7.4`; the patched artifact still
+represents `ejs@2.7.4`, and semver ranges, peer dependencies, and runtime
+version checks should continue to see `2.7.4`.
 
-Encoding the provider into a package alias gives this operation a large client
-surface:
+Encoding the provider into a consumer-visible alias gives that registry policy
+a large client surface:
 
 ```jsonc
 {
@@ -48,23 +64,21 @@ surface:
 }
 ```
 
-The provider scope must be routed and authenticated on every client. The
-provider package appears as a different package in lockfiles, SBOMs, license
-tools, advisory databases, and runtime package metadata. A second patch of the
-same upstream version also needs another provider-side package identity or
-version, even though those are delivery details rather than application
-dependency identities.
+The provider scope must then be routed and authenticated on every client. A
+different package name enters lockfiles, SBOMs, license tools, advisory
+databases, and runtime metadata. A second provider patch also requires another
+provider-side package identity or version, although the provider's delivery
+scheme is not part of the application's dependency identity.
 
 For a registry-wide remediation policy, the intended operation is simpler:
 when this registry resolves `ejs@2.7.4`, its current approved artifact is
 Echo's second patch of `ejs@2.7.4`.
 
-### A patched build can itself need another patch
+### One upstream version can have several patch revisions
 
-There is not necessarily one patched artifact per upstream version. A provider
-may issue revision 1 for one vulnerability and revision 2 when another
-vulnerability is discovered in the same old release line. Both builds must
-remain reproducible:
+A provider can issue revision 1 for one vulnerability and revision 2 when
+another vulnerability is found in the same old release line. Every accepted
+artifact must remain reproducible:
 
 ```text
 ejs@2.7.4 + sha512-<upstream>    original artifact
@@ -72,25 +86,23 @@ ejs@2.7.4 + sha512-<echo-r1>     first provider revision
 ejs@2.7.4 + sha512-<echo-r2>     current provider revision
 ```
 
-Making each revision a package name creates one packument per revision.
-Encoding it into the version introduces prerelease semantics and makes the
-version reported by the package untrue. Integrity is already the value npm
-lockfiles use to distinguish and authenticate the actual bytes, so it is the
-natural revision key.
+Encoding revisions as names creates one package document per patch. Encoding
+them as versions introduces prerelease semantics and changes the version
+reported by the package. Integrity already authenticates npm tarballs and
+distinguishes their actual bytes, so it is the natural revision identifier.
 
-### The old integrity must remain authoritative
+### Immutable URLs preserve lockfiles and make CDNs fast
 
-Changing the bytes returned by the canonical npm tarball URL breaks an old
-lockfile unless the registry can learn which bytes that lockfile expected.
-The HTTP request normally carries only the URL; the expected SRI value remains
-inside the client.
+Serving new bytes from an old canonical URL breaks lockfiles and makes shared
+caches ambiguous. Sending an integrity selector in a request header can recover
+old content, but it requires special CDN forwarding and either a varying cache
+key or an extra redirect.
 
-The client can provide that missing dimension. With the expected integrity in
-the request, the canonical URL becomes equivalent to a mutable OCI tag while
-the integrity-qualified URL is equivalent to an immutable digest reference.
-The server can select the correct historical representation before sending a
-tarball, and the client still verifies the complete response against its
-lockfile.
+A digest in the URL needs neither. Every representation has one ordinary,
+immutable cache key. pnpm already knows the integrity before fetching, and all
+npm clients already follow the `dist.tarball` URL from the package document.
+The registry can therefore select the current revision in metadata while
+keeping every tarball route immutable.
 
 ## Detailed Explanation
 
@@ -99,43 +111,40 @@ lockfile.
 - An **original identity** is an npm package `name@version`, for example
   `ejs@2.7.4`.
 - An **artifact revision** is one exact tarball for that identity, identified
-  by its complete SRI value.
-- The **current revision** is the artifact returned to a client that resolves
-  the version now and sends no previously locked integrity.
+  by its complete sha512 SRI value.
+- The **selected revision** is the artifact advertised by the current version
+  document.
 - The **canonical URL** is the ordinary npm tarball URL derived from registry,
-  name, and version:
-  `https://registry.example/ejs/-/ejs-2.7.4.tgz`.
-- A **revision URL** is the canonical URL with a URL-safe integrity suffix:
-  `https://registry.example/ejs/-/ejs-2.7.4.tgz+sha512.<base64url>`.
+  name, and version.
+- The **integrity URL** is a registry-scoped content address containing the
+  complete digest.
 
 The following invariants are required:
 
-1. **Full integrity is artifact identity.** pnpr stores and looks up revisions
-   by the complete SRI value. A truncated digest is never an identity or a
-   security decision.
-2. **Revision URLs are immutable.** Once a revision URL has returned bytes, it
-   may never return different bytes.
-3. **History is append-only.** Selecting a new current revision does not
-   remove or mutate older revision records.
-4. **The lockfile wins.** The request header selects bytes; it never authorizes
-   pnpm to replace the integrity already in its lockfile.
-5. **Unknown integrity fails closed.** If a request names an integrity that is
-   not retained for that exact registry, package name, and version, pnpr does
-   not fall back to the current revision.
-6. **One selected revision per identity.** Within one projected registry,
-   exactly one revision of a `name@version` is current. Conflict between
-   provider policies is a configuration error, not an implicit precedence
-   rule.
-7. **Resolution metadata is revision-bound.** The projected version metadata
-   comes from the same integrity-verified artifact as its tarball, and a
-   lockfile revision update replaces the integrity and dependency snapshot
-   together.
+1. **Full sha512 is artifact identity.** A truncated digest or SRI option is
+   never an object key, authorization input, or security decision.
+2. **Every tarball URL is immutable.** The canonical URL remains on the
+   original artifact, and an integrity URL always returns the bytes named by
+   its digest.
+3. **History is append-only.** Selecting a new revision never removes or
+   mutates an older revision record or object.
+4. **Content addressing is registry-scoped.** A digest locates an object inside
+   one addressed registry; it does not bypass that registry's authorization or
+   expose a global content store.
+5. **One selected revision per identity.** Within one projected registry,
+   exactly one revision of a `name@version` is current. Provider conflicts are
+   configuration errors, not implicit precedence.
+6. **Metadata is revision-bound.** The projected version metadata is derived
+   from the same verified artifact as `dist.integrity`, and a revision update
+   replaces the integrity and dependency snapshot together.
+7. **The lockfile wins.** Existing resolutions keep their integrity URL until
+   an explicit resolution or patch-refresh operation changes them.
 
 ### Provider input remains integrity-pinned
 
-Patch providers publish a signed manifest that maps an original identity to an
-immutable artifact. The artifact may be stored as a provider package or as an
-opaque tarball; that internal encoding is not exposed to package consumers:
+Patch providers publish a signed manifest mapping an original identity to an
+immutable artifact. The artifact may be stored as a provider package or an
+opaque tarball; that delivery encoding is not exposed to consumers:
 
 ```jsonc
 {
@@ -152,24 +161,18 @@ opaque tarball; that internal encoding is not exposed to package consumers:
 }
 ```
 
-pnpr verifies the manifest signature, fetches the artifact, verifies its full
-integrity, and stores it in the selected registry's content-addressed cache
-before making it current. A manifest refresh is pinned and applied atomically:
-packument metadata must not advertise a revision before its immutable tarball
-is available.
+pnpr verifies the manifest signature, downloads the artifact, verifies its full
+integrity, and stores it in the selected registry's content-addressed store
+before making it visible. A compromised provider can refuse to deliver a new
+artifact, but it cannot replace bytes pnpr already accepted under an integrity.
 
 The verified tarball must contain the original `name` and `version`. A provider
-may use scoped package names or revision numbers inside its own distribution
-system, but the artifact it offers for projection must still identify itself
-as `ejs@2.7.4`. pnpr does not rewrite `package.json` after verification, because
-doing so would create different bytes from the provider's signed integrity.
+may use aliases or revision identifiers in its distribution system, but the
+artifact offered for projection must still identify itself as `ejs@2.7.4`.
+pnpr does not rewrite `package.json` after verification because that would
+produce bytes different from the provider's signed integrity.
 
-The provider remains an uncontrolled origin. Its declared integrity is useful
-only because pnpr enforces it at ingestion and serves the verified bytes from
-the pnpr registry. A compromised provider may refuse to serve a new revision,
-but it cannot replace an already accepted revision with different bytes.
-
-An illustrative configuration is:
+Illustrative configuration:
 
 ```yaml
 registries:
@@ -196,16 +199,68 @@ patchProviders:
       tokenEnv: ECHO_PATCH_TOKEN
 ```
 
-The provider credential and its artifact namespace are server-side details.
-A consumer configures only the `main` registry; it does not configure an
-`@echo-patch` scope or a named Echo registry.
+Provider credentials and artifact locations remain server-side. Consumers
+configure only the `main` registry; they do not configure an `@echo-patch`
+scope or named Echo registry.
+
+### Integrity URL
+
+The content-addressed route is relative to the npm registry root:
+
+```text
+<registry-base>/-/tarballs/<algorithm>/<base64url-digest>
+```
+
+Examples:
+
+```text
+https://registry.example/-/tarballs/sha512/AbCd...
+https://pnpr.example/~main/-/tarballs/sha512/AbCd...
+```
+
+The complete sha512 digest uses base64url without padding. Raw SRI base64 is not
+embedded because `/`, `+`, and `=` have awkward URL and intermediary
+semantics. The corresponding package metadata continues to use standard SRI:
+
+```text
+sha512-<base64-digest>?pnpr-patch=echo-r2
+```
+
+The optional suffix is excluded when deriving the URL. Two SRI strings with
+the same algorithm and digest but different options therefore identify the
+same immutable object.
+
+The package name and version are intentionally absent from the integrity URL.
+The digest alone locates the object in the registry's content-addressed index,
+deduplicates identical tarballs, and keeps the endpoint independent of any
+provider revision naming scheme.
+
+The registry base remains load-bearing for security. A request to
+`/~main/-/tarballs/...` is authorized in `main` and succeeds only if that
+registry has an allowed reference to the digest. pnpr may deduplicate physical
+storage globally, but it must not expose a global `/-/tarballs/...` object merely
+because another organization or registry stored the same digest. Knowledge of
+a digest is not a bearer credential.
+
+Successful responses are ordinary immutable CDN objects:
+
+```http
+HTTP/1.1 200 OK
+Cache-Control: public, max-age=31536000, immutable
+ETag: "<full-digest>"
+Content-Digest: sha-512=:<base64>:
+```
+
+Private registries use cache directives compatible with their authorization
+model. The response body is always verified against the digest before pnpr
+stores or serves it.
 
 ### Projected package document
 
-For a covered version, pnpr serves the original package name and version with
-the selected revision's integrity. The canonical tarball URL remains in
-`dist.tarball`. `dist.revisions` advertises the original artifact and every
-accepted provider revision:
+For a covered version, pnpr projects the selected artifact under the original
+name and version. Its `dist.tarball` points directly to the immutable integrity
+URL. `dist.revisions` advertises the original artifact and every accepted
+provider revision:
 
 ```jsonc
 {
@@ -214,19 +269,21 @@ accepted provider revision:
     "2.7.4": {
       "name": "ejs",
       "version": "2.7.4",
-      // resolution metadata from the selected echo-r2 artifact
+      // metadata derived from the selected echo-r2 tarball
       "dependencies": {},
       "dist": {
-        "tarball": "https://registry.example/ejs/-/ejs-2.7.4.tgz",
-        "integrity": "sha512-<echo-r2>",
+        "tarball": "https://registry.example/-/tarballs/sha512/<echo-r2-base64url>",
+        "integrity": "sha512-<echo-r2-base64>?pnpr-patch=echo-r2",
         "revisions": [
           {
             "integrity": "sha512-<upstream>",
+            "tarball": "https://registry.example/-/tarballs/sha512/<upstream-base64url>",
             "source": "upstream",
             "publishedAt": "2020-04-03T00:00:00.000Z"
           },
           {
-            "integrity": "sha512-<echo-r1>",
+            "integrity": "sha512-<echo-r1>?pnpr-patch=echo-r1",
+            "tarball": "https://registry.example/-/tarballs/sha512/<echo-r1-base64url>",
             "source": "echo",
             "revision": "echo-r1",
             "publishedAt": "2026-05-10T00:00:00.000Z",
@@ -234,7 +291,8 @@ accepted provider revision:
             "attestations": ["https://..."]
           },
           {
-            "integrity": "sha512-<echo-r2>",
+            "integrity": "sha512-<echo-r2>?pnpr-patch=echo-r2",
+            "tarball": "https://registry.example/-/tarballs/sha512/<echo-r2-base64url>",
             "source": "echo",
             "revision": "echo-r2",
             "publishedAt": "2026-07-28T00:00:00.000Z",
@@ -248,309 +306,196 @@ accepted provider revision:
 }
 ```
 
-The current revision is the entry whose integrity equals `dist.integrity`.
+The selected revision is the entry whose complete integrity metadata equals
+`dist.integrity`.
 There is no `_pnprPatch` instruction and no alternate package specifier for a
-client to interpret. Unaware npm clients ignore `dist.revisions` and install
-the current revision exactly like an ordinary package.
+client to interpret. Existing npm-compatible clients ignore `dist.revisions`
+and fetch the selected `dist.tarball` normally.
 
 The history provides:
 
 - discoverability through `npm view` and registry APIs;
 - provenance and advisory/VEX metadata for each exact set of bytes;
-- the allow-list used by integrity-aware retrieval;
 - an auditable sequence when a provider re-issues a patch;
+- the allow-list used when a client or verifier requests a historical digest;
 - retention and withdrawal state, if the schema grows it later.
 
-The field name is bikesheddable. Its semantics are not: the list is
-append-only, keyed by full integrity, and includes the original artifact.
+The full packument may carry all provenance fields. Abbreviated metadata should
+keep the representation compact: current `dist`, plus the integrity and
+integrity URL of historical revisions needed for lockfile verification. Most
+packages have no patch revisions and pay no metadata cost.
+
+The field name is bikesheddable. Its semantics are not: history is append-only,
+keyed by complete integrity, and includes the original artifact.
+
+### SRI options as a revision hint
+
+The current
+[Subresource Integrity specification](https://www.w3.org/TR/sri/#the-integrity-attribute)
+allows each hash expression to carry zero or more `?option-expression`
+suffixes:
+
+```text
+hash-with-options = hash-expression *("?" option-expression)
+```
+
+No standard option meanings are defined yet, and conforming consumers must
+ignore unrecognized options. npm's
+[`ssri`](https://github.com/npm/ssri) implementation already parses,
+serializes, and verifies values such as:
+
+```text
+sha512-<base64-digest>?pnpr-patch=echo-r1
+```
+
+pnpr may use one option as a display hint:
+
+```text
+pnpr-patch=<provider-revision>
+```
+
+Rules:
+
+- provider and revision use a restricted URL-safe character set and bounded
+  length;
+- pnpr preserves the option in `dist.integrity`, `dist.revisions`, audit
+  output, and logs;
+- pnpm preserves it in the lockfile so a reviewer can see `echo-r1`;
+- SRI byte verification ignores it, as required for unknown options;
+- integrity URLs, content-store keys, byte equality, authorization, VEX, and
+  policy decisions use only algorithm plus complete digest;
+- an option-only metadata change never creates a new artifact revision;
+- authenticated structured revision metadata wins if the hint disagrees.
+
+The hint is deliberately redundant with `dist.revisions[].revision`. It
+improves visibility in tools that record only `dist.integrity`, while the
+structured entry carries provenance and policy semantics.
+
+This option is not required for protocol correctness. Registries may omit it,
+and compatibility must be tested across pnpm, npm, Yarn, lockfile serializers,
+and third-party SRI tooling before it is enabled by default. The SRI document
+currently specifying options is a Working Draft and explicitly leaves their
+semantics undefined.
+
+### The canonical URL remains the original artifact
+
+The canonical npm tarball route is never repointed:
+
+```text
+https://registry.example/ejs/-/ejs-2.7.4.tgz
+```
+
+It continues to return the original upstream bytes and integrity forever. The
+current package document may advertise another artifact through
+`dist.tarball`, just as npm package documents already may advertise
+non-canonical tarball URLs.
+
+This rule provides universal backward compatibility:
+
+- a lockfile created before patch integration reconstructs the canonical URL
+  and still receives its original bytes;
+- a lockfile created after patch integration records an immutable integrity
+  URL and keeps receiving that patch revision;
+- changing the selected revision changes only mutable package metadata;
+- CDN objects and package-manager caches never have one URL for two bodies.
 
 ### Manifest metadata across revisions
 
-Package managers resolve the dependency graph from packument metadata before
-they download the tarball. A security patch may legitimately update a
-dependency as well as source files, so revisions are not required to have
-identical dependency metadata.
+A patch may update dependencies as well as source files. Revisions are
+therefore not required to have identical dependency metadata.
 
-Instead, pnpr reads the selected artifact's `package.json` only after the
-tarball passes integrity verification and projects its resolution-relevant
-fields into the current version document. When a revision becomes current, the
-whole projected version document and `dist.integrity` move atomically.
+pnpr reads the selected artifact's `package.json` only after the tarball passes
+integrity verification and projects its resolution-relevant fields into the
+current version document. When a revision becomes selected, the entire
+projected version entry and `dist` move atomically.
 
-An old lockfile retains both the old integrity and its old dependency snapshot,
-so fetching its historical tarball remains coherent. A revision refresh in
-pnpm must replace the integrity and package snapshot together; updating only
-the checksum would be incorrect.
+An old lockfile retains its old integrity URL and dependency snapshot. A pnpm
+revision refresh must replace both together; changing only the checksum would
+be incorrect.
 
-This deliberately means that two lockfiles can record different dependency
-graphs for the same `name@version` when they pin different integrities. The
-current pnpm lockfile cannot represent both revisions simultaneously in one
-graph, consistent with the one-selected-revision invariant. If simultaneous
-revisions are required, integrity must become part of the lockfile package key
-in a separate format change.
+This means two lockfiles can hold different dependency graphs for the same
+`name@version` when they pin different integrities. The current pnpm lockfile
+cannot represent both revisions simultaneously in one graph. If simultaneous
+revisions are required, integrity must become part of the package key in a
+separate lockfile format change.
 
-### Integrity negotiation on the canonical tarball URL
+### CDN and installation performance
 
-A pnpm client with a lockfile pin sends the complete SRI value:
-
-```http
-GET /ejs/-/ejs-2.7.4.tgz HTTP/1.1
-Host: registry.example
-Pnpr-Expected-Integrity: sha512-<echo-r1>
-```
-
-If that integrity exists in `ejs@2.7.4`'s retained revisions and the caller is
-authorized, pnpr returns those bytes or redirects to the immutable revision
-URL:
-
-```http
-HTTP/1.1 307 Temporary Redirect
-Location: /ejs/-/ejs-2.7.4.tgz+sha512.<base64url>
-Vary: Pnpr-Expected-Integrity
-Cache-Control: private, no-store
-```
-
-Without the header, pnpr selects the revision named by the current
-`dist.integrity`. With an unknown or malformed value, it returns an error; it
-must never silently return current bytes for a request that named another
-integrity.
-
-`Want-Content-Digest` and `Want-Repr-Digest` from
-[RFC 9530](https://www.rfc-editor.org/rfc/rfc9530.html) are not suitable for
-this request: they ask a server to include a digest of its response and express
-algorithm preference, but do not select a representation by an already-known
-digest. This RFC therefore proposes a dedicated request field. Its name can be
-standardized separately.
-
-Responses selected by a request field must use
-[`Vary`](https://www.rfc-editor.org/rfc/rfc9110.html#name-vary), so conforming
-shared caches do not return one revision for a request that named another.
-However, pnpr deployments must not assume every CDN forwards an unknown request
-field or enables arbitrary `Vary` processing by default. Redirecting the
-canonical request is preferred: the mutable, negotiated response is small and
-not cached, while the tarball body is served only from an immutable URL.
-
-The server may also send `Content-Digest` for HTTP-level observability, but the
-npm SRI value from the lockfile remains the client's security check.
-
-### Integrity-addressed revision URL
-
-Every revision is available from a deterministic URL:
+The normal data path remains the same length as today:
 
 ```text
-<canonical-url>+<algorithm>.<base64url-digest>
+packument resolution → one tarball URL → one CDN request
 ```
 
-For example:
+There is no custom request header, `Vary` cache key, canonical redirect,
+metadata recovery request, or intentionally failed download. A warm CDN serves
+the tarball without contacting pnpr. On a CDN miss, pnpr performs one
+content-addressed lookup and streams the object, equivalent to its existing
+tarball cache path.
 
-```text
-https://registry.example/ejs/-/ejs-2.7.4.tgz+sha512.AbCd...
-```
+The URL is longer by one sha512 digest, and patched packuments contain a small
+revision list. Those costs are negligible compared with a tarball body, and
+the list exists only for patched versions. pnpr should precompute projected
+packuments and index objects directly by binary digest rather than scanning
+revision arrays on the fetch path.
 
-The URL form uses the SRI algorithm and a base64url encoding of the complete
-digest. Raw SRI base64 is not appended directly because `/`, `+`, and `=` have
-awkward URL and intermediary semantics.
+Local installation is unchanged after pnpm already has the integrity in its
+content-addressed store. On a cold install, pnpm makes the same number of
+tarball requests and performs the same SRI verification as today.
 
-The endpoint:
-
-- applies the same registry identity and access policy as the canonical URL;
-- verifies that the digest belongs to this exact `name@version`;
-- never redirects or falls through to a different digest;
-- returns immutable cache headers and a strong digest-derived validator;
-- remains available for as long as pnpr promises lockfile reproducibility.
-
-Example:
-
-```http
-HTTP/1.1 200 OK
-Cache-Control: public, max-age=31536000, immutable
-ETag: "<full-digest>"
-Content-Digest: sha-512=:<base64>:
-```
-
-The URL also gives clients a fallback when a proxy strips the negotiation
-header, ignores `Vary`, or has cached old content at the canonical URL.
-
-### CDN deployment profile
-
-The protocol works with a CDN when the mutable selector and immutable content
-are treated as two cache classes:
-
-1. The CDN forwards `Pnpr-Expected-Integrity` on canonical tarball requests.
-2. The canonical endpoint bypasses the CDN cache and returns a small redirect.
-   `Cache-Control: private, no-store` expresses this at HTTP level, and the CDN
-   configuration must not override it with a positive minimum TTL.
-3. The integrity-qualified endpoint is cached by its complete URL with a long
-   immutable TTL. It does not vary on the request header.
-4. The packument remains ordinary mutable metadata and is purged or
-   revalidated when the selected revision changes.
-
-This does not put high-cardinality integrity values into a tarball-body cache
-key. Every artifact body has one stable URL and therefore the same CDN behavior
-as any other content-addressed asset. Only the inexpensive canonical redirect
-reaches pnpr.
-
-CDN configuration is not uniform:
-
-- CloudFront can forward the field through an origin request policy without
-  caching on it. If redirects are cached, the cache policy must also put the
-  field in the cache key. Its minimum TTL can override origin `no-store`, so
-  the canonical behavior must use a zero-TTL or disabled cache policy.
-- Cloudflare requires its Cache Rules `Vary` support or a custom cache key for
-  arbitrary varying headers. The simpler recommended rule is to bypass cache
-  for canonical tarball redirects and forward the field.
-- Fastly supports `Vary`, but the canonical route should still be pass/private
-  so all large cacheable objects live at revision URLs.
-
-If a CDN strips the field despite that configuration, correctness is
-preserved: pnpm rejects the current revision against its old lockfile
-integrity and uses the package-document plus revision-URL recovery path. The
-penalty is an extra failed download, not acceptance of wrong bytes. A
-deployment should exercise this failure mode before enabling same-version
-revision changes.
-
-The relevant vendor documentation is:
-
-- [CloudFront cache policies](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cache-key-understand-cache-policy.html)
-- [Cloudflare `Vary` cache behavior](https://developers.cloudflare.com/cache/concepts/vary/)
-- [Fastly `Vary` behavior](https://www.fastly.com/documentation/reference/http/http-headers/Vary/)
-
-### The integrity value is not a secret
-
-The request sends the full digest because it is an identifier, not a
-credential. The same value is already present in the authorized package
-document, the consumer's lockfile, the revision history, and the immutable
-revision URL. TLS protects it from observers outside the client, CDN, and
-registry, while those services necessarily see the package metadata and
-tarball anyway.
-
-Possession of a digest grants no additional access. pnpr checks the ordinary
-registry authorization and verifies that the digest belongs to the requested
-package version before returning bytes.
-
-The value is still usage metadata: it tells the registry and its CDN exactly
-which historical revision a consumer is installing, potentially revealing
-that the consumer is behind the current security patch. Those services
-necessarily need that information to return the requested revision. Operators
-should protect or redact this field in access logs as they would private
-package names. A uniquely identifying prefix would have the same privacy
-property, so truncation does not solve it.
-
-The field accepts exactly one supported, canonical SRI hash expression and has
-a small fixed maximum length. If a lockfile integrity set contains several
-algorithms, pnpm selects the strongest mutually supported complete hash. pnpr
-rejects duplicate fields, SRI option metadata, unsupported algorithms, and
-oversized values before any cache lookup. These parsing rules prevent the
-field from becoming an unbounded cache or logging input. Patch revisions should
-require sha512; a legacy checksum whose algorithm is no longer collision
-resistant is not made strong merely by sending all its characters.
-
-A prefix would reveal almost the same information while making selection
-weaker. Two retained revisions can share a short prefix accidentally, and an
-untrusted provider can deliberately search for one. Full client verification
-would prevent such a collision from becoming arbitrary code execution, but the
-prefix could still select the wrong download or cause denial of service. Full
-sha512 avoids that ambiguity at negligible request cost.
-
-### Client behavior and compatibility
-
-The companion pnpm RFC gives pnpm three paths:
-
-1. Send the locked integrity on the initial canonical tarball request. A pnpr
-   server returns the right revision immediately.
-2. If an intermediary ignores the header but happens to return bytes matching
-   the lockfile, accept them normally.
-3. If integrity fails, discard the response, refresh the package document,
-   require the exact locked integrity to appear in `dist.revisions`, and retry
-   through the deterministic revision URL. Verify the full integrity again.
-
-At no point is the integrity from current registry metadata copied over the
-locked value. A missing history entry, unavailable artifact, second mismatch,
-or unsupported algorithm is a hard failure.
-
-Compatibility is intentionally asymmetric:
-
-| Client and state | Result |
-| --- | --- |
-| Any npm-compatible client making a fresh resolution | Installs the current revision from `dist` |
-| New pnpm with an old lockfile | Retrieves the locked revision through the header or revision URL |
-| Old pnpm, npm, or Yarn with an old lockfile after current changes | Fails integrity verification |
-| Any client with the tarball already in its verified content store | Uses the stored revision |
-
-This proposal improves pnpm reproducibility; it cannot teach already released
-clients how to retrieve a second representation from one canonical URL. A
-deployment that requires historical lockfiles to work with every existing npm
-client must keep the canonical URL immutable and publish the current revision
-under a non-canonical immutable `dist.tarball` URL instead.
-
-### Updating patches without changing versions
+### Selecting and updating revisions
 
 A frozen install never changes revision. An ordinary install may continue to
 prefer its lockfile, just as it does for package versions.
 
-pnpm should provide an explicit operation to refresh only artifact revisions,
-for example:
+pnpm should provide an explicit operation to refresh only artifact revisions:
 
 ```text
 pnpm update --patches
 ```
 
-For every locked registry package, it resolves the exact locked
-`name@version`, compares `dist.integrity` with the lockfile, and updates the
-resolution integrity and snapshot only when the registry selected another
-compatible revision. This does not re-run semver selection and does not update
-package versions.
+For every locked registry package, pnpm resolves the same exact
+`name@version`. If `dist.integrity` changed, it replaces the integrity URL,
+integrity, and package snapshot atomically. It does not rerun semver selection
+or update package versions.
 
-A normal resolution caused by another lockfile change also records the current
-revision. Whether a non-frozen `pnpm install` should adopt newly selected
-revisions automatically is a pnpm policy question; the registry protocol does
-not require silent lockfile mutation.
+A normal resolution caused by another lockfile change records the currently
+selected revision. Whether non-frozen `pnpm install` automatically adopts a new
+revision remains a pnpm policy question; the registry protocol does not require
+silent lockfile mutation.
 
-### Caching and atomicity
+### Caching and atomic provider refresh
 
-pnpr must not cache artifact bodies only by canonical URL. Its cache key is:
+pnpr indexes artifact content by:
 
 ```text
-(concrete registry identity, package name, version, full integrity)
+(concrete registry identity, algorithm, complete digest)
 ```
 
-The packument cache and canonical redirect are mutable projections. A provider
+Physical bytes may be deduplicated beneath that authorization index. A provider
 refresh that selects a new revision follows this order:
 
-1. Verify and retain the new tarball under its integrity key.
-2. Derive and validate its version metadata from the verified tarball.
-3. Append its revision metadata.
-4. Atomically update the projected version document and `dist.integrity`.
-5. Invalidate projected full and abbreviated packuments and the canonical
-   redirect.
+1. Download and verify the new tarball.
+2. Store it under its immutable integrity URL.
+3. Derive and validate projected version metadata from the verified tarball.
+4. Append its revision metadata.
+5. Atomically update the projected version entry and `dist`.
+6. Invalidate projected full and abbreviated packuments.
 
-This ordering prevents metadata from selecting bytes the tarball endpoint
-cannot yet serve. Prior revision objects and URLs remain untouched.
-
-The canonical response must not be served with npm tarballs' customary
-long-lived immutable caching unless the cache key includes
-`Pnpr-Expected-Integrity`. A short, revalidated redirect plus immutable
-revision URLs avoids that ambiguity.
-
-For predictable behavior across CDN implementations, the default is stronger:
-the canonical redirect is `private, no-store` and the CDN is configured to
-bypass it. `Vary` remains required protocol metadata and permits an operator to
-cache redirects only after verifying the CDN's exact header forwarding and
-cache-key behavior.
+No tarball cache object is invalidated or overwritten. Metadata never advertises
+an integrity URL before that URL is available.
 
 ### Authorization, retention, and enforcement
 
-Knowledge of an integrity is not authorization. Both retrieval forms apply the
-same registry access rules as the package document and canonical tarball.
+Both current and historical integrity URLs apply the addressed registry's
+access policy. History and availability remain separate: an operator may
+retain a revision record for audit while a legal or security policy refuses
+its bytes. Such a request returns a policy-specific `403`.
 
-History and availability are separate concepts. An operator may retain a
-revision record for audit while a legal or security policy refuses its bytes.
-In that case the revision request returns a policy-specific `403`, and a
-lockfile that pins it cannot install through that registry.
-
-This matters for the vulnerable original artifact. Reproducibility policy may
-retain it so an old lockfile works; strict enforcement may deliberately block
-it. The patch mechanism must not silently weaken a registry's separate
-screening or refusal policy.
+This matters for the vulnerable original. A reproducibility policy may retain
+it indefinitely; strict enforcement may deliberately block it even though an
+old lockfile then cannot install through that registry. Patch selection must
+not silently weaken a registry's separate screening policy.
 
 ### Auditing a revision
 
@@ -558,166 +503,163 @@ Advisories apply to the original `name@version`; provider VEX statements apply
 to one exact integrity. `dist.revisions[].fixes` and attestations preserve that
 mapping without changing package identity.
 
-An audit request that carries only `name@version` is evaluated conservatively
+An audit request carrying only `name@version` is evaluated conservatively
 against the base version. An integrity-aware pnpm audit extension can identify
 the installed revision and subtract only the fixes declared for those exact
 bytes. A later provider revision does not retroactively add fixes to an older
-locked one.
+locked revision.
 
 ## Rationale and Alternatives
 
-### Provider package aliases and `_pnprPatch`
+### Provider aliases and `_pnprPatch`
 
 The alternative patch-provider RFC exposes a provider package such as
 `@echo-patch/ejs` and either asks the workspace to write an alias override or
-adds a registry annotation that instructs pnpm to do it.
+adds a registry annotation instructing pnpm to do it.
 
-That representation makes provider provenance conspicuous and keeps
-`name@version` immutable, but it makes a registry policy into a client-level
-package substitution. It requires provider-registry configuration to resolve
-the alias, creates separate packuments for provider revision names, and depends
-on pnpm-specific annotation or override behavior. This proposal keeps
-provenance in revision metadata and makes unaware clients install the current
-registry policy.
+That representation keeps `name@version` immutable and makes provider
+provenance conspicuous, but turns a registry policy into a client-level package
+substitution. It requires provider-registry configuration, creates separate
+provider package documents, and depends on pnpm-specific annotation or override
+behavior. Integrity-addressed revisions keep provenance in registry metadata
+and work as ordinary `dist` entries in every npm-compatible client.
 
-### Encode the patch revision in the version
+### Encode the revision in the version
 
-Versions such as `2.7.4-echo.2` provide a distinct npm identity, but they are
-prereleases under semver. Ordinary ranges containing `2.7.4` do not necessarily
-select them, peer ranges may reject them, and the package no longer reports
-the upstream version the application was tested against. Build metadata is
-not a substitute: semver deliberately ignores it for precedence and equality.
+Versions such as `2.7.4-echo.2` are prereleases under semver. Ordinary ranges
+containing `2.7.4` do not necessarily select them, peer ranges may reject them,
+and the package no longer reports the version the application was tested
+against. Build metadata is unsuitable because semver ignores it for precedence
+and equality.
 
-### Encode the revision in a package alias name
+### Encode the revision in a package name
 
 Names such as `@echo-patch/ejs-r1` and `@echo-patch/ejs-r2` avoid prerelease
-semantics but create a separate package document for every patch. They also
-surface a provider-internal revision scheme throughout lockfiles and tooling.
+semantics but create one package document per patch and expose a
+provider-internal revision scheme throughout consumer tooling.
 
 ### Use a named provider registry
 
 A specifier such as `echo:ejs@2.7.4` keeps the original name and version, but
 every consumer must configure the `echo` registry locally. Current pnpm
-lockfiles also key registry packages primarily by `name@version`, so two named
-registries serving different artifacts for the same identity can collide in
-one graph until registry identity becomes part of the package key.
+lockfiles also cannot safely represent two named registries serving different
+bytes for the same `name@version` in one graph.
 
-Named registries remain a coherent choice when the provider is intentionally
-the origin for all packages. They are a poor encoding for a central registry
-that wants to adopt only selected patch artifacts.
+Named registries remain coherent when the provider is intentionally the origin
+for all packages. They are a poor encoding for a central registry adopting only
+selected patch artifacts.
 
-### Keep the canonical URL immutable and rewrite `dist.tarball`
+### Mutate the canonical URL and negotiate by request header
 
-The strongest cross-client compatibility design keeps the original canonical
-URL on the original bytes forever and changes current packument metadata to
-point at a non-canonical, integrity-addressed patch URL. Old lockfiles continue
-to work in pnpm, npm, and Yarn without a client change.
+Rejected as the normal path. A complete integrity request header can safely
+select a historical representation, but CDNs must forward it and either vary
+large cached bodies on a high-cardinality field or return an extra redirect.
+Clients without the protocol still break on old lockfiles.
 
-Its cost in pnpm today is that non-canonical absolute tarball URLs are retained
-in the lockfile, pinning the deployment host and losing the portability that
-canonical URL reconstruction provides. This RFC chooses a canonical movable
-pointer plus integrity negotiation to retain compact, host-free pnpm lockfiles.
-The compatibility table above is the price of that choice.
+Direct integrity URLs use ordinary CDN cache keys, require one request, and let
+the canonical URL remain immutable for every old client.
 
-### Retry only after an integrity failure
+### Include the package name and version in the integrity URL
 
-Downloading the current tarball, hashing it, and only then requesting the
-historical revision is safe but wasteful. Sending the expected integrity on
-the first request lets pnpr select correctly in one round trip. The
-post-failure package-document lookup remains necessary as a robust fallback
-for intermediaries that do not preserve the request field or `Vary` behavior.
+A format such as
+`<canonical-url>+sha512.<digest>` makes the relationship human-readable and
+allows routing without a digest-to-package index. It is valid, but duplicates
+identical content under several URLs and makes content addressing depend on
+package naming.
 
-### Send only a digest prefix
+The digest-only route deduplicates naturally and lets pnpm construct or store
+the URL from registry plus integrity alone. Registry-scoped authorization
+provides the package-policy boundary that the omitted name otherwise supplied.
 
-Rejected. A full sha512 SRI value is small compared with even the HTTP headers
-of a tarball request. Prefixes introduce accidental ambiguity, allow deliberate
-collision work against the lookup key, and require an arbitrary minimum length.
-The client would still need the full digest for verification, so truncation
-saves almost nothing. The full digest is already advertised in package
-metadata and is neither an authentication secret nor an authorization
-capability.
+### Use only a digest prefix
+
+Rejected. A full sha512 value is small relative to an HTTP request or tarball.
+Prefixes introduce accidental ambiguity, deliberate collision work, and an
+arbitrary minimum length. The full digest is package metadata, not a credential
+or bearer capability.
+
+### Put the revision only in an SRI option
+
+An SRI option is useful visibility for lockfiles and generic metadata
+consumers, but it is intentionally ignored by integrity verification and has no
+standardized patch semantics. It cannot replace the structured revision
+record, signed provider manifest, or digest URL. This RFC uses it only as a
+redundant hint.
 
 ## Implementation
 
 ### pnpr
 
 1. Add provider manifest configuration, signature verification, pinned refresh,
-   and a content-addressed ingestion path.
-2. Validate each artifact's integrity and original `name@version`, then derive
+   and content-addressed ingestion.
+2. Validate every artifact's integrity and original `name@version`, then derive
    the projected version metadata from its verified `package.json`.
-3. Store revisions by concrete registry identity, package, version, and full
-   integrity; retain append-only provenance metadata.
-4. Project the selected revision into full and abbreviated packuments,
-   including `dist.revisions`.
-5. Add integrity negotiation to canonical tarball routes and emit a correct
-   `Vary` header.
-6. Add immutable integrity-qualified tarball routes with the same authorization
-   and screening policy as the canonical package.
-7. Make provider refresh atomic and audit every current-revision transition.
-8. Extend audit handling to understand revision-scoped fixes and attestations.
+3. Add a registry-scoped digest index that separates physical deduplication
+   from authorization.
+4. Serve immutable `/-/tarballs/<algorithm>/<digest>` routes with range request,
+   CDN, and access-policy support.
+5. Project selected integrity URLs and append-only `dist.revisions` into full
+   and abbreviated packuments.
+6. Parse and emit the optional bounded `pnpr-patch` SRI hint while excluding
+   all options from object lookup and security policy.
+7. Keep original canonical tarball routes immutable.
+8. Make provider refresh atomic and audit every selected-revision transition.
+9. Extend audit handling to understand integrity-scoped fixes and attestations.
 
 Tests should cover:
 
 - original, first patch, and second patch all retrievable by full integrity;
-- a request without a header receiving the current revision;
-- a request header for an older revision receiving or redirecting to exactly
-  that revision;
-- malformed, abbreviated, unknown, wrong-package, and wrong-version integrity
-  values failing without current-revision fallback;
-- full SRI verification both at provider ingestion and client response;
-- `Vary`, cache invalidation, immutable revision caching, and a proxy that
-  ignores the request header;
-- CloudFront-, Cloudflare-, and Fastly-shaped cache configurations in which
-  canonical redirects bypass cache and revision bodies remain cacheable;
-- rejection of duplicate, oversized, multi-value, unsupported, and abbreviated
-  integrity request fields;
+- `dist.tarball` selecting the latest revision without changing name/version;
+- original canonical URLs continuing to return original bytes after every
+  provider refresh;
+- full and abbreviated metadata exposing the required revision history;
+- malformed, abbreviated, unsupported, unknown, and non-canonical digests;
+- SRI revision options round-tripping while leaving the object key unchanged;
+- changed or forged SRI options remaining policy-inert;
+- the same physical digest referenced by two authorized registries without
+  cross-registry data disclosure;
+- a known digest requested through an unauthorized registry returning no
+  bytes;
+- immutable CDN caching, range requests, and a warm CDN avoiding pnpr;
 - atomic refresh with no metadata-visible-but-unavailable interval;
-- selected revision metadata being derived from the verified tarball;
-- a revision that changes dependencies updating its lockfile snapshot together
-  with its integrity;
+- selected metadata being derived from the verified tarball;
+- a dependency-changing revision updating snapshot and integrity together;
 - provider conflict rejection;
-- access and screening policy on historical URLs;
-- audit/VEX evaluation tied to the exact artifact integrity.
+- retention and screening policy on historical objects;
+- audit/VEX evaluation tied to exact integrity.
 
 ### pnpm
 
 The companion RFC,
-[`text/0000-integrity-addressed-tarball-recovery.md`](../../text/0000-integrity-addressed-tarball-recovery.md),
-contains the client implementation and tests.
+[`text/0000-integrity-addressed-registry-tarballs.md`](../../text/0000-integrity-addressed-registry-tarballs.md),
+contains the client and lockfile changes.
 
 ## Prior Art
 
 - The [OCI Distribution Specification](https://github.com/opencontainers/distribution-spec/blob/main/spec.md)
-  permits a manifest reference to be a mutable tag or an immutable digest.
-  This proposal applies the same current-pointer/content-identity split to npm
-  package artifacts.
+  permits retrieval by a mutable tag or immutable digest. This RFC applies the
+  same current-pointer/content-identity split to npm artifacts.
 - npm lockfiles already use
-  [Subresource Integrity](https://www.w3.org/TR/SRI/) to authenticate fetched
-  tarballs. This proposal uses the existing full SRI value as the revision key
-  rather than inventing another hash format.
-- HTTP [`Vary`](https://www.rfc-editor.org/rfc/rfc9110.html#name-vary)
-  defines the cache behavior needed when a request field selects among
-  representations.
-- [RFC 9530](https://www.rfc-editor.org/rfc/rfc9530.html) standardizes
-  `Content-Digest` and `Repr-Digest` for response integrity. Those fields are
-  useful response metadata here, though their `Want-*` request fields do not
-  perform exact representation selection.
+  [Subresource Integrity](https://www.w3.org/TR/SRI/) to authenticate tarballs.
+  This proposal uses the existing full value as the content key.
+- Content-addressed package stores in pnpm and systems such as Nix demonstrate
+  that logical package identity and physical content identity can be separate.
+- [RFC 9530](https://www.rfc-editor.org/rfc/rfc9530.html) provides optional
+  `Content-Digest` response fields complementary to npm SRI verification.
 
 ## Unresolved Questions and Bikeshedding
 
+- Is `/-/tarballs/<algorithm>/<digest>` the right registry-relative endpoint,
+  or should it be namespaced explicitly under `/-/pnpr/`?
 - Is `dist.revisions` the right package-document field name, or should it be
-  explicitly namespaced?
-- Is `Pnpr-Expected-Integrity` the right request field name? If other registries
-  want the protocol, should it be proposed as a vendor-neutral HTTP field?
-- Should the canonical endpoint return the selected body directly or always
-  redirect to the immutable revision URL? This draft recommends the redirect
-  for CDN behavior.
-- Which manifest fields must pnpr project from the selected tarball, and should
-  historical revision entries retain a normalized snapshot for inspection?
-- Does `pnpm update --patches` update all selected revisions, only
-  security-motivated ones, or accept provider and advisory filters?
-- How long must a pnpr deployment retain historical revision bytes, and how
-  should an operator communicate a retention policy that is shorter than
-  lockfile lifetime?
-- Should historical vulnerable revisions remain retrievable by default, or
+  namespaced?
+- Which projected manifest fields should historical revision entries retain
+  for inspection?
+- Does `pnpm update --patches` update all artifact revisions, only
+  security-motivated revisions, or accept provider and advisory filters?
+- How long must a pnpr deployment retain historical content, and how should it
+  communicate a policy shorter than lockfile lifetime?
+- Should historical vulnerable artifacts remain retrievable by default, or
   require an explicit reproducibility policy?
+- Should `pnpr-patch=echo-r2` be enabled by default while SRI option semantics
+  remain undefined, and is that the right namespaced syntax?
