@@ -2,33 +2,55 @@
 
 ## Summary
 
-pnpm should recognize registry-scoped, integrity-addressed tarball URLs:
+pnpm should recognize revision-aware Subresource Integrity values emitted by a
+registry that supports immutable, integrity-addressed tarball URLs:
 
 ```text
 <registry-base>/-/tarballs/<algorithm>/<base64url-digest>
 ```
 
-When a package document advertises such a URL in `dist.tarball`, pnpm fetches it
-directly like any other registry tarball. In the lockfile, pnpm stores the path
-relative to the registry base instead of retaining an absolute deployment URL:
+The SRI option distinguishes revision-aware resolutions from legacy registry
+resolutions:
+
+```text
+sha512-<original-digest>?       original artifact
+sha512-<first-patch-digest>?v1  first replacement
+sha512-<second-patch-digest>?v2 second replacement
+```
+
+A trailing `?` is the revision-aware original, conceptually revision zero.
+`?vN`, where `N` is a positive decimal integer, identifies replacement
+revision `N`. Both forms tell pnpm to construct the integrity URL directly from
+the configured registry and the complete digest.
+
+The lockfile therefore needs only the marked integrity:
 
 ```yaml
 packages:
   ejs@2.7.4:
     resolution:
-      integrity: sha512-<base64>?pnpr-patch=echo-r2
-      tarball: -/tarballs/sha512/<base64url>
+      integrity: sha512-<second-patch-digest>?v2
 ```
 
-Frozen installs resolve that path against the currently configured registry and
-make one ordinary CDN request. The URL digest and hash expression in
-`resolution.integrity` must agree; an optional SRI revision hint is preserved
-but ignored for that comparison. Historical locked URLs remain valid even when
-the same `name@version` has another selected revision in current package
-metadata.
+A frozen install strips the SRI option for content addressing, converts the
+complete digest to base64url, and makes one request to:
+
+```text
+<effective-registry-base>/-/tarballs/sha512/<second-patch-digest-base64url>
+```
+
+No tarball URL, provider alias, custom request header, redirect, integrity
+failure, metadata lookup, or capability probe is required.
+
+An integrity with no option retains today's meaning: pnpm reconstructs the
+canonical name-and-version tarball URL. This preserves existing lockfiles. The
+companion registry RFC requires that canonical URL to keep serving the original
+artifact.
 
 This is the pnpm half of
-[`pnpr/text/0000-integrity-addressed-patch-revisions.md`](../pnpr/text/0000-integrity-addressed-patch-revisions.md).
+[`pnpr/text/0000-integrity-addressed-patch-revisions.md`][pnpr-rfc].
+
+[pnpr-rfc]: ../pnpr/text/0000-integrity-addressed-patch-revisions.md
 
 ## Motivation
 
@@ -42,30 +64,50 @@ packages:
       integrity: sha512-<upstream>
 ```
 
-This is compact and registry-portable because canonical npm tarball URLs are
-predictable. A content-addressed URL is also predictable, but from registry and
-integrity rather than registry, name, and version.
+That compact representation currently implies a name-and-version request. It
+cannot also imply an integrity-addressed request without a durable signal in
+the lockfile.
 
-Without special handling, pnpm retains a non-canonical `dist.tarball` as an
-absolute URL. A pnpr deployment moving from one hostname or registry base to
-another would then require lockfile rewrites. Storing the digest path relative
-to the registry preserves portability while making the immutable URL explicit
-to old and new pnpm fetch paths.
+Storing an absolute digest URL would pin the lockfile to a deployment hostname.
+Storing a relative tarball path would duplicate information already present in
+the integrity. Registry configuration already determines the origin, and the
+complete SRI digest already determines the immutable object. The SRI option can
+carry the one missing bit: which retrieval convention pnpm should use.
 
-Direct integrity URLs also avoid the cost and complexity of content negotiation
-on a mutable canonical URL:
+Including the marker on the original artifact is important. A lockfile may be
+created before any provider revision exists. If it records:
 
+```text
+sha512-<original>?
+```
+
+it already uses the integrity endpoint. A patch added years later does not
+change that lockfile's request:
+
+```text
+old lockfile  → /-/tarballs/sha512/<original>
+new lockfile  → /-/tarballs/sha512/<patched>
+```
+
+The visible transition from `?` to `?v1` also explains why the integrity
+changed without exposing a provider-specific package name or version.
+
+Direct integrity URLs retain the performance and caching properties of ordinary
+immutable URLs:
+
+- one CDN request;
 - no custom request header;
 - no CDN `Vary` configuration;
 - no redirect;
-- no failed integrity download followed by metadata recovery;
-- no extra round trip.
+- no deliberate failed download;
+- no metadata recovery round trip.
 
 ## Detailed Explanation
 
-### Resolution
+### Registry metadata
 
-A supporting registry advertises an immutable URL as ordinary package metadata:
+A supporting registry advertises its selected artifact through an immutable
+digest URL and a revision-aware integrity:
 
 ```jsonc
 {
@@ -73,335 +115,389 @@ A supporting registry advertises an immutable URL as ordinary package metadata:
   "version": "2.7.4",
   "dist": {
     "tarball": "https://registry.example/-/tarballs/sha512/AbCd...",
-    "integrity": "sha512-AbCd...?pnpr-patch=echo-r2"
+    "integrity": "sha512-AbCd...?v2"
   }
 }
 ```
 
-The npm resolver validates:
+For an original artifact with no replacement, the same registry advertises:
 
-1. the tarball URL is on the selected registry origin and beneath its
+```jsonc
+{
+  "dist": {
+    "tarball": "https://registry.example/-/tarballs/sha512/Original...",
+    "integrity": "sha512-Original...?"
+  }
+}
+```
+
+The marker applies to every package version exposed through this retrieval
+protocol, not only versions that already have replacements. Consequently, every
+new pnpm lockfile created against the registry is prepared for later revisions.
+
+During resolution, pnpm validates:
+
+1. `dist.tarball` is on the selected registry origin and beneath its
    integrity-tarball route;
-2. the URL algorithm is supported and is sha512 for patch revisions;
-3. decoding its base64url digest produces exactly the digest in the strongest
-   hash expression in `dist.integrity`;
-4. neither hash value is abbreviated, malformed, or ambiguous.
+2. the URL algorithm is supported and is sha512 for this protocol;
+3. decoding the URL's base64url digest produces exactly the digest in
+   `dist.integrity`;
+4. the digest is complete, well formed, and unambiguous;
+5. the selected hash expression ends in either the empty SRI option or one
+   canonical `vN` option.
 
-SRI options do not participate in steps 2 or 3. pnpm preserves a recognized,
-bounded `pnpr-patch=<provider-revision>` option for display but treats it like
-any other unknown SRI option during byte verification.
+The option is not part of steps 2 through 4. It describes registry revision
+semantics and selects pnpm's fetch convention, but the algorithm and complete
+digest alone identify the bytes.
 
-On success, the resolver returns the ordinary tarball resolution. No
-provider-specific alias, annotation, or resolver substitution occurs.
+Conforming SRI consumers ignore unrecognized options. An npm-compatible client
+that does not implement this pnpm optimization can follow `dist.tarball`
+directly and verify the underlying hash.
 
-An unaware npm-compatible client also follows `dist.tarball` directly and
-verifies `dist.integrity`, so fresh resolution requires no pnpm-specific
-behavior.
+### Revision option syntax
+
+The
+[Subresource Integrity grammar](https://www.w3.org/TR/sri/#the-integrity-attribute)
+defines:
+
+```text
+hash-with-options = hash-expression *("?" option-expression)
+option-expression = *VCHAR
+```
+
+The empty option is therefore valid. This RFC assigns the following
+registry/package-manager semantics:
+
+```text
+<hash-expression>?     revision-aware original
+<hash-expression>?vN   revision-aware replacement N
+```
+
+Rules:
+
+- `N` is a positive base-10 integer with no leading zeroes;
+- revision numbering is scoped to one registry and one `name@version`;
+- the first distinct replacement is `v1`;
+- later distinct replacements receive increasing numbers that are never
+  reassigned;
+- an already recorded artifact retains its revision if selected again;
+- a suffix other than the empty option or canonical `vN` is not this protocol's
+  capability marker;
+- pnpm parses the raw SRI representation so a generic library normalizing an
+  empty option cannot erase protocol state;
+- pnpm removes all SRI options before decoding or verifying the digest.
+
+The revision number is deliberately not the content address. Editing `v1` to
+`v2` cannot make different bytes pass verification. It is a human-readable
+ordinal and a retrieval marker; structured registry history remains
+authoritative about provider, provenance, fixes, and policy.
 
 ### Lockfile representation
 
-For an integrity URL on the selected registry base, pnpm strips that base and
-stores a relative path:
+When the validated `dist` pair uses the integrity endpoint and a recognized
+revision option, pnpm records the integrity and omits `resolution.tarball`:
 
 ```yaml
 packages:
   ejs@2.7.4:
     resolution:
-      integrity: sha512-AbCd...?pnpr-patch=echo-r2
-      tarball: -/tarballs/sha512/AbCd...
+      integrity: sha512-AbCd...?v2
 ```
 
-The path deliberately has no leading slash. Resolving `-/tarballs/...` against:
+This remains portable when a registry deployment moves between hostnames or
+when the user changes registry configuration. It also retains named-registry
+path prefixes. Resolving the digest route against:
 
 ```text
-https://pnpr.example/~main/
+https://registry.example/~main/
 ```
 
 produces:
 
 ```text
-https://pnpr.example/~main/-/tarballs/...
+https://registry.example/~main/-/tarballs/sha512/AbCd...
 ```
 
-A root-relative `/-/tarballs` path would incorrectly discard the named
-registry segment.
+The endpoint path is relative to the registry base. It is not root-relative,
+because a leading slash would discard `/~main/`.
 
-This uses the lockfile's existing relative-tarball concept rather than adding a
-provider hostname or duplicating registry configuration. On install, pnpm
-resolves the path against the effective registry exactly as it already does for
-relative tarball resolutions.
+The marked integrity is self-describing:
 
-The explicit path is preferable to storing only `{ integrity }`: that compact
-form currently means "reconstruct the canonical name-and-version URL." A
-relative path keeps the retrieval protocol self-describing and lets clients
-that understand existing relative tarballs fetch it without a capability
-probe.
+- no option means the legacy canonical URL convention;
+- `?` means the digest endpoint and the original artifact;
+- `?vN` means the digest endpoint and replacement revision `N`.
+
+### Fetch and verification
+
+For a recognized revision-aware integrity, pnpm:
+
+1. selects the supported hash expression;
+2. records whether its option is empty or `vN`;
+3. removes the option;
+4. converts the complete base64 digest to base64url;
+5. resolves `-/tarballs/<algorithm>/<digest>` against the effective registry
+   base;
+6. sends one ordinary authenticated GET;
+7. verifies the response against the complete SRI digest before admitting it
+   to the content-addressed store.
+
+If URL construction fails or the response does not match, installation fails.
+pnpm must not fetch current package metadata, change the checksum, retry the
+canonical URL, or fall forward to another revision.
+
+The endpoint is same-origin with the configured registry, so ordinary registry
+authentication and credential-scoping behavior applies. Redirects to another
+origin are not part of this protocol. Knowledge of a digest is not
+authorization to retrieve it.
+
+The option is excluded from:
+
+- URL and content-store keys;
+- byte verification and equality;
+- authorization;
+- advisory or VEX policy;
+- patch selection.
+
+An option-only difference does not create another content-store object or
+require another download. The structured registry record decides whether the
+displayed ordinal is truthful.
 
 ### Registry identity
 
-Resolving a relative tarball requires the same registry identity used during
-package resolution. For ordinary default and scope registries, pnpm can recover
-that base through its existing registry mapping.
+Constructing the digest endpoint requires the same registry identity used
+during package resolution. For ordinary default and scope registries, pnpm can
+recover that base through its existing registry mapping.
 
 The known lockfile gap for named registries remains: current package keys do not
 distinguish identical `name@version` values from different named registries,
 and the named registry identity is not always retained for fetching. This RFC
-does not make that collision worse, but integrity URLs do not solve it. The
-registry-identity lockfile follow-up must cover the relative integrity path as
-well.
+does not make that collision worse, but content addressing does not solve it.
 
-Until then, a lockfile can contain only one selected registry and artifact for a
-given `name@version`, and deployment-portable relative paths are guaranteed only
-where pnpm can recover the effective registry unambiguously.
-
-### Fetch and verification
-
-pnpm resolves the relative path against the registry, sends one ordinary GET,
-and runs its existing complete SRI verification before adding files to the
-content-addressed store.
-
-The digest appears twice intentionally:
-
-- the URL selects the immutable CDN object;
-- `resolution.integrity` independently tells pnpm which bytes it may accept.
-
-If they disagree syntactically before fetching, pnpm fails. If the response
-does not hash to the full locked integrity, pnpm follows its ordinary retry and
-hard-failure behavior. It never tries current `dist`, changes the checksum, or
-falls back to another revision.
-
-An SRI option such as `?pnpr-patch=echo-r2` is not hashed and does not change
-which bytes match. pnpm preserves it in serialization for human visibility,
-but it must not use the option for URL construction, cache identity,
-authorization, advisory suppression, or patch-selection policy. Structured,
-authenticated registry metadata remains authoritative.
-
-An option-only difference is not an integrity change and must not trigger a
-tarball download or create another content-store entry. A later explicit
-resolution may update the displayed hint in the lockfile while retaining the
-same artifact.
-
-The endpoint is same-origin with the configured registry, so ordinary registry
-authentication and credential-scoping behavior applies. Redirects to another
-origin are not part of this protocol.
+Until registry identity is represented unambiguously, one lockfile can contain
+only one selected registry and artifact for a given `name@version`.
 
 ### Historical lockfile verification
 
-pnpm can optionally verify lockfile tarball URLs against current registry
-metadata. A historical lockfile may point to revision 1 while the current
-version document selects revision 2:
+A historical lockfile may contain `?v1` while current metadata selects `?v2`:
 
 ```text
-lockfile:       ejs@2.7.4 + sha512-r1
-current dist:   ejs@2.7.4 + sha512-r2
+lockfile:       ejs@2.7.4 + sha512-r1?v1
+current dist:   ejs@2.7.4 + sha512-r2?v2
 ```
 
-Exact comparison with only current `dist.tarball` would incorrectly reject the
-historical immutable URL. For integrity-addressed registries, verification
-succeeds when either:
+Fetching does not require current metadata: the locked digest URL is immutable.
+If a policy separately verifies the lockfile against registry metadata, it
+accepts the resolution when the same registry, name, version, complete digest,
+and revision ordinal appear either in current `dist` or in that version's
+append-only `dist.revisions`.
 
-1. URL and integrity equal the current `dist`; or
-2. the exact URL and full integrity appear together in that version's
-   append-only `dist.revisions`.
+A syntactically valid digest route alone is not enough to prove that the
+registry associated those bytes with the package.
 
-The registry must affirm the same package name, version, registry identity,
-URL, and integrity. Merely recognizing a syntactically valid digest route is
-not enough to authorize a lockfile-supplied object.
+### Existing and older lockfiles
 
-If metadata cannot be fetched, history is absent, or any component differs,
-verification fails closed under the same policy as other unverifiable lockfile
-tarball URLs.
+The registry-side design keeps the original canonical URL immutable:
 
-### Existing lockfiles
+- a legacy lockfile with no SRI option reconstructs the canonical URL and
+  continues receiving the original bytes;
+- a revision-aware lockfile containing `?` requests those same original bytes
+  from the digest endpoint;
+- a revision-aware lockfile containing `?vN` requests replacement `N` from the
+  digest endpoint;
+- a frozen install never consults current metadata merely to choose an
+  artifact.
 
-The registry-side design keeps the original canonical URL immutable.
-Consequently:
+No mismatch recovery path is required because the canonical URL never changes.
 
-- old lockfiles containing only the original integrity reconstruct the
-  canonical URL and continue working without a pnpm change;
-- old pnpm versions resolving a patched package retain its absolute integrity
-  URL and can reproduce it, although the lockfile is host-pinned;
-- new pnpm versions store the relative integrity URL and remain portable;
-- frozen installs never consult current `dist` merely to choose an artifact.
-
-No integrity request header or mismatch recovery path is needed.
+An older pnpm that resolves fresh metadata can retain and follow the absolute
+`dist.tarball` URL. However, an older pnpm reading a new lockfile does not know
+that `?vN` changes URL reconstruction. The lockfile format must therefore gate
+this representation so older pnpm versions reject it instead of silently
+requesting the canonical URL and failing integrity verification.
 
 ### CDN and installation performance
 
-An integrity URL is an ordinary immutable CDN cache key. A cold install makes
-the same number of requests as today:
+An integrity URL is an ordinary immutable CDN cache key:
 
 ```text
-one resolved package → one tarball GET
+one resolved package → one digest URL → one tarball GET
 ```
 
-A warm CDN answers without contacting pnpr. A miss reaches one direct
-content-addressed lookup at pnpr. There is no redirect or selector request
-before the body.
+A warm CDN answers without contacting the registry application. A miss reaches
+one content-addressed lookup. There is no redirect or selector request before
+the cacheable object.
 
-The request URL is roughly one sha512 digest longer than a canonical npm
-tarball URL, which is insignificant relative to the body. pnpm already hashes
-the response for SRI and indexes its local store by content, so CPU and local
-store behavior do not gain another verification pass.
+The full sha512 digest is small relative to a tarball body and is already
+present in metadata and the lockfile. pnpm already hashes the response for SRI
+verification, so the protocol adds no cryptographic pass.
 
 If the tarball is already in pnpm's content-addressed store, installation
-remains entirely local.
+remains network-free.
 
-### Refreshing patch revisions
+### Refreshing revisions
 
 Fetching preserves the locked revision; it does not adopt the registry's
-currently selected artifact.
+current selection.
 
-A separate operation refreshes artifact revisions without changing versions:
+A separate operation can refresh artifact revisions without changing package
+versions:
 
 ```text
 pnpm update --patches
 ```
 
-For each registry package already selected in the lockfile, pnpm resolves the
-same exact `name@version`. If current `dist.integrity` changed, pnpm updates the
-relative tarball path, integrity, and package snapshot together. Dependency
-ranges are not reselected.
+For each locked registry package, pnpm resolves current metadata for the same
+exact `name@version`. If `dist.integrity` changed, pnpm updates the marked
+integrity and package snapshot atomically. Dependency metadata may differ
+between artifact revisions, so changing only the checksum would be incorrect.
 
 Whether an ordinary non-frozen install adopts a new revision automatically is a
-separate policy choice.
+separate pnpm policy choice.
 
-### Coexistence
+### One revision per package key
 
-Current pnpm package keys still permit only one revision of a registry
+Current pnpm package keys permit only one artifact revision of a registry
 `name@version` in a graph. This RFC lets different lockfiles reproducibly pin
-different revisions and lets a registry move its selected revision globally.
-It does not allow revision 1 and revision 2 to coexist under one package key.
+different revisions and lets a registry move its selected revision. It does
+not allow `v1` and `v2` to coexist under one package key.
 
 Adding integrity and registry identity to package keys would be a separate
 lockfile format change.
 
 ## Rationale and Alternatives
 
-### Store only integrity and synthesize the URL
+### Store a relative tarball path
 
-When pnpm knows a registry supports the endpoint, it could construct
-`/-/tarballs/<algorithm>/<digest>` from `resolution.integrity` and store no
-tarball path.
+An earlier design stored:
 
-That is a valid future optimization. It needs a durable registry capability
-signal on frozen installs so `{ integrity }` is not confused with today's
-canonical name-and-version reconstruction. The relative path is already
-self-describing, host-independent, and compatible with the existing lockfile
-resolution shape, so this RFC uses it first.
+```yaml
+resolution:
+  integrity: sha512-<digest>?v2
+  tarball: -/tarballs/sha512/<digest>
+```
+
+This is host-portable and explicit, but the tarball path duplicates the
+algorithm and digest. Once the SRI option durably distinguishes the retrieval
+convention, pnpm can synthesize the same path without lockfile redundancy.
+
+### Request digest URLs for every unmarked integrity
+
+pnpm could reinterpret every existing `{ integrity }` resolution as a digest
+request. Registries that do not implement the endpoint would fail or require a
+404 followed by the canonical request. That would either break compatibility
+or slow the normal registry path.
+
+The SRI option makes support explicit and durable without a probe.
 
 ### Keep the absolute integrity URL
 
-This works and is what pnpm does with non-canonical tarball URLs today. It pins
-the registry deployment hostname in the lockfile even though the endpoint is
-defined relative to a registry. Stripping only the verified registry base
-retains the useful path while preserving portability.
+Keeping `dist.tarball` works and is what pnpm does with non-canonical URLs
+today. It pins the registry deployment hostname in the lockfile even though the
+endpoint is defined relative to a registry. The marked integrity preserves
+portability.
 
 ### Select integrity through a request header
 
 A request header lets one canonical URL return several revisions, but CDNs must
-forward the field and include it in cache selection. Serving a redirect adds
-another round trip; caching bodies by the header adds deployment-specific cache
+forward the field and include it in cache selection. A redirect adds another
+round trip; caching bodies by the header adds deployment-specific cache
 configuration.
 
-Direct URLs are standard cache keys, use one request, and work for unaware npm
-clients through ordinary `dist.tarball`.
+Digest URLs are ordinary cache keys, use one request, and work for unaware npm
+clients through `dist.tarball`.
 
-### Add the integrity to the canonical package URL
+### Add integrity to the canonical package URL
 
 `<canonical-url>+<integrity>` is workable and retains a visible package
 relationship. A digest-only route is shorter, deduplicates identical artifacts
-across package aliases inside the same registry, and can be derived from
-registry plus integrity alone. Registry scoping supplies the authorization
-boundary.
+inside the same registry, and can be constructed from registry plus integrity.
+Registry scoping supplies the authorization boundary.
 
 ### Use a digest prefix
 
-Rejected. The complete sha512 digest is already in package metadata and the
-lockfile, is not a credential, and is small relative to the request. A prefix
-adds collision ambiguity and an arbitrary security parameter while saving
-negligible bandwidth.
+Rejected. The complete sha512 digest is already present, is not a credential,
+and is small relative to the request. A prefix introduces collision ambiguity
+and an arbitrary security parameter while saving negligible bandwidth.
 
-### Encode the revision as an SRI option
+### Use `?v0` for the original
 
-The
-[current SRI grammar](https://www.w3.org/TR/sri/#the-integrity-attribute)
-permits:
+`?v0` is more explicit, but a bare `?` distinguishes the original baseline from
+replacement ordinals:
 
 ```text
-sha512-<base64-digest>?pnpr-patch=echo-r2
+?    original
+?v1  first replacement
 ```
 
-and requires unknown options to be ignored. npm's
-[`ssri`](https://github.com/npm/ssri) library preserves the option while
-verifying only the underlying digest. This is a useful redundant lockfile hint,
-but it is not revision identity: changing the option does not change the
-content, and the option is not authenticated by the hash.
+The SRI grammar permits an empty option. pnpm owns the lockfile semantics and
+parses the raw suffix rather than relying on a generic SRI serializer to
+preserve it.
 
-This RFC permits pnpm to round-trip a bounded namespaced hint while retaining
-the structured `dist.revisions` record for provider, revision, fixes, and
-provenance. Support remains optional until compatibility is tested across
-package managers and third-party SRI consumers.
+### Put provider identity in the option
+
+A value such as `?pnpr-patch=echo-r2` exposes implementation and provider
+naming in a generic integrity field. It is longer, couples lockfiles to a
+provider, and duplicates structured registry metadata.
+
+Neutral numeric revisions explain artifact changes without making provider
+identity part of package resolution.
 
 ## Implementation
 
-1. Add parsing and validation for same-registry
-   `/-/tarballs/<algorithm>/<digest>` URLs.
-2. Verify that the decoded URL digest exactly matches the strongest supported
-   hash expression in `dist.integrity`, excluding SRI options.
-3. In lockfile serialization, strip the effective registry base from a
-   validated integrity URL and retain the registry-relative path.
-4. In lockfile hydration, resolve that path against the effective registry,
-   preserving registry path prefixes such as `/~main/`.
-5. Extend tarball URL verification to accept exact URL/integrity pairs from
-   `dist.revisions`, not only current `dist`.
+1. Parse the selected raw SRI hash expression and recognize an empty option or
+   canonical `vN`.
+2. Validate during resolution that the digest URL, complete hash expression,
+   and revision-aware option agree with registry metadata.
+3. Store only the marked integrity in the lockfile and gate the representation
+   with an appropriate lockfile version.
+4. During lockfile hydration, remove the option, convert the digest to
+   base64url, and resolve `-/tarballs/<algorithm>/<digest>` against the
+   effective registry base.
+5. Preserve registry path prefixes such as `/~main/`.
 6. Fetch through the existing remote-tarball fetcher and SRI verifier without
    redirect, header, or recovery behavior.
-7. Preserve bounded SRI revision hints through resolution and lockfile
-   serialization without using them for content, change detection, or policy
-   identity.
-8. Add an explicit patch-revision refresh operation that updates resolution
-   and snapshot atomically.
+7. Extend optional lockfile verification to accept current and historical
+   digest/revision pairs from `dist.revisions`.
+8. Add an explicit revision-refresh operation that updates integrity and
+   snapshot atomically.
 
 Tests should cover:
 
-- an integrity URL resolved and fetched directly in one request;
-- URL digest and SRI agreement, including base64/base64url conversion;
+- `?` round-tripping as a distinct state from no option;
+- `?v1` and later canonical positive revision ordinals;
+- malformed values such as `?v0`, `?v01`, `?v-1`, and `?vfoo`;
+- raw parsing remaining correct if a generic SRI parser drops an empty option;
+- URL derivation using the complete digest but excluding the option;
+- base64/base64url conversion;
 - malformed, abbreviated, unsupported, and mismatched digests;
-- a namespaced SRI option round-tripping while verification uses only the
-  complete digest;
-- unrecognized SRI options remaining verification-compatible and policy-inert;
-- an option-only change causing no download or new content-store object;
-- same-origin enforcement and cross-origin rejection;
-- absolute packument URL becoming a registry-relative lockfile path;
-- a named registry path prefix surviving lockfile serialization and hydration;
-- changing the configured registry base without changing the lockfile;
-- an old canonical lockfile continuing to fetch original bytes;
-- historical URL verification through an exact `dist.revisions` pair;
-- current URL verification through ordinary `dist`;
-- failure for a digest URL absent from both current and historical metadata;
-- no extra network request, redirect, or integrity pass;
-- offline install from the existing content-addressed store;
+- one direct request for both the original and replacements;
+- no `resolution.tarball` for a revision-aware integrity;
+- registry path-prefix preservation;
+- changed configured registry bases without lockfile rewrites;
+- same-origin authentication and cross-origin redirect rejection;
+- legacy unmarked lockfiles continuing to fetch canonical original bytes;
+- older pnpm rejecting the gated lockfile representation;
+- historical verification through `dist.revisions`;
+- no extra request, redirect, or integrity pass;
+- offline installation from the content-addressed store;
 - revision refresh changing integrity and snapshot but not package version.
 
 ## Prior Art
 
-- The [OCI Distribution Specification](https://github.com/opencontainers/distribution-spec/blob/main/spec.md)
+- The [OCI Distribution Specification][oci-distribution]
   retrieves content by immutable digest as well as mutable tag.
 - [Subresource Integrity](https://www.w3.org/TR/SRI/) already supplies the
   digest format and verification model used by npm lockfiles.
-- pnpm already stores non-canonical tarball URLs and resolves relative lockfile
-  tarball paths against the configured registry.
 - pnpm's content-addressed store already separates package resolution identity
   from physical file content.
 
+[oci-distribution]: https://github.com/opencontainers/distribution-spec/blob/main/spec.md
+
 ## Unresolved Questions and Bikeshedding
 
-- Should the route be `/-/tarballs/` or a pnpr-specific `/-/pnpr/tarballs/`?
-- Should a later lockfile format replace the relative path with a compact
-  content-addressed marker once registry capability is durable?
-- Should the client require sha512 exclusively or support future algorithms
-  through an allow-list?
+- Should the route be `/-/tarballs/` or another registry-neutral path?
+- Should sha512 be required initially or should algorithms be allow-listed?
+- What lockfile version should introduce revision-aware integrity fetching?
 - What is the final name and adoption policy for `pnpm update --patches`?
-- Should pnpm emit or merely preserve `pnpr-patch=<provider-revision>` while
-  SRI option semantics remain unstandardized?
+- How should named registry identity be represented so two registries can
+  resolve the same `name@version` without a lockfile collision?
