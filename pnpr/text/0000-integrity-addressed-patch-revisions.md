@@ -167,9 +167,12 @@ directly from registry plus integrity.
 4. **Revision ordinals are stable and uniquely allocated.** A distinct
    accepted replacement receives the next positive integer. Numbers are never
    reassigned. Selecting a previously accepted artifact again uses its
-   existing ordinal. Within one registry, `(name, version, digest)` maps to
-   exactly one ordinal; allocation is transactional, so concurrent refreshes
-   and retries cannot assign two ordinals to one digest.
+   existing ordinal. Allocation serializes on `(registry, name, version)`
+   and holds two uniqueness constraints within that identity: each ordinal is
+   assigned at most once, and each digest maps to exactly one ordinal. The
+   registry owns the ordinal history: provider renames, replacements, or
+   removals never renumber existing revisions, so a recorded `rN` can never
+   silently change meaning.
 5. **History is append-only.** Selecting a revision never removes or mutates an
    older artifact record or object.
 6. **Content addressing is registry-scoped.** A digest locates an object inside
@@ -217,7 +220,10 @@ replay earlier selections and reselect a vulnerable revision. Moving selection
 backward — withdrawing a bad patch, restoring the original — therefore always
 requires either a new, higher-sequence manifest from the provider or an
 explicit, separately authorized operator operation, never a replayed
-document.
+document. The checkpoint advances atomically with — never before — the
+durable acceptance of the manifest's work: a crash mid-ingestion leaves the
+previous checkpoint in place, so the same sequence can be retried rather
+than becoming permanently unacceptable.
 
 The verified tarball must contain the original `name` and `version`. A provider
 may use aliases or revision identifiers in its distribution system, but the
@@ -556,10 +562,12 @@ refresh that accepts a distinct artifact follows this order:
 6. Atomically update the projected version entry and `dist`.
 7. Invalidate projected full and abbreviated packuments.
 
-Steps 4 through 6 execute as one transaction keyed by
-`(registry, name, version, digest)`: a retry after a partial failure observes
-the existing mapping and never allocates a second ordinal for the same
-digest, and two concurrent refreshes cannot both allocate.
+Steps 4 through 6 execute as one transaction that serializes on
+`(registry, name, version)`, with uniqueness enforced separately on the
+ordinal and on the digest mapping within that identity. A retry after a
+partial failure observes the existing digest mapping instead of allocating
+again, and two concurrent refreshes carrying different digests cannot both
+receive the same next ordinal.
 
 No tarball cache object is invalidated or overwritten. Metadata never advertises
 an integrity URL before it is available.
@@ -772,7 +780,11 @@ Tests should cover:
 - a dependency-changing revision updating snapshot and integrity together;
 - provider conflict rejection;
 - a replayed lower-sequence manifest rejected despite a valid signature;
-- concurrent refreshes and retries allocating exactly one ordinal per digest;
+- a crash between ingestion and checkpoint advance leaving the same sequence
+  retryable;
+- concurrent refreshes and retries allocating exactly one ordinal per digest,
+  and never the same ordinal to two digests;
+- ordinals surviving provider rename, replacement, and removal unrenumbered;
 - digest requests evaluated against the principal's package-level access, not
   mere registry membership;
 - policy refusal answered identically on canonical and digest routes, with
@@ -814,4 +826,3 @@ contains the client and lockfile changes.
   communicate a policy shorter than lockfile lifetime?
 - Should vulnerable historical artifacts remain retrievable by default or
   require an explicit reproducibility policy?
-- Should registry revision ordinals remain stable across provider changes?
