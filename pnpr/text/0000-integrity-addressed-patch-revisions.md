@@ -489,6 +489,16 @@ integrity verification and projects its resolution-relevant fields into the
 current version document. When a revision becomes selected, the entire
 projected version entry and `dist` move atomically.
 
+When the first replacement is accepted, pnpr MUST materialize revision zero
+from the verified original artifact — including its complete integrity and
+resolution-relevant manifest — before atomically projecting the replacement.
+Every later selection rebuilds the version document's artifact-derived fields
+from the selected revision's manifest. Selecting revision zero restores the
+original artifact-derived fields and omits `dist.revision`, while retaining the
+complete revision history. A change of upstream source MUST NOT redefine
+revision zero; an artifact with a different digest is either accepted as a new
+revision or rejected by registry policy.
+
 The selected revision therefore needs no per-field override: the projected
 version entry *is* that revision's metadata. Non-selected revisions expose
 theirs through `dist.revisions[].manifest`, so a client pinning an older or
