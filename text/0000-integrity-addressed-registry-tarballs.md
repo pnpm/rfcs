@@ -13,15 +13,15 @@ The SRI option distinguishes revision-aware resolutions from legacy registry
 resolutions:
 
 ```text
-sha512-<original-digest>?       original artifact
-sha512-<first-patch-digest>?v1  first replacement
-sha512-<second-patch-digest>?v2 second replacement
+sha512-<original-digest>?r0     original artifact
+sha512-<first-patch-digest>?r1  first replacement
+sha512-<second-patch-digest>?r2 second replacement
 ```
 
-A trailing `?` is the revision-aware original, conceptually revision zero.
-`?vN`, where `N` is a positive decimal integer, identifies replacement
-revision `N`. Both forms tell pnpm to construct the integrity URL directly from
-the configured registry and the complete digest.
+`?r0` is the revision-aware original — revision zero. `?rN`, where `N` is a
+positive decimal integer, identifies replacement revision `N`. Every marked
+form tells pnpm to construct the integrity URL directly from the configured
+registry and the complete digest.
 
 The lockfile therefore needs only the marked integrity:
 
@@ -29,7 +29,7 @@ The lockfile therefore needs only the marked integrity:
 packages:
   ejs@2.7.4:
     resolution:
-      integrity: sha512-<second-patch-digest>?v2
+      integrity: sha512-<second-patch-digest>?r2
 ```
 
 A frozen install strips the SRI option for content addressing, converts the
@@ -46,6 +46,12 @@ An integrity with no option retains today's meaning: pnpm reconstructs the
 canonical name-and-version tarball URL. This preserves existing lockfiles. The
 companion registry RFC requires that canonical URL to keep serving the original
 artifact.
+
+The same ordinal also gives workspaces explicit revision selection through
+ordinary overrides: a target of the form `<version>+rN` — the ordinal carried
+as semver build metadata — pins the picked version to registry revision `N`.
+`+r0` keeps the original; a positive ordinal adopts or freezes a specific
+replacement.
 
 This is the pnpm half of
 [`pnpr/text/0000-integrity-addressed-patch-revisions.md`][pnpr-rfc].
@@ -78,7 +84,7 @@ Including the marker on the original artifact is important. A lockfile may be
 created before any provider revision exists. If it records:
 
 ```text
-sha512-<original>?
+sha512-<original>?r0
 ```
 
 it already uses the integrity endpoint. A patch added years later does not
@@ -89,7 +95,7 @@ old lockfile  → /-/tarballs/sha512/<original>
 new lockfile  → /-/tarballs/sha512/<patched>
 ```
 
-The visible transition from `?` to `?v1` also explains why the integrity
+The visible transition from `?r0` to `?r1` also explains why the integrity
 changed without exposing a provider-specific package name or version.
 
 Direct integrity URLs retain the performance and caching properties of ordinary
@@ -115,7 +121,7 @@ digest URL and a revision-aware integrity:
   "version": "2.7.4",
   "dist": {
     "tarball": "https://registry.example/-/tarballs/sha512/AbCd...",
-    "integrity": "sha512-AbCd...?v2"
+    "integrity": "sha512-AbCd...?r2"
   }
 }
 ```
@@ -126,7 +132,7 @@ For an original artifact with no replacement, the same registry advertises:
 {
   "dist": {
     "tarball": "https://registry.example/-/tarballs/sha512/Original...",
-    "integrity": "sha512-Original...?"
+    "integrity": "sha512-Original...?r0"
   }
 }
 ```
@@ -143,8 +149,7 @@ During resolution, pnpm validates:
 3. decoding the URL's base64url digest produces exactly the digest in
    `dist.integrity`;
 4. the digest is complete, well formed, and unambiguous;
-5. the selected hash expression ends in either the empty SRI option or one
-   canonical `vN` option.
+5. the selected hash expression ends in one canonical `rN` option.
 
 The option is not part of steps 2 through 4. It describes registry revision
 semantics and selects pnpm's fetch convention, but the algorithm and complete
@@ -165,30 +170,29 @@ hash-with-options = hash-expression *("?" option-expression)
 option-expression = *VCHAR
 ```
 
-The empty option is therefore valid. This RFC assigns the following
-registry/package-manager semantics:
+This RFC assigns the following registry/package-manager semantics to one
+canonical form:
 
 ```text
-<hash-expression>?     revision-aware original
-<hash-expression>?vN   revision-aware replacement N
+<hash-expression>?rN   revision-aware artifact, registry revision N
 ```
 
 Rules:
 
-- `N` is a positive base-10 integer with no leading zeroes;
+- `N` is a non-negative base-10 integer with no leading zeroes;
+- `r0` is the original artifact; the first distinct replacement is `r1`;
 - revision numbering is scoped to one registry and one `name@version`;
-- the first distinct replacement is `v1`;
 - later distinct replacements receive increasing numbers that are never
   reassigned;
 - an already recorded artifact retains its revision if selected again;
-- a suffix other than the empty option or canonical `vN` is not this protocol's
+- a suffix other than one canonical `rN` option is not this protocol's
   capability marker;
-- pnpm parses the raw SRI representation so a generic library normalizing an
-  empty option cannot erase protocol state;
 - pnpm removes all SRI options before decoding or verifying the digest.
 
-The revision number is deliberately not the content address. Editing `v1` to
-`v2` cannot make different bytes pass verification. It is a human-readable
+The letter abbreviates *registry revision* and matches the numbering of the
+structured `dist.revisions` record, which counts the original as revision `0`.
+The revision number is deliberately not the content address. Editing `r1` to
+`r2` cannot make different bytes pass verification. It is a human-readable
 ordinal and a retrieval marker; structured registry history remains
 authoritative about provider, provenance, fixes, and policy.
 
@@ -201,7 +205,7 @@ revision option, pnpm records the integrity and omits `resolution.tarball`:
 packages:
   ejs@2.7.4:
     resolution:
-      integrity: sha512-AbCd...?v2
+      integrity: sha512-AbCd...?r2
 ```
 
 This remains portable when a registry deployment moves between hostnames or
@@ -224,15 +228,16 @@ because a leading slash would discard `/~main/`.
 The marked integrity is self-describing:
 
 - no option means the legacy canonical URL convention;
-- `?` means the digest endpoint and the original artifact;
-- `?vN` means the digest endpoint and replacement revision `N`.
+- `?r0` means the digest endpoint and the original artifact;
+- `?rN` with positive `N` means the digest endpoint and replacement revision
+  `N`.
 
 ### Fetch and verification
 
 For a recognized revision-aware integrity, pnpm:
 
 1. selects the supported hash expression;
-2. records whether its option is empty or `vN`;
+2. records its revision ordinal `N`;
 3. removes the option;
 4. converts the complete base64 digest to base64url;
 5. resolves `-/tarballs/<algorithm>/<digest>` against the effective registry
@@ -278,11 +283,11 @@ only one selected registry and artifact for a given `name@version`.
 
 ### Historical lockfile verification
 
-A historical lockfile may contain `?v1` while current metadata selects `?v2`:
+A historical lockfile may contain `?r1` while current metadata selects `?r2`:
 
 ```text
-lockfile:       ejs@2.7.4 + sha512-r1?v1
-current dist:   ejs@2.7.4 + sha512-r2?v2
+lockfile:       ejs@2.7.4 + sha512-<patch-1>?r1
+current dist:   ejs@2.7.4 + sha512-<patch-2>?r2
 ```
 
 Fetching does not require current metadata: the locked digest URL is immutable.
@@ -300,9 +305,9 @@ The registry-side design keeps the original canonical URL immutable:
 
 - a legacy lockfile with no SRI option reconstructs the canonical URL and
   continues receiving the original bytes;
-- a revision-aware lockfile containing `?` requests those same original bytes
-  from the digest endpoint;
-- a revision-aware lockfile containing `?vN` requests replacement `N` from the
+- a revision-aware lockfile containing `?r0` requests those same original
+  bytes from the digest endpoint;
+- a revision-aware lockfile containing `?rN` requests replacement `N` from the
   digest endpoint;
 - a frozen install never consults current metadata merely to choose an
   artifact.
@@ -311,7 +316,7 @@ No mismatch recovery path is required because the canonical URL never changes.
 
 An older pnpm that resolves fresh metadata can retain and follow the absolute
 `dist.tarball` URL. However, an older pnpm reading a new lockfile does not know
-that `?vN` changes URL reconstruction. The lockfile format must therefore gate
+that `?rN` changes URL reconstruction. The lockfile format must therefore gate
 this representation so older pnpm versions reject it instead of silently
 requesting the canonical URL and failing integrity verification.
 
@@ -334,6 +339,77 @@ verification, so the protocol adds no cryptographic pass.
 If the tarball is already in pnpm's content-addressed store, installation
 remains network-free.
 
+### Selecting revisions through overrides
+
+A workspace can pin the artifact revision of a picked version with an ordinary
+override whose target carries the ordinal as semver build metadata:
+
+```jsonc
+{
+  "pnpm": {
+    "overrides": {
+      "ejs@2.7.4": "2.7.4+r0",        // always the original artifact
+      "lodash@4.17.21": "4.17.21+r1"  // freeze on the first replacement
+    }
+  }
+}
+```
+
+Build metadata is the correct carrier. Semver ignores it for precedence and
+equality, so a `+rN` target can never change which version is selected; it
+addresses an artifact *within* the selected version — exactly the
+version/revision split this design rests on.
+
+Semantics:
+
+- When resolution picks a `(name, version)` matched by an exact-version
+  override whose target parses as `<version>+rN`, and the picked version's
+  metadata is revision-aware, pnpm resolves registry revision `N` from
+  `dist.revisions` instead of the selected `dist`: its integrity, its digest
+  URL, and its `manifest` record. Revisions may legally differ in
+  dependencies, optional and peer dependencies, `bin`, engines, and
+  install-script posture, so the pinned entry's own `manifest` drives subtree
+  resolution — never the selected revision's fields.
+- `+r0` keeps the original — the opt-out. A positive ordinal adopts a
+  replacement the registry advertises but has not selected, or freezes one it
+  has — the explicit opt-in.
+- An ordinal the registry does not advertise is a hard resolution error; pnpm
+  must not fall forward to the selected revision.
+- Version-changing targets compose: `"ejs@2.7.4": "2.7.5+r1"` selects version
+  `2.7.5` by ordinary override rules, then its revision `1`.
+- If the picked version is not revision-aware, `+r0` is trivially satisfied by
+  the only artifact and a positive ordinal is an error.
+- On a revision-aware registry the `r<digits>` build-metadata namespace is
+  reserved for revision selection; targets carrying any other build metadata
+  are ordinary specs.
+
+This surface requires exact-version override selectors to match the **picked**
+version rather than only declared specs — a resolver semantics fix proposed
+independently of this RFC. Without it, `"ejs@2.7.4"` would miss every range
+that resolves to `2.7.4`, the dominant case.
+
+Nothing new is recorded. The resolved entry stores the marked integrity —
+`sha512-<original>?r0` for an opt-out — exactly as any revision-aware
+resolution does, and the override lives in the lockfile's existing overrides
+record with its existing change detection. Removing the override re-resolves
+the affected entries; frozen installs are untouched either way.
+
+Degradation elsewhere is a harmless no-op: npm and yarn strip build metadata
+when range-matching, resolve the plain version, and receive the registry's
+selected revision. Revision pinning is a revision-aware-client feature, and
+falling back to registry policy is the intended behavior for unaware clients.
+
+Client selection remains a preference, not a security boundary. A registry
+whose policy refuses a revision's bytes answers its digest URL with the policy
+`403`; a pinned install then fails loudly, naming the policy and the
+advertised revisions. A workspace can choose failure over substitution; it
+cannot obtain bytes the registry refuses.
+
+A full-integrity pin is deliberately not part of this grammar: base64
+characters are not legal in build metadata, the lockfile already pins exact
+bytes, ordinals are stable by the registry's invariant, and structured
+`dist.revisions` history is authoritative if a displayed ordinal is disputed.
+
 ### Refreshing revisions
 
 Fetching preserves the locked revision; it does not adopt the registry's
@@ -350,6 +426,7 @@ For each locked registry package, pnpm resolves current metadata for the same
 exact `name@version`. If `dist.integrity` changed, pnpm updates the marked
 integrity and package snapshot atomically. Dependency metadata may differ
 between artifact revisions, so changing only the checksum would be incorrect.
+Packages whose revision an override pins are skipped.
 
 Whether an ordinary non-frozen install adopts a new revision automatically is a
 separate pnpm policy choice.
@@ -359,7 +436,7 @@ separate pnpm policy choice.
 Current pnpm package keys permit only one artifact revision of a registry
 `name@version` in a graph. This RFC lets different lockfiles reproducibly pin
 different revisions and lets a registry move its selected revision. It does
-not allow `v1` and `v2` to coexist under one package key.
+not allow `r1` and `r2` to coexist under one package key.
 
 Adding integrity and registry identity to package keys would be a separate
 lockfile format change.
@@ -372,7 +449,7 @@ An earlier design stored:
 
 ```yaml
 resolution:
-  integrity: sha512-<digest>?v2
+  integrity: sha512-<digest>?r2
   tarball: -/tarballs/sha512/<digest>
 ```
 
@@ -419,19 +496,27 @@ Rejected. The complete sha512 digest is already present, is not a credential,
 and is small relative to the request. A prefix introduces collision ambiguity
 and an arbitrary security parameter while saving negligible bandwidth.
 
-### Use `?v0` for the original
+### Use an empty option for the original
 
-`?v0` is more explicit, but a bare `?` distinguishes the original baseline from
-replacement ordinals:
+An earlier design marked the original with a bare `?` — grammatically valid —
+and numbered only replacements. Rejected: an empty option is precisely what a
+generic SRI serializer is most likely to normalize away, forcing raw-string
+parsing just to preserve protocol state; build metadata cannot be empty, so
+override targets would need an asymmetric `+r0` ⇔ `?` translation rule; and
+the structured `dist.revisions` record already numbers the original as
+revision `0`. An explicit `r0` costs two characters per lockfile entry and
+removes all three problems.
 
-```text
-?    original
-?v1  first replacement
-```
+### Use `v` or `b` as the ordinal letter
 
-The SRI grammar permits an empty option. pnpm owns the lockfile semantics and
-parses the raw suffix rather than relying on a generic SRI serializer to
-preserve it.
+`v` reads as "version" — the association this design exists to avoid, because
+a revision is deliberately not a version. `b` matches the semver carrier
+("build metadata") but means the wrong thing — Debian's `+b1` is a rebuild
+with no source change — and `b` followed by digits is valid hexadecimal, so a
+reserved `b<digits>` namespace could collide with truncated-hash build
+metadata. `r` abbreviates *registry revision*, matches `dist.revisions`, and
+follows Alpine and Gentoo, which number downstream revisions of an unchanged
+upstream version `-r0`, `-r1`, and so on.
 
 ### Put provider identity in the option
 
@@ -444,8 +529,8 @@ identity part of package resolution.
 
 ## Implementation
 
-1. Parse the selected raw SRI hash expression and recognize an empty option or
-   canonical `vN`.
+1. Parse the selected SRI hash expression and recognize canonical `rN`
+   options.
 2. Validate during resolution that the digest URL, complete hash expression,
    and revision-aware option agree with registry metadata.
 3. Store only the marked integrity in the lockfile and gate the representation
@@ -458,15 +543,19 @@ identity part of package resolution.
    redirect, header, or recovery behavior.
 7. Extend optional lockfile verification to accept current and historical
    digest/revision pairs from `dist.revisions`.
-8. Add an explicit revision-refresh operation that updates integrity and
-   snapshot atomically.
+8. Resolve `<version>+rN` override targets after the version pick from
+   `dist.revisions`, using the pinned revision's own resolution metadata and
+   failing on unadvertised ordinals.
+9. Add an explicit revision-refresh operation that updates integrity and
+   snapshot atomically, skipping override-pinned packages.
 
 Tests should cover:
 
-- `?` round-tripping as a distinct state from no option;
-- `?v1` and later canonical positive revision ordinals;
-- malformed values such as `?v0`, `?v01`, `?v-1`, and `?vfoo`;
-- raw parsing remaining correct if a generic SRI parser drops an empty option;
+- `?r0` round-tripping as a distinct state from no option;
+- `?r1` and later canonical revision ordinals;
+- malformed values such as `?r01`, `?r-1`, and `?rfoo`;
+- unrecognized options such as `?v1` treated as unmarked legacy integrity;
+- options surviving lockfile serialization and SRI-library round trips;
 - URL derivation using the complete digest but excluding the option;
 - base64/base64url conversion;
 - malformed, abbreviated, unsupported, and mismatched digests;
@@ -478,6 +567,11 @@ Tests should cover:
 - legacy unmarked lockfiles continuing to fetch canonical original bytes;
 - older pnpm rejecting the gated lockfile representation;
 - historical verification through `dist.revisions`;
+- a `+r0` override pinning the original for a range-resolved pick, and a
+  positive `+rN` override adopting an advertised replacement;
+- an override naming an unadvertised ordinal failing resolution;
+- a pinned revision resolving with its own dependency metadata;
+- revision refresh skipping override-pinned packages;
 - no extra request, redirect, or integrity pass;
 - offline installation from the content-addressed store;
 - revision refresh changing integrity and snapshot but not package version.
@@ -499,5 +593,9 @@ Tests should cover:
 - Should sha512 be required initially or should algorithms be allow-listed?
 - What lockfile version should introduce revision-aware integrity fetching?
 - What is the final name and adoption policy for `pnpm update --patches`?
+- What should the global posture setting that prefers originals wholesale be
+  called, with per-package `+rN` overrides as the exceptions?
+- Should `pnpm audit --fix` write `+rN` overrides when a registry advertises a
+  replacement fixing a reported advisory?
 - How should named registry identity be represented so two registries can
   resolve the same `name@version` without a lockfile collision?

@@ -16,21 +16,23 @@ The selected version's `dist.tarball` points directly at that URL.
 revision option:
 
 ```text
-sha512-<original-digest>?       original artifact
-sha512-<first-patch-digest>?v1  first replacement
-sha512-<second-patch-digest>?v2 second replacement
+sha512-<original-digest>?r0     original artifact
+sha512-<first-patch-digest>?r1  first replacement
+sha512-<second-patch-digest>?r2 second replacement
 ```
 
-The empty option is the original baseline. Positive `vN` values number
-replacement artifacts. The package document also advertises an append-only
+`r0` is the original baseline. Higher ordinals number replacement
+artifacts. The package document also advertises an append-only
 history of the original artifact and every accepted replacement for that
 `name@version`.
 
-The option has two client-facing purposes:
+The option has three client-facing purposes:
 
 - it tells pnpm that the integrity-addressed URL can be constructed from the
   effective registry and complete digest;
-- it makes an integrity change understandable in a lockfile diff.
+- it makes an integrity change understandable in a lockfile diff;
+- it gives workspace overrides a stable ordinal to pin (the companion RFC's
+  `+rN` build-metadata targets).
 
 The option is not part of the content address or byte verification. The
 complete algorithm and digest remain the only artifact identity.
@@ -89,9 +91,9 @@ A provider can issue one replacement for a vulnerability and another when a
 later vulnerability is found in the same old release line:
 
 ```text
-ejs@2.7.4 + sha512-<upstream>?  original artifact
-ejs@2.7.4 + sha512-<echo-r1>?v1 first replacement
-ejs@2.7.4 + sha512-<echo-r2>?v2 current replacement
+ejs@2.7.4 + sha512-<upstream>?r0  original artifact
+ejs@2.7.4 + sha512-<echo-r1>?r1   first replacement
+ejs@2.7.4 + sha512-<echo-r2>?r2   current replacement
 ```
 
 Every accepted artifact must remain reproducible. Encoding these revisions as
@@ -113,12 +115,12 @@ pnpr therefore emits a revision-aware integrity and integrity URL for every
 package version served through this protocol, including an unmodified original:
 
 ```text
-sha512-<upstream>?
+sha512-<upstream>?r0
 ```
 
-pnpm can immediately lock the original by digest. If `v1` is selected later,
+pnpm can immediately lock the original by digest. If `r1` is selected later,
 the existing lockfile still requests the original digest while a newly resolved
-lockfile records the replacement digest and `?v1`.
+lockfile records the replacement digest and `?r1`.
 
 ### Immutable URLs preserve lockfiles and make CDNs fast
 
@@ -141,8 +143,8 @@ directly from registry plus integrity.
 - An **artifact** is one exact tarball for that identity, identified by its
   complete sha512 digest.
 - A **registry revision** is the stable ordinal assigned to an accepted
-  artifact for that identity. The original is revision zero and is encoded by
-  an empty SRI option. Replacements are encoded as `v1`, `v2`, and so on.
+  artifact for that identity. The original is revision zero, encoded as `r0`.
+  Replacements are encoded as `r1`, `r2`, and so on.
 - A **provider revision** is an optional provider-specific identifier such as
   `echo-r2`. It is provenance metadata and is not exposed in the SRI option.
 - The **selected revision** is the artifact advertised by the current version
@@ -159,8 +161,9 @@ directly from registry plus integrity.
 2. **Every tarball URL is immutable.** The canonical URL remains on the
    original artifact, and an integrity URL always returns the bytes named by
    its digest.
-3. **Every protocol-aware integrity is marked.** The original ends in `?`;
-   replacements end in canonical `?vN`.
+3. **Every protocol-aware integrity is marked.** Every integrity served
+   through this protocol ends in one canonical `?rN` option; the original is
+   `?r0`.
 4. **Revision ordinals are stable.** A distinct accepted replacement receives
    the next positive integer. Numbers are never reassigned. Selecting a
    previously accepted artifact again uses its existing ordinal.
@@ -260,8 +263,8 @@ embedded because `/`, `+`, and `=` have awkward URL and intermediary
 semantics. Package metadata uses standard SRI base64 plus the revision option:
 
 ```text
-sha512-<base64-digest>?
-sha512-<base64-digest>?v2
+sha512-<base64-digest>?r0
+sha512-<base64-digest>?r2
 ```
 
 The option is excluded when deriving the URL. Two marked SRI strings with the
@@ -302,23 +305,22 @@ hash-with-options = hash-expression *("?" option-expression)
 option-expression = *VCHAR
 ```
 
-The empty option is valid. This RFC assigns neutral registry revision semantics
-to two forms:
+This RFC assigns neutral registry revision semantics to one canonical form:
 
 ```text
-<hash-expression>?     original artifact
-<hash-expression>?vN   replacement revision N
+<hash-expression>?rN   registry revision N
 ```
 
-`N` is a positive decimal integer without leading zeroes. The original is
-conceptually revision zero, but omitting the number keeps `v1` aligned with the
-first actual replacement.
+`N` is a non-negative decimal integer without leading zeroes. `r0` is the
+original artifact; `r1` is the first accepted replacement. The letter
+abbreviates this design's own term — *registry revision* — and the numbering
+matches the structured `dist.revisions` record, which counts the original as
+revision `0`.
 
 pnpr applies these rules:
 
-- it emits the empty option for original artifacts served through the digest
-  protocol;
-- it emits `v1` for the first distinct accepted replacement and monotonically
+- it emits `r0` for original artifacts served through the digest protocol;
+- it emits `r1` for the first distinct accepted replacement and monotonically
   increasing values for later replacements;
 - it never uses the provider name or provider revision in the option;
 - it preserves the option in `dist.integrity`, `dist.revisions`, audit output,
@@ -330,9 +332,9 @@ pnpr applies these rules:
 - an option-only change cannot create a new stored artifact.
 
 Conforming SRI consumers ignore unrecognized options. pnpm additionally
-recognizes the empty option and `vN` as a durable signal to construct the digest
-URL. pnpm parses the raw SRI form rather than relying on generic tooling to
-preserve an empty option.
+recognizes a canonical `rN` option as a durable signal to construct the digest
+URL. Because the option is never empty, SRI tooling that preserves options
+round-trips it unchanged; pnpm still validates the canonical form itself.
 
 ### Projected package document
 
@@ -352,34 +354,38 @@ replacement:
       "dependencies": {},
       "dist": {
         "tarball": "https://registry.example/-/tarballs/sha512/<echo-r2-base64url>",
-        "integrity": "sha512-<echo-r2-base64>?v2",
+        "integrity": "sha512-<echo-r2-base64>?r2",
         "revisions": [
           {
             "revision": 0,
-            "integrity": "sha512-<upstream>?",
+            "integrity": "sha512-<upstream>?r0",
             "tarball": "https://registry.example/-/tarballs/sha512/<upstream-base64url>",
             "source": "upstream",
-            "publishedAt": "2020-04-03T00:00:00.000Z"
+            "publishedAt": "2020-04-03T00:00:00.000Z",
+            "manifest": { "dependencies": {} }
           },
           {
             "revision": 1,
-            "integrity": "sha512-<echo-r1>?v1",
+            "integrity": "sha512-<echo-r1>?r1",
             "tarball": "https://registry.example/-/tarballs/sha512/<echo-r1-base64url>",
             "source": "echo",
             "providerRevision": "echo-r1",
             "publishedAt": "2026-05-10T00:00:00.000Z",
             "fixes": ["GHSA-..."],
-            "attestations": ["https://..."]
+            "attestations": ["https://..."],
+            "manifest": { "dependencies": {} }
           },
           {
             "revision": 2,
-            "integrity": "sha512-<echo-r2>?v2",
+            "integrity": "sha512-<echo-r2>?r2",
             "tarball": "https://registry.example/-/tarballs/sha512/<echo-r2-base64url>",
             "source": "echo",
             "providerRevision": "echo-r2",
             "publishedAt": "2026-07-28T00:00:00.000Z",
             "fixes": ["GHSA-...", "CVE-2026-..."],
-            "attestations": ["https://..."]
+            "attestations": ["https://..."],
+            // the patch replaced a vulnerable transitive dependency
+            "manifest": { "dependencies": { "safe-parse": "^1.2.0" } }
           }
         ]
       }
@@ -400,11 +406,22 @@ The history provides:
 - the allow-list used when a verifier checks a historical digest;
 - retention and withdrawal state if the schema grows it later.
 
-The full packument may carry all provenance fields. Abbreviated metadata should
-keep current `dist` plus the integrity and digest URL of historical revisions
-needed for verification. An unpatched version does not need a
-`dist.revisions` array, but its `dist.tarball` still uses the digest URL and its
-`dist.integrity` still ends in `?`.
+Each revision entry carries a `manifest` object holding the
+resolution-relevant fields of its artifact — the same per-version subset the
+abbreviated packument serves: `dependencies`, `optionalDependencies`,
+`peerDependencies`, `peerDependenciesMeta`, `bundledDependencies`, `bin`,
+`engines`, `os`, `cpu`, `libc`, `hasInstallScript`, and `deprecated`.
+Revisions may legally differ in any of them, and the companion RFC lets a
+client resolve a non-selected revision — an override pinning `+rN` — without
+first downloading its tarball. These fields are always derived from the
+verified tarball's `package.json`, exactly as the selected projection is; a
+provider manifest cannot declare metadata that diverges from its artifact's
+bytes. The full packument may additionally carry all provenance fields.
+Abbreviated metadata should keep current `dist` plus the integrity, digest
+URL, and `manifest` of historical revisions, so revision pinning works from
+the metadata pnpm actually fetches. An unpatched version does not need a
+`dist.revisions` array, but its `dist.tarball` still uses the digest URL and
+its `dist.integrity` still carries `?r0`.
 
 ### The canonical URL remains the original artifact
 
@@ -437,6 +454,12 @@ pnpr reads the selected artifact's `package.json` only after the tarball passes
 integrity verification and projects its resolution-relevant fields into the
 current version document. When a revision becomes selected, the entire
 projected version entry and `dist` move atomically.
+
+The selected revision therefore needs no per-field override: the projected
+version entry *is* that revision's metadata. Non-selected revisions expose
+theirs through `dist.revisions[].manifest`, so a client pinning an older or
+newer ordinal resolves with the dependency set, peer requirements, and
+install-script posture that artifact actually has.
 
 An old lockfile retains its old digest and dependency snapshot. A pnpm revision
 refresh must replace both together; changing only the checksum would be
@@ -482,6 +505,13 @@ For every locked registry package, pnpm resolves the same exact
 `name@version`. If `dist.integrity` changed, it replaces the marked integrity
 and package snapshot atomically. It does not rerun semver selection or change
 package versions.
+
+The companion RFC also gives a workspace explicit revision selection through
+ordinary overrides: a target of the form `<version>+rN` pins the pick to
+registry revision `N` — `+r0` keeps the original, a positive ordinal adopts or
+freezes a specific replacement. `pnpm update --patches` skips pinned packages,
+and a revision whose bytes this registry's policy refuses fails the install
+explicitly instead of falling forward to another artifact.
 
 Whether non-frozen `pnpm install` automatically adopts a new revision remains a
 pnpm policy question.
@@ -610,18 +640,35 @@ Rejected. A full sha512 value is small relative to an HTTP request or tarball.
 Prefixes introduce ambiguity, collision work, and an arbitrary minimum length.
 The complete digest is package metadata, not a credential.
 
-### Use `?v0` for the original
+### Use an empty option for the original
 
-`?v0` would work, but the empty option gives the original a visibly distinct
-baseline while allowing the first actual replacement to be `v1`:
+An earlier draft marked the original with a bare `?` — the SRI grammar permits
+an empty option — and numbered only replacements. Rejected:
 
-```text
-?    original
-?v1  first replacement
-```
+- an empty option is exactly the state a generic SRI library is most likely to
+  normalize away, forcing pnpm to parse raw strings just to preserve protocol
+  state;
+- the companion RFC's override targets carry the same ordinal as semver build
+  metadata, which cannot be empty, so the baseline would need an asymmetric
+  `+r0` ⇔ `?` translation rule;
+- the structured `dist.revisions` record already numbers the original as
+  revision `0`; a distinct empty-option spelling special-cases the baseline
+  everywhere the ordinal appears.
 
-The SRI grammar permits an empty option. pnpm parses it directly rather than
-delegating preservation of protocol state to a generic SRI library.
+An explicit `r0` removes all three problems at the cost of two characters per
+lockfile entry.
+
+### Use `v` or `b` as the ordinal letter
+
+`v1` reads as "version 1" — the one association this design works hardest to
+avoid, since a revision is deliberately not a version. `b` matches the semver
+carrier ("build metadata") but means the wrong thing: Debian's `+b1` denotes a
+rebuild with no source change, whereas a patch revision is different source;
+`b` followed by digits is also valid hexadecimal, so a reserved `b<digits>`
+namespace could collide with truncated-hash build metadata. `r` abbreviates
+*registry revision*, matches `dist.revisions`, and has exact distro precedent:
+Alpine (`-r0`, `-r1`) and Gentoo (`-rN`) number downstream revisions of an
+unchanged upstream version the same way, starting at `r0`.
 
 ### Put provider identity in the SRI option
 
@@ -629,7 +676,7 @@ An option such as `?pnpr-patch=echo-r2` leaks the implementation and provider
 scheme into a generic integrity field. It also makes a provider rename look
 like an artifact change.
 
-Neutral `vN` ordinals are sufficient for lockfile visibility. Structured
+Neutral `rN` ordinals are sufficient for lockfile visibility. Structured
 `dist.revisions` and signed provider manifests remain authoritative for
 provenance, fixes, attestations, and policy.
 
@@ -655,7 +702,7 @@ The compact suffix complements but does not replace `dist.revisions`.
    with range request, CDN, and access-policy support.
 5. Expose original upstream artifacts through the digest route even before any
    replacement exists.
-6. Emit an empty SRI option for originals and stable `vN` options for
+6. Emit `r0` options for originals and stable higher `rN` options for
    replacements.
 7. Project selected digest URLs and append-only `dist.revisions` into full and
    abbreviated packuments.
@@ -666,13 +713,15 @@ The compact suffix complements but does not replace `dist.revisions`.
 
 Tests should cover:
 
-- unpatched originals exposed through a digest URL with a trailing `?`;
+- unpatched originals exposed through a digest URL with an `?r0` option;
 - original, first replacement, and second replacement retrievable by digest;
-- `v1` assigned to the first replacement and stable monotonic ordinals;
+- `r1` assigned to the first replacement and stable monotonic ordinals;
 - malformed revision options rejected from protocol metadata;
 - `dist.tarball` selecting the latest revision without changing name/version;
 - canonical URLs continuing to return original bytes after every refresh;
 - full and abbreviated metadata exposing required revision history;
+- revision entries carrying `manifest` fields equal to their verified
+  artifacts' `package.json` (declared provider metadata cannot diverge);
 - SRI options excluded from digest lookup, byte verification, and policy;
 - forged revision options unable to change accepted bytes;
 - provider revisions represented only in structured metadata;
@@ -714,7 +763,8 @@ contains the client and lockfile changes.
 
 - Is `/-/tarballs/<algorithm>/<digest>` the right registry-neutral endpoint?
 - Is `dist.revisions` the right package-document field name?
-- Which projected manifest fields should historical entries retain?
+- Beyond the resolution-relevant fields required for revision selection, which
+  projected manifest fields should historical entries retain?
 - Does `pnpm update --patches` update every artifact revision, only
   security-motivated revisions, or accept provider and advisory filters?
 - How long must a pnpr deployment retain historical content, and how should it
