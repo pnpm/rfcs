@@ -506,12 +506,13 @@ For every locked registry package, pnpm resolves the same exact
 and package snapshot atomically. It does not rerun semver selection or change
 package versions.
 
-The companion RFC also gives a workspace explicit revision selection through
-ordinary overrides: a target of the form `<version>+rN` pins the pick to
-registry revision `N` — `+r0` keeps the original, a positive ordinal adopts or
-freezes a specific replacement. `pnpm update --patches` skips pinned packages,
-and a revision whose bytes this registry's policy refuses fails the install
-explicitly instead of falling forward to another artifact.
+The companion RFC also gives a workspace explicit revision selection: a spec
+of the form `<version>+rN` — as an override target or a declared dependency —
+pins the dependency to that exact version and registry revision `N`. `+r0`
+keeps the original, a positive ordinal adopts or freezes a specific
+replacement. `pnpm update --patches` skips pinned packages, and a revision
+whose bytes this registry's policy refuses fails the install explicitly
+instead of falling forward to another artifact.
 
 Whether non-frozen `pnpm install` automatically adopts a new revision remains a
 pnpm policy question.

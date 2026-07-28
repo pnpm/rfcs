@@ -47,11 +47,11 @@ canonical name-and-version tarball URL. This preserves existing lockfiles. The
 companion registry RFC requires that canonical URL to keep serving the original
 artifact.
 
-The same ordinal also gives workspaces explicit revision selection through
-ordinary overrides: a target of the form `<version>+rN` — the ordinal carried
-as semver build metadata — pins the picked version to registry revision `N`.
-`+r0` keeps the original; a positive ordinal adopts or freezes a specific
-replacement.
+The same ordinal also gives workspaces explicit revision selection: a spec of
+the form `<version>+rN` — the ordinal carried as semver build metadata — pins
+a dependency to that exact version and registry revision `N`, usable as an
+override target or a directly declared dependency. `+r0` keeps the original;
+a positive ordinal adopts or freezes a specific replacement.
 
 This is the pnpm half of
 [`pnpr/text/0000-integrity-addressed-patch-revisions.md`][pnpr-rfc].
@@ -356,37 +356,51 @@ override whose target carries the ordinal as semver build metadata:
 ```
 
 Build metadata is the correct carrier. Semver ignores it for precedence and
-equality, so a `+rN` target can never change which version is selected; it
+equality, so the `+rN` half can never affect which version a spec selects; it
 addresses an artifact *within* the selected version — exactly the
 version/revision split this design rests on.
 
-Semantics:
+No new override semantics are required. pnpm's exact-version selectors already
+match any declared range that intersects them — `"ejs@2.7.4"` fires for a
+dependency declared `^2.7.0` — rewriting the spec before resolution, behavior
+documented in [pnpm/pnpm#13470] and retained for parity with npm's overrides.
+What is new is only the target syntax: `<version>+rN` is a
+**revision-addressed spec**, meaningful anywhere a spec appears — an override
+target or a directly declared dependency.
 
-- When resolution picks a `(name, version)` matched by an exact-version
-  override whose target parses as `<version>+rN`, and the picked version's
-  metadata is revision-aware, pnpm resolves registry revision `N` from
-  `dist.revisions` instead of the selected `dist`: its integrity, its digest
-  URL, and its `manifest` record. Revisions may legally differ in
-  dependencies, optional and peer dependencies, `bin`, engines, and
-  install-script posture, so the pinned entry's own `manifest` drives subtree
-  resolution — never the selected revision's fields.
+[pnpm/pnpm#13470]: https://github.com/pnpm/pnpm/issues/13470
+
+Resolving a `<version>+rN` spec, pnpm:
+
+1. resolves the version half normally (build metadata is ignored for version
+   matching);
+2. selects registry revision `N` from the resolved entry's `dist.revisions`
+   instead of the selected `dist`: its integrity, its digest URL, and its
+   `manifest` record. Revisions may legally differ in dependencies, optional
+   and peer dependencies, `bin`, engines, and install-script posture, so the
+   pinned entry's own `manifest` drives subtree resolution — never the
+   selected revision's fields.
+
+Rules:
+
 - `+r0` keeps the original — the opt-out. A positive ordinal adopts a
   replacement the registry advertises but has not selected, or freezes one it
   has — the explicit opt-in.
 - An ordinal the registry does not advertise is a hard resolution error; pnpm
   must not fall forward to the selected revision.
-- Version-changing targets compose: `"ejs@2.7.4": "2.7.5+r1"` selects version
-  `2.7.5` by ordinary override rules, then its revision `1`.
-- If the picked version is not revision-aware, `+r0` is trivially satisfied by
-  the only artifact and a positive ordinal is an error.
+- Version-changing targets compose: `"ejs@2.7.4": "2.7.5+r1"` rewrites the
+  spec to version `2.7.5`, then selects its revision `1`.
+- If the resolved version is not revision-aware, `+r0` is trivially satisfied
+  by the only artifact and a positive ordinal is an error.
 - On a revision-aware registry the `r<digits>` build-metadata namespace is
-  reserved for revision selection; targets carrying any other build metadata
-  are ordinary specs.
+  reserved for revision selection; specs carrying any other build metadata are
+  ordinary specs.
 
-This surface requires exact-version override selectors to match the **picked**
-version rather than only declared specs — a resolver semantics fix proposed
-independently of this RFC. Without it, `"ejs@2.7.4"` would miss every range
-that resolves to `2.7.4`, the dominant case.
+Like any exact-selector override, a `+rN` override **pins the version**: a
+dependency declared `^2.7.0` stays on `2.7.4+r0` after upstream publishes a
+fixed `2.7.5`, until the override is updated or removed. That is ordinary,
+visible override behavior, and audit reporting of overrides that pin
+superseded or vulnerable versions applies to it unchanged.
 
 Nothing new is recorded. The resolved entry stores the marked integrity —
 `sha512-<original>?r0` for an opt-out — exactly as any revision-aware
@@ -394,10 +408,13 @@ resolution does, and the override lives in the lockfile's existing overrides
 record with its existing change detection. Removing the override re-resolves
 the affected entries; frozen installs are untouched either way.
 
-Degradation elsewhere is a harmless no-op: npm and yarn strip build metadata
-when range-matching, resolve the plain version, and receive the registry's
-selected revision. Revision pinning is a revision-aware-client feature, and
-falling back to registry policy is the intended behavior for unaware clients.
+Degradation elsewhere is predictable: npm's overrides share the
+intersection-matching behavior, and node-semver strips build metadata, so npm
+treats the target as plain `2.7.4` — the version is pinned identically, but
+the artifact is the registry's selected revision. Degradation is a pin
+without revision selection; revision addressing is a revision-aware-client
+feature, and receiving registry policy is the intended fallback for unaware
+clients.
 
 Client selection remains a preference, not a security boundary. A registry
 whose policy refuses a revision's bytes answers its digest URL with the policy
@@ -543,9 +560,10 @@ identity part of package resolution.
    redirect, header, or recovery behavior.
 7. Extend optional lockfile verification to accept current and historical
    digest/revision pairs from `dist.revisions`.
-8. Resolve `<version>+rN` override targets after the version pick from
-   `dist.revisions`, using the pinned revision's own resolution metadata and
-   failing on unadvertised ordinals.
+8. Resolve `<version>+rN` specs — override targets or declared dependencies —
+   by resolving the version half normally, then selecting the revision from
+   `dist.revisions` with its own resolution metadata, failing on unadvertised
+   ordinals.
 9. Add an explicit revision-refresh operation that updates integrity and
    snapshot atomically, skipping override-pinned packages.
 
@@ -567,8 +585,9 @@ Tests should cover:
 - legacy unmarked lockfiles continuing to fetch canonical original bytes;
 - older pnpm rejecting the gated lockfile representation;
 - historical verification through `dist.revisions`;
-- a `+r0` override pinning the original for a range-resolved pick, and a
-  positive `+rN` override adopting an advertised replacement;
+- a `+r0` override applying to an intersecting declared range and pinning the
+  original, and a positive `+rN` override adopting an advertised replacement;
+- a `+rN` spec declared directly as a dependency;
 - an override naming an unadvertised ordinal failing resolution;
 - a pinned revision resolving with its own dependency metadata;
 - revision refresh skipping override-pinned packages;
