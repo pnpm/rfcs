@@ -697,6 +697,31 @@ The digest-only route deduplicates naturally and lets pnpm construct the URL
 from registry plus integrity. Registry-scoped authorization provides the
 package-policy boundary omitted from the path.
 
+### Encode the revision ordinal in the tarball URL
+
+Distinct per-revision URLs such as
+`ejs/-/ejs-2.7.4+echo.1.tgz` avoid repointing the canonical route: old URLs
+keep serving their bytes, and metadata advances to a new URL on each accepted
+artifact. npm clients ignore the build metadata and see the regular version.
+The URLs are human-readable, and a proxy log identifies the artifact without a
+digest-to-package index.
+
+The scheme shares the append-only intent of this design but the URL only
+names the bytes — it does not commit to them. Immutability becomes a policy
+the registry must honor rather than a property clients can verify: a buggy or
+compromised registry can serve different bytes at the same ordinal URL, and
+nothing in the request detects it before integrity verification of a
+completed download. The digest route is self-authenticating — the CDN cache
+key is the content itself, pnpm constructs the URL from registry plus the
+integrity it already stores, and the no-fallback fetch rule holds by
+construction. Embedding a provider name in the URL also leaks provider
+identity into a route that survives provider changes, which the neutral
+ordinal deliberately avoids.
+
+A registry may still expose such a route as a convenience alias for humans
+and non-pnpm tooling. The fetch convention pnpm relies on remains the digest
+URL.
+
 ### Use only a digest prefix
 
 Rejected. A full sha512 value is small relative to an HTTP request or tarball.
