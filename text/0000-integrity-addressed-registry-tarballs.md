@@ -475,18 +475,58 @@ lockfile format change.
 
 An earlier draft of this RFC carried the ordinal inside the integrity value,
 using the SRI option grammar: `sha512-<digest>?r2`, with `?r0` marking
-originals. The option is self-contained — it travels wherever the integrity
-string is copied — but it was rejected for the field:
+originals. SRI reserves `?options` for exactly this kind of extension, and the
+option is self-contained: it travels wherever the integrity string is copied,
+so no new field has to be threaded through resolution types, fetcher options,
+snapshot converters, or cache entries. Rejected nonetheless:
 
-- it assigns protocol semantics to a generic web-spec extension point, and
-  npm metadata is parsed by many strict SRI consumers that may reject or
-  normalize options;
-- preserving options through SRI libraries and serializers becomes
-  load-bearing protocol state, an entire class of tooling fragility a plain
-  YAML/JSON field does not have;
+- pnpm's Rust stack deserializes `resolution.integrity` into an
+  `ssri::Integrity`, whose parser has no option grammar at all: it splits on
+  `-` and takes the remainder as the digest, so `sha512-<digest>?r2` parses
+  *successfully* with the option absorbed into the digest string. It
+  round-trips through `Display`, so the corruption survives a read and write
+  cycle intact and surfaces far from the parse — as a verification failure, or
+  as a base64 decode panic in `to_hex`. Silent absorption is a worse failure
+  mode than rejection.
+- integrity-string equality is byte equality throughout pnpm today. The
+  package requester decides whether to force a refetch by comparing the
+  previous and freshly resolved integrity strings, and the same string is
+  persisted beside a fetched tarball for later comparison. An ordinal inside
+  the value makes a revision-only annotation difference read as a byte change
+  at every such site. As a separate field, the invariant that the revision is
+  excluded from equality, store keys, and verification holds for free; as an
+  option, every call site in both stacks has to strip it first.
 - the ordinal is buried at the end of a ninety-character line, so a lockfile
   diff hides exactly the information the marker exists to show; a separate
   `revision` line is legible on its own.
+
+### Encode the revision in the lockfile package key
+
+pnpm's dep-path grammar already carries non-semver information in the version
+slot — `foo@file:...`, `node@runtime:...`, and the registry-qualified
+`foo@work:1.0.0` keys of [pnpm/pnpm#13528] — so the ordinal could ride there
+too, as `ejs@2.7.4+r2`, reusing the `+rN` spec syntax instead of adding a
+resolution field. That would also let `r1` and `r2` coexist in one graph,
+which the `revision` field cannot (see *One revision per package key*).
+
+Rejected because a dep path is repeated once per dependent. In pnpm's own
+lockfile `semver@7.8.5` appears as a snapshot dependency ref fifty times
+beside its `packages:` and `snapshots:` keys, so one revision bump would
+rewrite roughly fifty lines of renaming and bury the two lines that describe
+the artifact change. pnpm has already run this experiment:
+`patchedDependencies` encodes `(patch_hash=...)` into the dep path, so editing
+a patch file rewrites every reference to the patched package. The `revision`
+field changes exactly two lines, integrity and ordinal, and
+`pnpm update --patches` is meant to be run repeatedly.
+
+The difference from #13528 is not that a key may not carry extra data, but
+which data belongs there. A package's registry is effectively immutable for
+the life of a dependency; a revision is designed to change. Encoding a mutable
+attribute in an identity key turns every update into a graph-wide rename, and
+the key also names the virtual store directory, so a revision bump would
+relink every dependent instead of re-materializing one package's files.
+
+[pnpm/pnpm#13528]: https://github.com/pnpm/pnpm/pull/13528
 
 ### Mark original artifacts in the lockfile
 

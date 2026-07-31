@@ -735,9 +735,15 @@ with `?r0` (or a bare `?`) marking originals — so the marker traveled inside
 the integrity string itself. Rejected in favor of the separate
 `dist.revision` field:
 
-- SRI options assign protocol semantics to a generic web-spec extension point
-  that strict consumers may reject and generic serializers may normalize
-  away, making option preservation load-bearing protocol state;
+- SRI reserves `?options` for extensions, but real npm-ecosystem SRI parsers
+  do not implement the grammar. pnpm's Rust `ssri` splits on `-` and takes the
+  remainder as the digest, so an option parses *successfully* into a corrupted
+  digest and round-trips intact, failing far from the parse. Making option
+  preservation load-bearing protocol state is a class of fragility a plain
+  JSON field does not have;
+- integrity-string equality is used as byte equality across the ecosystem, so
+  an ordinal inside the value makes a revision-only difference read as a
+  content change. The companion pnpm RFC records where this bites a client;
 - marking originals binds every metadata entry and lockfile entry to
   revision-aware registries, although the canonical route already guarantees
   originals without any marker;
