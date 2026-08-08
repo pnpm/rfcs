@@ -679,7 +679,8 @@ Tests should cover:
 - malformed, abbreviated, unsupported, and mismatched digests;
 - registry path-prefix preservation;
 - changed configured registry bases without lockfile rewrites;
-- same-origin authentication and cross-origin redirect rejection;
+- same-origin authentication and rejection of every redirect (3xx),
+  same-origin included;
 - a lockfile without `revision` entries remaining readable by older pnpm, and
   older pnpm rejecting a lockfile that contains the gated field;
 - historical verification through `dist.revisions`;
