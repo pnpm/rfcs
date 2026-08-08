@@ -216,7 +216,11 @@ opaque tarball; that delivery encoding is not exposed to consumers:
 
 pnpr verifies the manifest signature, downloads the artifact, verifies its
 complete integrity, and stores it in the selected registry's
-content-addressed store before making it visible.
+content-addressed store before making it visible. The fetch itself is
+constrained: https only, artifact origins declared in provider configuration
+the way the manifest origin is, private and link-local addresses rejected,
+no redirects, provider credentials sent only to declared origins, and
+download size bounded before and after decompression.
 
 The signed document carries a monotonic `sequence`. pnpr persists the highest
 sequence it has accepted per provider and rejects any manifest whose sequence
