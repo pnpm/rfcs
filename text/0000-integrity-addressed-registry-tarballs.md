@@ -630,6 +630,9 @@ metadata. `r` abbreviates *registry revision*, matches `dist.revisions`, and
 follows Alpine and Gentoo, which number downstream revisions of an unchanged
 upstream version `-r0`, `-r1`, and so on.
 
+The syntax is npm-specific; the portable rule is that the revision signal
+lives in resolution metadata, never in the version string.
+
 ### Put provider identity in the revision record
 
 A value such as `revision: echo-r2` exposes implementation and provider
