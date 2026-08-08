@@ -40,11 +40,11 @@ No tarball URL, provider alias, custom request header, redirect, integrity
 failure, metadata lookup, or capability probe is required. The field itself is
 the per-entry signal.
 
-The same ordinal also gives workspaces explicit revision selection: a spec of
-the form `<version>+rN` — the ordinal carried as semver build metadata — pins
-a dependency to that exact version and registry revision `N`, usable as an
-override target or a directly declared dependency. `+r0` keeps the original;
-a positive ordinal adopts or freezes a specific replacement.
+The same revision number also gives workspaces explicit revision selection: a
+spec of the form `<version>+rN` — the revision number carried as semver build
+metadata — pins a dependency to that exact version and registry revision `N`,
+usable as an override target or a directly declared dependency. `+r0` keeps the
+original; a positive revision number adopts or freezes a specific replacement.
 
 This is the pnpm half of
 [`pnpr/text/0000-integrity-addressed-patch-revisions.md`][pnpr-rfc].
@@ -106,7 +106,7 @@ ordinary immutable URLs:
 ### Registry metadata
 
 A registry whose selected artifact for a version is a replacement advertises
-the digest URL, a standard SRI integrity, and the revision ordinal:
+the digest URL, a standard SRI integrity, and the revision number:
 
 ```jsonc
 {
@@ -135,7 +135,8 @@ When `dist.revision` is present, pnpm validates during resolution:
 3. decoding the URL's base64url digest produces exactly the digest in
    `dist.integrity`;
 4. the digest is complete, well formed, and unambiguous;
-5. `dist.revision` is a positive integer.
+5. `dist.revision` is a canonical positive integer within the range defined
+   under *The revision field*.
 
 When a digest-route `dist.tarball` appears *without* `dist.revision` — an
 original served through the registry's CDN route — pnpm normalizes: it
@@ -150,25 +151,31 @@ standard integrity, and ignore the unknown `dist.revision` field.
 
 Rules:
 
-- `N` is a positive base-10 integer;
+- `N` is a positive base-10 integer in canonical form — no leading zeros, sign,
+  or exponent — bounded by `0 < N ≤ 2^53 − 1` (JavaScript's
+  `Number.MAX_SAFE_INTEGER`), so registries implemented in any language and
+  JSON parsers everywhere agree on every representable revision number;
+  registries must not allocate outside the range, and clients reject values
+  outside it;
 - revision numbering is scoped to one registry and one `name@version`;
 - the original artifact is revision zero and is never recorded — the absence
   of the field is the durable signal for the canonical fetch convention,
   which the registry invariant pins to revision zero;
-- ordinals are never reassigned, and an already recorded artifact retains its
-  ordinal if selected again;
+- revision numbers are never reassigned, and an already recorded artifact
+  retains its revision number if selected again;
 - the field matches the numbering of the structured `dist.revisions` record,
   which counts the original as revision `0`.
 
-The revision number is deliberately not the content address. Editing
-`revision: 1` to `revision: 2` cannot make different bytes pass verification.
-It is a human-readable ordinal and a retrieval marker; structured registry
-history remains authoritative about provider, provenance, fixes, and policy.
+The revision number is deliberately not the content address. Editing `revision:
+1` to `revision: 2` cannot make different bytes pass verification. It is a
+human-readable position in the revision history and a retrieval marker;
+structured registry history remains authoritative about provider, provenance,
+fixes, and policy.
 
 ### Lockfile representation
 
-For a validated replacement, pnpm records the integrity and ordinal and omits
-`resolution.tarball`:
+For a validated replacement, pnpm records the integrity and revision number and
+omits `resolution.tarball`:
 
 ```yaml
 packages:
@@ -221,9 +228,11 @@ cannot match a replacement's integrity — so the failure surfaces immediately
 rather than after a wasted download.
 
 The endpoint is same-origin with the configured registry, so ordinary registry
-authentication and credential-scoping behavior applies. Redirects to another
-origin are not part of this protocol. Knowledge of a digest is not
-authorization to retrieve it.
+authentication and credential-scoping behavior applies. Redirects — to another
+origin or the same origin — are not part of this protocol; every 3xx response
+fails the fetch. One GET means one GET: every extra hop is another log that
+sees the URL, and a deployment that wants a CDN puts it at the registry
+origin. Knowledge of a digest is not authorization to retrieve it.
 
 The `revision` field is excluded from:
 
@@ -234,7 +243,7 @@ The `revision` field is excluded from:
 
 A revision-only difference does not create another content-store object or
 require another download. The structured registry record decides whether the
-recorded ordinal is truthful.
+recorded revision number is truthful.
 
 ### Feature detection is advisory, never load-bearing
 
@@ -269,14 +278,14 @@ does not make that collision worse, but content addressing does not solve it.
 Until registry identity is represented unambiguously, one lockfile can contain
 only one selected registry and artifact for a given `name@version`.
 
-Revision ordinals are registry-scoped, not global. The same `name@version`
-may have different revision histories on different registries, so
-re-resolving a `+rN` spec against a different registry can select different
-bytes, a different ordinal for the same bytes, or fail. A frozen install
-stays safe regardless — it fetches by complete digest and verifies the bytes
-— but portability across registry configuration guarantees integrity, never
-availability or identical ordinal meaning. An ordinal-addressed spec is an
-assertion about the currently effective registry.
+Revision numbers are registry-scoped, not global. The same `name@version` may
+have different revision histories on different registries, so re-resolving a
+`+rN` spec against a different registry can select different bytes, a different
+revision number for the same bytes, or fail. A frozen install stays safe
+regardless — it fetches by complete digest and verifies the bytes — but
+portability across registry configuration guarantees integrity, never
+availability or identical revision-number meaning. A revision-addressed spec is
+an assertion about the currently effective registry.
 
 ### Historical lockfile verification
 
@@ -291,7 +300,7 @@ current dist:   ejs@2.7.4, integrity sha512-<patch-2>, revision 2
 Fetching does not require current metadata: the locked digest URL is immutable.
 If a policy separately verifies the lockfile against registry metadata, it
 accepts the resolution when the same registry, name, version, complete digest,
-and revision ordinal appear either in current `dist` or in that version's
+and revision number appear either in current `dist` or in that version's
 append-only `dist.revisions`.
 
 A syntactically valid digest route alone is not enough to prove that the
@@ -341,7 +350,7 @@ remains network-free.
 ### Selecting revisions through overrides
 
 A workspace can pin the artifact revision of a picked version with an ordinary
-override whose target carries the ordinal as semver build metadata:
+override whose target carries the revision number as semver build metadata:
 
 ```jsonc
 {
@@ -382,15 +391,15 @@ Resolving a `<version>+rN` spec, pnpm:
 
 Rules:
 
-- `+r0` keeps the original — the opt-out. A positive ordinal adopts a
+- `+r0` keeps the original — the opt-out. A positive revision number adopts a
   replacement the registry advertises but has not selected, or freezes one it
   has — the explicit opt-in.
-- An ordinal the registry does not advertise is a hard resolution error; pnpm
-  must not fall forward to the selected revision.
+- A revision number the registry does not advertise is a hard resolution error;
+  pnpm must not fall forward to the selected revision.
 - Version-changing targets compose: `"ejs@2.7.4": "2.7.5+r1"` rewrites the
   spec to version `2.7.5`, then selects its revision `1`.
 - If the resolved version is not revision-aware, `+r0` is trivially satisfied
-  by the only artifact and a positive ordinal is an error.
+  by the only artifact and a positive revision number is an error.
 - On a revision-aware registry the `r<digits>` build-metadata namespace is
   reserved for revision selection; specs carrying any other build metadata are
   ordinary specs.
@@ -432,8 +441,9 @@ cannot obtain bytes the registry refuses.
 
 A full-integrity pin is deliberately not part of this grammar: base64
 characters are not legal in build metadata, the lockfile already pins exact
-bytes, ordinals are stable by the registry's invariant, and structured
-`dist.revisions` history is authoritative if a recorded ordinal is disputed.
+bytes, revision numbers are stable by the registry's invariant, and structured
+`dist.revisions` history is authoritative if a recorded revision number is
+disputed.
 
 ### Refreshing revisions
 
@@ -473,8 +483,8 @@ lockfile format change.
 
 ### Encode the revision as an SRI option
 
-An earlier draft of this RFC carried the ordinal inside the integrity value,
-using the SRI option grammar: `sha512-<digest>?r2`, with `?r0` marking
+An earlier draft of this RFC carried the revision number inside the integrity
+value, using the SRI option grammar: `sha512-<digest>?r2`, with `?r0` marking
 originals. SRI reserves `?options` for exactly this kind of extension, and the
 option is self-contained: it travels wherever the integrity string is copied,
 so no new field has to be threaded through resolution types, fetcher options,
@@ -488,36 +498,36 @@ snapshot converters, or cache entries. Rejected nonetheless:
   cycle intact and surfaces far from the parse — as a verification failure, or
   as a base64 decode panic in `to_hex`. Silent absorption is a worse failure
   mode than rejection.
-- integrity-string equality is byte equality throughout pnpm today. The
-  package requester decides whether to force a refetch by comparing the
-  previous and freshly resolved integrity strings, and the same string is
-  persisted beside a fetched tarball for later comparison. An ordinal inside
-  the value makes a revision-only annotation difference read as a byte change
-  at every such site. As a separate field, the invariant that the revision is
-  excluded from equality, store keys, and verification holds for free; as an
-  option, every call site in both stacks has to strip it first.
-- the ordinal is buried at the end of a ninety-character line, so a lockfile
-  diff hides exactly the information the marker exists to show; a separate
-  `revision` line is legible on its own.
+- integrity-string equality is byte equality throughout pnpm today. The package
+  requester decides whether to force a refetch by comparing the previous and
+  freshly resolved integrity strings, and the same string is persisted beside a
+  fetched tarball for later comparison. A revision number inside the value
+  makes a revision-only annotation difference read as a byte change at every
+  such site. As a separate field, the invariant that the revision is excluded
+  from equality, store keys, and verification holds for free; as an option,
+  every call site in both stacks has to strip it first.
+- the revision number is buried at the end of a ninety-character line, so a
+  lockfile diff hides exactly the information the marker exists to show; a
+  separate `revision` line is legible on its own.
 
 ### Encode the revision in the lockfile package key
 
 pnpm's dep-path grammar already carries non-semver information in the version
 slot — `foo@file:...`, `node@runtime:...`, and the registry-qualified
-`foo@work:1.0.0` keys of [pnpm/pnpm#13528] — so the ordinal could ride there
-too, as `ejs@2.7.4+r2`, reusing the `+rN` spec syntax instead of adding a
-resolution field. That would also let `r1` and `r2` coexist in one graph,
-which the `revision` field cannot (see *One revision per package key*).
+`foo@work:1.0.0` keys of [pnpm/pnpm#13528] — so the revision number could ride
+there too, as `ejs@2.7.4+r2`, reusing the `+rN` spec syntax instead of adding a
+resolution field. That would also let `r1` and `r2` coexist in one graph, which
+the `revision` field cannot (see *One revision per package key*).
 
 Rejected because a dep path is repeated once per dependent. In pnpm's own
-lockfile `semver@7.8.5` appears as a snapshot dependency ref fifty times
-beside its `packages:` and `snapshots:` keys, so one revision bump would
-rewrite roughly fifty lines of renaming and bury the two lines that describe
-the artifact change. pnpm has already run this experiment:
-`patchedDependencies` encodes `(patch_hash=...)` into the dep path, so editing
-a patch file rewrites every reference to the patched package. The `revision`
-field changes exactly two lines, integrity and ordinal, and
-`pnpm update --patches` is meant to be run repeatedly.
+lockfile `semver@7.8.5` appears as a snapshot dependency ref fifty times beside
+its `packages:` and `snapshots:` keys, so one revision bump would rewrite
+roughly fifty lines of renaming and bury the two lines that describe the
+artifact change. pnpm has already run this experiment: `patchedDependencies`
+encodes `(patch_hash=...)` into the dep path, so editing a patch file rewrites
+every reference to the patched package. The `revision` field changes exactly
+two lines, integrity and revision number, and `pnpm update --patches` is meant
+to be run repeatedly.
 
 The difference from #13528 is not that a key may not carry extra data, but
 which data belongs there. A package's registry is effectively immutable for
@@ -555,12 +565,12 @@ registry invariant.
 
 Registry feature detection (the pnpr handshake) could tell pnpm to fetch
 everything by digest, with no lockfile change at all for originals — but
-replacements still need the per-entry ordinal and integrity, so the field is
-required regardless, and making the fetch path depend on a probe would put a
-network round trip and a cached-capability staleness question in front of
+replacements still need the per-entry revision number and integrity, so the
+field is required regardless, and making the fetch path depend on a probe would
+put a network round trip and a cached-capability staleness question in front of
 every install. Detection is kept advisory (diagnostics, optional
-original-by-digest optimization); the lockfile field alone determines the
-fetch convention.
+original-by-digest optimization); the lockfile field alone determines the fetch
+convention.
 
 ### Store a relative tarball path
 
@@ -618,17 +628,17 @@ and an arbitrary security parameter while saving negligible bandwidth.
 
 ### Use `v` or `b` as the spec-syntax letter
 
-The ordinal is a bare integer everywhere structured (`dist.revision`,
+The revision number is a bare integer everywhere structured (`dist.revision`,
 `resolution.revision`, `dist.revisions[].revision`); a letter appears only in
-the inline `+rN` spec syntax, where build metadata needs a marker. `v` reads
-as "version" — the association this design exists to avoid, because a
-revision is deliberately not a version. `b` matches the semver carrier
-("build metadata") but means the wrong thing — Debian's `+b1` is a rebuild
-with no source change — and `b` followed by digits is valid hexadecimal, so a
-reserved `b<digits>` namespace could collide with truncated-hash build
-metadata. `r` abbreviates *registry revision*, matches `dist.revisions`, and
-follows Alpine and Gentoo, which number downstream revisions of an unchanged
-upstream version `-r0`, `-r1`, and so on.
+the inline `+rN` spec syntax, where build metadata needs a marker. `v` reads as
+"version" — the association this design exists to avoid, because a revision is
+deliberately not a version. `b` matches the semver carrier ("build metadata")
+but means the wrong thing — Debian's `+b1` is a rebuild with no source change —
+and `b` followed by digits is valid hexadecimal, so a reserved `b<digits>`
+namespace could collide with truncated-hash build metadata. `r` abbreviates
+*registry revision*, matches `dist.revisions`, and follows Alpine and Gentoo,
+which number downstream revisions of an unchanged upstream version `-r0`,
+`-r1`, and so on.
 
 The syntax is npm-specific; the portable rule is that the revision signal
 lives in resolution metadata, never in the version string.
@@ -645,10 +655,13 @@ making provider identity part of package resolution.
 
 1. Recognize `dist.revision` alongside a digest-route `dist.tarball` during
    resolution and validate the pair (origin, algorithm, digest equality,
-   positive integer ordinal).
+   positive integer revision number).
 2. Record `revision: N` in the resolution object and gate the field with an
    appropriate lockfile version; lockfiles without the field keep the current
-   version.
+   version. Ship the field's type in `@pnpm/lockfile-types` and document it
+   in the same release that first emits it — many tools parse
+   `pnpm-lock.yaml`, and a typed field on day one beats each of them
+   reverse-engineering it.
 3. Normalize digest-route tarballs without `dist.revision` to plain
    integrity-only entries (no hostname in the lockfile).
 4. During lockfile hydration of a `revision` entry, convert the digest to
@@ -664,7 +677,7 @@ making provider identity part of package resolution.
 7. Resolve `<version>+rN` specs — override targets or declared dependencies —
    by resolving the version half normally, then selecting the revision from
    `dist.revisions` with its own resolution metadata, failing on unadvertised
-   ordinals.
+   revision numbers.
 8. Add an explicit revision-refresh operation that updates integrity,
    `revision`, and snapshot atomically, skipping override-pinned packages.
 
@@ -676,8 +689,9 @@ Tests should cover:
   metadata fetch, or fall-forward;
 - digest-route tarballs without `dist.revision` normalized to integrity-only
   entries;
-- malformed `revision` values (zero, negative, non-integer, strings) rejected
-  at resolution and at lockfile parsing;
+- malformed `revision` values (zero, negative, non-integer, strings, leading
+  zeros, values above `2^53 − 1`) rejected at resolution and at lockfile
+  parsing;
 - base64/base64url conversion;
 - malformed, abbreviated, unsupported, and mismatched digests;
 - registry path-prefix preservation;
@@ -695,7 +709,7 @@ Tests should cover:
   cycles through version-changing targets;
 - conflicting revision demands for one `name@version` failing with an
   explicit error;
-- an override naming an unadvertised ordinal failing resolution;
+- an override naming an unadvertised revision number failing resolution;
 - a pinned revision resolving with its own dependency metadata;
 - revision refresh updating integrity, `revision`, and snapshot together, and
   skipping override-pinned packages;
@@ -725,5 +739,9 @@ Tests should cover:
   called, with per-package `+rN` overrides as the exceptions?
 - Should `pnpm audit --fix` write `+rN` overrides when a registry advertises a
   replacement fixing a reported advisory?
+- Should the lockfile `revision` value admit an optional annotation suffix
+  (for example `2-echo_r2`) that pnpm ignores but human readers see, or does
+  that re-couple lockfiles to the provider naming that `dist.revisions`
+  already records?
 - How should named registry identity be represented so two registries can
   resolve the same `name@version` without a lockfile collision?
