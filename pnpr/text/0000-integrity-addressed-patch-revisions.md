@@ -149,7 +149,8 @@ directly from registry plus integrity.
   marked. A selected replacement's ordinal is advertised in `dist.revision`;
   the inline spec syntax writes it as `+rN`.
 - A **provider revision** is an optional provider-specific identifier such as
-  `echo-r2`. It is provenance metadata and is not exposed in `dist.revision`.
+  `echo-r2`. It is opaque provenance metadata — not a number, not ordered,
+  never parsed — and is not exposed in `dist.revision`.
 - The **selected revision** is the artifact advertised by the current version
   document.
 - The **canonical URL** is the ordinary npm tarball URL derived from registry,
