@@ -494,7 +494,8 @@ required to have identical dependency metadata.
 pnpr reads the selected artifact's `package.json` only after the tarball passes
 integrity verification and projects its resolution-relevant fields into the
 current version document. When a revision becomes selected, the entire
-projected version entry and `dist` move atomically.
+projected version entry and `dist` move atomically, carrying forward
+registry-managed mutable fields such as `deprecated`.
 
 When the first replacement is accepted, pnpr MUST materialize revision zero
 from the verified original artifact — including its complete integrity and
