@@ -281,7 +281,9 @@ https://registry.example/-/tarballs/sha512/AbCd...
 https://pnpr.example/~main/-/tarballs/sha512/AbCd...
 ```
 
-The complete sha512 digest uses base64url without padding. Raw SRI base64 is not
+The complete sha512 digest uses base64url without padding — exactly one
+canonical encoding (86 characters for sha512); servers reject padded,
+re-encoded, or percent-encoded variants. Raw SRI base64 is not
 embedded because `/`, `+`, and `=` have awkward URL and intermediary
 semantics. Package metadata uses standard SRI base64 with no extensions; the
 selected replacement's ordinal travels separately in `dist.revision`, and the
