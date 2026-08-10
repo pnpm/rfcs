@@ -84,7 +84,7 @@ An artifact built against glibc 2.17 should serve a glibc 2.39 machine. That is 
 Two distinct concepts are therefore required:
 
 - **An input key** identifying what was built: the dependency graph and applied patches. This is `calcDepState` with the platform components removed, and it is what an entry is stored under.
-- **Compatibility constraints** the artifact advertises: the platform tags it is valid on, expressed as floors where the underlying property admits one.
+- **Compatibility constraints** the artifact advertises: the platform tags it is valid on, expressed as floors where the underlying property admits one. Tags are optional; an artifact with none asserts no constraint, which is the correct answer for a build whose output is platform-independent.
 
 The client presents an ordered set of tags it supports and selects the best offered artifact, exactly as Python installers select among wheels rather than hashing the interpreter's exact identity into a filename ([PyPA platform compatibility tags](https://packaging.python.org/en/latest/specifications/platform-compatibility-tags/#use)). Two properties follow: an artifact serves many systems rather than one, and a tag the client does not understand is a miss, never a guess.
 
@@ -98,7 +98,7 @@ Within a registry the lookup is one round trip for the whole install, mirroring 
 
 Only packages marked `requiresBuild` are candidates — those declaring `preinstall`/`install`/`postinstall`, plus the implicit cases `pkgRequiresBuild` detects from `binding.gyp` or a `.hooks/` directory. When such a package is also patched, the patch hash is part of its input key. Packages that are *only* patched are deliberately excluded: applying a patch overlay locally is cheap, and including them would require inventing build-approval semantics for packages that have no build to approve, contradicting the `allowBuild` requirement below.
 
-A response carries, per candidate, the *set* of variants the registry holds: each with the `added` file list as `(path, digest, mode)` triples, the `deleted` path list, the compatibility tags, and the signed provenance described below. The client selects among variants on both compatibility and signer trust, so a registry holding several builders' output for one input key is a normal case rather than a conflict. Variants per candidate and total response size are capped by the client, since the response is untrusted input parsed before any signature is checked. Sending a diff rather than a built tree keeps responses proportional to what a build changed rather than to the size of the package.
+Candidates are identified by an **opaque key string** the client computed, not by a structured package identifier — see the forward-compatibility note below for why. A response carries, per candidate, the *set* of variants the registry holds: each with the `added` file list as `(path, digest, mode)` triples, the `deleted` path list, the compatibility tags, and the signed provenance described below. The client selects among variants on both compatibility and signer trust, so a registry holding several builders' output for one input key is a normal case rather than a conflict. Variants per candidate and total response size are capped by the client, since the response is untrusted input parsed before any signature is checked. Sending a diff rather than a built tree keeps responses proportional to what a build changed rather than to the size of the package.
 
 **Clients MUST recompute the digest of every downloaded blob** before it enters the content-addressable store or the importer; the signed manifest attests the digests, but nothing attests that the bytes served match them. A mismatch is a cache miss and a diagnostic, and the offending entry is quarantined so the same poisoned artifact is not re-fetched on every subsequent install.
 
@@ -159,6 +159,22 @@ The design reuses pnpr's routing and storage model rather than adding a parallel
 - **Durability.** Artifacts are regenerable derived data: obtainable again from the tarball plus a build, safe to wipe, self-healing. (Regenerable, not reproducible — a rebuild need only be behaviourally equivalent.) That is the contract of pnpr's disposable `cache` root as distinct from the authoritative `storage` root, so artifacts need no new storage tier. The existing S3 block remains available for operators who want them shared across replicas.
 - **Per-package policy.** "Serve artifacts for `@ourco/**`, never for `**`" is a `packages:` pattern rule using the existing specificity selection.
 - **Existence is not leaked.** `access` already gates reads with denied callers masked as not-found, which matters because artifact existence would otherwise reveal an organization's dependency graph and input keys.
+
+### Forward compatibility with a workspace task cache
+
+This RFC caches the build output of *dependencies*. The obvious later use of the same machinery is caching the output of a workspace's own *tasks*, in the manner of Turborepo, Nx, and moon. That is not proposed here and is not a dependency of anything below — but most of what this RFC specifies is general, and a few decisions would foreclose the reuse if made carelessly. They are recorded as decisions rather than left to accident.
+
+What would transfer unchanged: the `{added, deleted}` manifest over CAS blobs (a task output is the degenerate case — a file set with no base tree and no deletions); the batched per-channel lookup and its folding into an existing round trip; signed provenance; owner scope, where a task cache is always `organization` and the `publisher` arm simply goes unused; trust policy re-evaluated at every reuse; blob digest verification and quarantine; and manifest path validation, which matters *more* there, since task outputs land in a working tree rather than in the store. The build-input argument in this document is likewise the same argument Turborepo's `inputs` and `env` declarations exist to answer.
+
+What would be new is the key: this RFC derives an input key from the lockfile, while a task key is source content, task configuration, environment, and upstream task keys. That is additive — a different key producer feeding the same storage and transport — rather than a change to anything specified here.
+
+Three constraints follow, all cheap now and breaking later:
+
+- **Entry keys are opaque strings.** The protocol must not embed package identity in the shape of a request or response key. A key is a string the client computed and the server stores; a request that assumes `(package, version)` cannot carry `(project, task, hash)`.
+- **Compatibility tags are optional.** They are load-bearing for a native module and vacuous for a platform-independent build. An entry with no tags means "no constraint", not "no information".
+- **The endpoint is named for the mechanism, not for this use.** `side-effects` names one application of a general artifact cache. Either the name generalises, or a task cache adds a second endpoint doing the same thing for no reason.
+
+Worth noting as a byproduct rather than a goal: because pnpm's store is content-addressed at file granularity, a task cache built on it would deduplicate identical files across tasks, packages, and dependency artifacts in one store. Turborepo stores each task's output as its own archive, so a file present in ten outputs is stored ten times. That advantage comes from infrastructure pnpm already has, not from anything designed here.
 
 ## Rationale and Alternatives
 
