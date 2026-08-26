@@ -4,6 +4,8 @@
 
 pnpm knows which workspace projects exist, how they depend on each other, and what each one's dependency graph resolves to, and it already runs their scripts in topological order. What it does not do is notice that a script's inputs have not changed since the last time it ran. This RFC adds a content-addressed cache for the output of a workspace project's own scripts — files, logs, and exit code — keyed on the task's declared inputs. The local tier needs no new trust machinery. The remote tier is [RFC 0007](./0007-shared-side-effects-cache.md) with a different subject and nothing else new.
 
+It builds on the [workspace task orchestration](./0000-workspace-task-orchestration.md) RFC, which supplies the task graph. That dependency is load-bearing rather than cosmetic: a cache key has to name the upstream task whose output this task consumes, and package topology alone cannot.
+
 ## Motivation
 
 A monorepo's second `pnpm -r run build` rebuilds every package, including the twelve nobody touched. The standard answer today is to put Turborepo or Nx in front of pnpm, which most large pnpm workspaces do. That works, and this RFC does not claim those tools are wrong. It claims that the part of their job that is *caching* — as distinct from task orchestration, terminal UI, and cloud services — is mostly a function of information pnpm already holds and infrastructure pnpm already runs, and that duplicating it above pnpm costs the ecosystem a second dependency graph, a second hashing pass over the same files, and a second store of the same bytes.
@@ -18,20 +20,22 @@ The transport, the signing, the trust policy, and the artifact format are alread
 
 ### What already exists
 
-- **Topological execution.** `runRecursive` (`pnpm11/exec/commands/src/runRecursive.ts`) sorts selected projects into chunks with `sortFilteredProjects` and runs each chunk under `--workspace-concurrency`. The task graph this RFC needs is already computed; it is simply not consulted for anything but ordering.
+- **A task graph and a scheduler**, from the orchestration RFC: `dependsOn`, per-task dispatch, cycle detection, and `--dry-run`. This RFC consumes all four and adds none of them.
 - **A per-project dependency-graph hash.** `calcDepStateInputKey`, shipped in RFC 0007, minus the parts specific to a dependency.
 - **A content-addressed store and an importer.** `storeController.addFileToStore` and `importIndexedDir` (`pnpm11/fs/indexed-pkg-importer/src/importIndexedDir.ts`), plus `packageImportMethod` (`pnpm11/config/reader/src/Config.ts:208`) with `clone`, `clone-or-copy`, and `copy` alongside `hardlink`.
 - **The whole artifact protocol.** The signed envelope, owner scope, compatibility constraints, the `{added, deleted}` manifest, manifest path validation, and pnpr's `/-/pnpr/v0/artifacts{,/resolve,/blob}` endpoints behind `resolver.artifacts`.
 
 ## Detailed Explanation
 
-### Scope: a cache, not a task runner
+### Why this needs the task graph
 
-This RFC caches `pnpm run` and `pnpm -r run` as they behave today. It does **not** add a task-dependency declaration — no `dependsOn`, no `^build`, no tasks that are not npm scripts. The upstream tasks a task depends on are the same-named script in each of that project's workspace dependencies, which is exactly what `runRecursive`'s topological chunking already implies.
+A cache key must account for everything a task reads. A task reads its own project's files, its resolved dependencies, its environment — and the built output of other tasks, which is the part package topology cannot describe.
 
-That is a real limitation and it should be named: a task that depends on a *sibling* task in the same project (`build` after `codegen`) cannot express that, and a task that depends on a *differently named* upstream task cannot either. The workaround is the one the ecosystem already uses — `pnpm run codegen && pnpm run build` in one script, which this RFC caches as one task.
+Consider project A whose `test` script consumes `node_modules/B/dist`, produced by B's **`build`**. Keyed on package topology alone, the only upstream task available is B's *same-named* script, `test` — which is wrong in both directions: it includes B's tests, which A does not consume, and omits B's build, which A does. The workspace dependency supplies nothing to make up the difference, because link targets enter the dependency-graph hash by identity only (`pnpm11/deps/graph-hasher/src/index.ts:481-486` gives them `fullPkgId: linkTargetNode` and `children: {}`, with no content).
 
-It is nevertheless the right first scope, for two reasons. It needs no new configuration concept to be useful on the case that matters most, because `build` depending on upstream `build` is the overwhelming majority of what a monorepo's task graph says. And a `dependsOn` declaration added later changes only which upstream keys feed a task key — an input to the key producer, not a change to the key format, the artifact, the transport, or the trust model. Nothing here forecloses it.
+The failure is silent and it is not exotic. If **B has `build` but no `test` script**, B contributes no upstream task key at all, and A's `test` key contains nothing whatsoever about B. Change B's source, rebuild, and A's `test` takes a cache hit against a `dist` it has never seen.
+
+With a declared graph the question is answered exactly: `test: dependsOn: ['build']` names the producing task, and the orchestration RFC's pass-through rule — a missing script resolves the edge through to that project's own upstream tasks — means a project without the named script cannot sever the chain. The key is then correct by construction rather than, as an earlier draft of this RFC was, correct by accident whenever the generous default input set happened to propagate the change transitively.
 
 ### The task key
 
@@ -41,7 +45,8 @@ Keys are opaque to the server and domain-separated by kind, per RFC 0007's forwa
 - **The script text actually executed** — including `pre`/`post` scripts when `enablePrePostScripts` is on, since those run as part of the task and change what it produces.
 - **The declared input files**, as canonically ordered `(relative path, mode, content digest)` triples.
 - **The declared environment**, as a name-to-value map. Names alone are insufficient, for exactly the reason RFC 0007 gives for builder profiles: `NODE_ENV=production` and `NODE_ENV=development` satisfy the same allowlist and produce different output.
-- **The project's resolved dependency-graph hash**, from `calcDepStateInputKey`'s graph component.
+- **The project's resolved dependency-graph hash**, from `calcDepStateInputKey`'s graph component. This covers the task's *external* dependencies — what npm packages it resolves — and is the component a tool sitting above pnpm has to approximate by hashing the lockfile.
+- **The keys of the tasks this task declares a dependency on**, resolved through the orchestration RFC's graph including its pass-through rule. This covers the task's *internal* dependencies — what other tasks in the workspace produced the bytes it reads.
 - **The execution environment that changes output** — the resolved Node or runtime version, `executionEnv`, and the shell settings (`scriptShell`, `shellEmulator`) that decide how the script text is interpreted.
 
 Deliberately *not* in the key: the absolute path of the workspace, the concurrency, the reporter, and anything else describing how the run was invoked rather than what it computes. Absolute paths are the one uncomfortable omission — a build that embeds one in a source map or a binary is not relocatable and a cache hit on another machine restores something subtly wrong. This is the same problem RFC 0007 leaves unresolved for dependency builds, and it gets the same answer: it is eligibility's job, not the key's, because fragmenting the key by workspace path would disable cross-machine reuse entirely, which is the point of the feature.
@@ -55,14 +60,18 @@ Configuration lives in `pnpm-workspace.yaml`, per project glob, in the shape the
 ```yaml
 tasks:
   build:
+    dependsOn: ['^build']
     outputs: ['dist/**']
     env: ['NODE_ENV']
   lint:
     outputs: []
   test:
+    dependsOn: ['build']
     outputs: ['coverage/**']
     inputs: ['+src/**', '+test/**']
 ```
+
+`dependsOn` is the orchestration RFC's field; this RFC adds `outputs`, `inputs`, and `env` to the same section rather than introducing a second one.
 
 **Outputs must be declared, and absence is not permission.** A task with no `outputs` key is not cacheable and runs normally — it is not treated as a task that produces nothing. An explicit `outputs: []` is the positive assertion that the task produces no files, and such a task is cached for its logs and exit code alone, which is the whole point of caching `lint`. This is RFC 0007's rule for compatibility constraints applied to a different field, and for the same reason: a mistyped or forgotten key must not silently mean "cache everything about this and restore nothing".
 
@@ -125,7 +134,9 @@ Both must become a kind-discriminated `subject`: `{ kind: 'dependency-side-effec
 
 **Be a remote-cache backend instead of a cache.** Turborepo's remote cache API is a keyed blob `PUT`/`GET` with optional HMAC signing; pnpr could implement it and be the self-hosted cache those users already want, without pnpm gaining a task cache at all. This is cheap — genuinely a small amount of work on top of what pnpr already stores — and it is not exclusive with this RFC. It is worth doing on its own merits, and it is the fallback if the answer to the previous alternative is "do nothing".
 
-**A full task runner with `dependsOn`.** Deferred rather than rejected, as discussed above. Adding it later changes which upstream keys feed a task key and nothing else in this document.
+**Cache without a task graph, using package topology.** This was this RFC's original scope, and it is wrong rather than merely limited: as shown above, keying on the same-named upstream script produces silent stale hits whenever an upstream project lacks that script. The near-miss is instructive — with the generous default input set, the change usually propagates transitively anyway, so the bug would have surfaced late, in workspaces that had narrowed their `inputs`, which are exactly the workspaces that tuned their cache and trust it most.
+
+**Hash the materialized content of workspace dependencies instead of naming upstream tasks.** Include whatever is in `node_modules/<workspace dep>` in the task's inputs, and the graph becomes unnecessary for correctness — it captures what the upstream produced regardless of which task produced it, and cannot drift from a declaration. The ordering objection does not apply, since the upstream must have been built before this task runs anyway. It is declined as the primary mechanism because it hashes an entire materialized tree on every miss where a declared edge costs a key lookup, and because it cannot distinguish the part of an upstream package a task actually consumes. It remains the right **fallback for a task that declares no `dependsOn`**, where it is strictly better than assuming the same-named script, and it is worth keeping as an opt-in check that declared edges are complete.
 
 **Reuse the Bazel Remote Execution API.** RFC 0007 declines REAPI because its lookup is exact-digest and dependency artifacts need floor-based compatibility selection. That objection is materially weaker here: a task is almost always `universal`, so exact-digest lookup is exactly the right model, and REAPI's `Action`/`Command` shape fits a task far better than it fits a dependency build. The reason to decline it anyway is not technical merit but coherence — running two protocols for two artifact kinds that share a store, a trust model, and a client would cost more than the standard buys. If pnpm ever supports REAPI, it should be for both kinds or neither.
 
@@ -141,7 +152,7 @@ Both must become a kind-discriminated `subject`: `{ kind: 'dependency-side-effec
 
 **Key production.** `workspace-task:v1:` over the components listed above, reusing `calcDepStateInputKey`'s graph hash for the dependency component. Byte-identical across both stacks, like the platform fingerprint, since a divergence means the two CLIs disagree about what is cached.
 
-**The runner integration.** A lookup before each task in `runRecursive`, a capture after a successful one, and log replay on a hit. The upstream-key dependency means a task's key is not computable until its workspace dependencies' keys are, which the existing topological chunking already sequences correctly.
+**The runner integration.** A lookup before each task, a capture after a successful one, and log replay on a hit, against the scheduler the orchestration RFC introduces. A task's key is not computable until the keys of the tasks it depends on are, so key production is itself a traversal of the task graph in the same order the scheduler walks it — which is an argument for computing keys inside the scheduler rather than in a pass before it.
 
 **Working-tree restoration.** The new importer path: reflink-or-copy, output-root confinement, the previous-output record and stale-file deletion, and the refusal to overwrite unaccounted files.
 
@@ -149,13 +160,15 @@ Both must become a kind-discriminated `subject`: `{ kind: 'dependency-side-effec
 
 **Both stacks, per the repository's parity rule**, with the key producer as the piece where divergence would be least visible and most damaging.
 
-Ordering: protocol change, then input hashing and configuration, then the local tier end to end, then the remote tier. The local tier is independently shippable and independently valuable, and it exercises the restoration path — which is where the correctness risk lives — before any bytes cross a machine boundary.
+Ordering: the orchestration RFC's scheduler and `dependsOn` first, since nothing here is correct without the graph. Then the protocol change, then input hashing and configuration, then the local tier end to end, then the remote tier. The local tier is independently shippable and independently valuable, and it exercises the restoration path — which is where the correctness risk lives — before any bytes cross a machine boundary.
+
+The protocol change is the one item with no ordering dependency on anything else here, and the one whose cost grows with delay, so it can go first in wall-clock terms even though it is needed last.
 
 ## Prior Art
 
 **Turborepo** is the direct model and the direct competitor. `inputs`, `outputs`, `env`, `dependsOn`, log replay on a hit, and cache-only-on-success are all its design, and this RFC adopts most of them because they are right. Two of its decisions are not adopted: caching failed tasks, and hashing the lockfile as a proxy for dependency changes. The second is the one pnpm can straightforwardly beat.
 
-**Nx** demonstrates that a task cache and a task *graph* can be sold together to the point where users cannot tell which one they wanted, which is the argument for shipping the cache alone first and seeing whether `dependsOn` is actually asked for.
+**Nx** demonstrates that a task cache and a task graph are sold together for a reason — the cache is only as good as the graph's account of what feeds what — which is why this RFC gave up on being independent of one and took a dependency on the orchestration RFC instead.
 
 **Gradle's build cache** is the most instructive prior art on the part everyone underestimates: input *normalization*. Gradle has explicit runtime-classpath normalization, ignored-file declarations, and relocatability checks, because naive hashing of every input over-invalidates until the cache stops paying for itself, and because a build that embeds its own path is not shareable. Both problems are in this RFC's unresolved list, and Gradle's experience says they arrive sooner than expected.
 
@@ -167,7 +180,8 @@ Ordering: protocol change, then input hashing and configuration, then the local 
 
 - **Non-relocatable output.** Source maps, binaries, and anything embedding an absolute workspace path are not shareable across machines. Detection, a per-task `relocatable: false`, or normalization in the manner of Gradle? This is the same question RFC 0007 leaves open for dependency builds, and answering it once should serve both.
 - **Input hashing cost.** The hasher runs over every selected project on every invocation, so a cache miss must not be slower than the build it was trying to skip. Whether a git-index fast path is sufficient, and what a workspace with a large untracked tree costs, wants measuring before the default input set is finalized.
-- **Is `dependsOn` actually needed?** Deliberately excluded here on the argument that upstream-same-name covers the common case. If real workspaces mostly work around it with `&&`-joined scripts, the exclusion was right; if they cannot express their graph at all, it was not.
+- **What an undeclared `dependsOn` should key on.** With no declaration the orchestration RFC defaults to `['^<own name>']`, which is right for `build` and wrong for `test`. Whether the cache should fall back to hashing the materialized workspace dependencies in that case — safe but slower — or refuse to cache a task whose edges are undeclared, is the main open question in this document.
+- **Verifying declared edges.** A task that reads an upstream output it did not declare a dependency on is a silent stale-hit generator, and the declaration is the only thing standing between the user and that bug. Whether pnpm can cheaply detect it — comparing declared edges against what the task actually opened, on an opt-in audit run — is worth investigating, because "the cache is only as correct as your config" is the complaint every task runner accumulates.
 - **Watch mode and long-running tasks.** A `dev` task never exits and must not be cached. Whether that is inferred, declared, or simply a consequence of caching only completed successes.
 - **Two tasks writing one output root.** Nothing here prevents `build` and `bundle` from both declaring `dist/**`, after which each one's restore deletes the other's files as stale. Detect and reject at configuration load, or define precedence?
 - **Cache bypass and repair.** A flag to force a run and overwrite the entry, and what it is called. `--force` is taken elsewhere in the CLI with a different meaning.
