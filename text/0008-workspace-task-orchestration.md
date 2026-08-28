@@ -88,6 +88,12 @@ tasks:
 
 This is today's behaviour preserved rather than a new rule: `pnpm --filter a run test` has never built `b`, and a user who wants the dependencies wants `--filter a...` and can say so. It is worth stating explicitly because the alternative reading — that a declared edge conscripts an unselected project — is the one a reader arrives with from Turborepo, where filtering does pull dependencies in.
 
+### `pnpm -r exec` takes the scheduler, not the declarations
+
+`exec` runs a command rather than a named script, so there is nothing for a `tasks` entry to be keyed by: a declaration names a script, and a command typed at the prompt has no name in the workspace file. Its graph is one task per selected project over the project dependency edges. It gains the per-task scheduling and loses the chunk barrier along with `run`; `dependsOn` does not reach it.
+
+This is a definition rather than a gap to be closed later. `exec` could only join a declared graph by first acquiring a name, and minting one — a reserved `exec` entry, or a flag naming some other task's declarations to borrow — would give a workspace two ways to spell its task relationships, which then have to be kept from disagreeing. If naming a command is ever worth doing, the coherent shape is a workspace entry that *is* a task rather than a field bolted onto this one, and it deserves its own argument.
+
 ### Cycles
 
 Package-level cycles are already possible and `graphSequencer` already reports them through `safe`, which the run path currently ignores. Task-level `dependsOn` adds a second way to build one — `a:build → b:build → a:test → a:build` — without any package cycle existing.
@@ -184,5 +190,4 @@ Ordering: scheduler first, since it is independently valuable, changes no config
 
   The `^` sigil was settled from the start, and deliberately: it is what Turborepo, Nx, Lerna (via Nx), and Lage all use, which is the overwhelming majority of the installed base and what anyone migrating will paste. Rush spells the same distinction as explicit `upstream`/`self` keys and moon uses `^:`/`~:`; both are more readable on first encounter and neither is a convention there is any compatibility argument for adopting.
 - **A `--continue` flag.** The run-state journal that `--resume-from` narrows against is the same state a bare "carry on from wherever the last run stopped" flag would need, and it now exists. Whether that flag is worth having, and whether it should be an alias for resuming from nothing in particular, is unsettled.
-- **Interaction with `pnpm -r exec`.** `exec` runs a command rather than a named script, so it has no name to hang `dependsOn` on. It has the scheduler, and its one task per project orders by package dependency as before; whether it can participate in a declared graph at all is still open.
 - **Cycles that exist today.** Making a currently silent cycle an error is a breaking change for any workspace that has one and has not noticed. Whether that needs a deprecation window or is simply a bug fix wants a survey of how common they are.
