@@ -168,6 +168,8 @@ Ordering: the command with selection and reporting first — it is useful with o
 
 **Gradle Enterprise build scans** made the case that a per-run, durable, shareable record of what executed and why is worth more to debugging than live logs. The summary document is that record, kept deliberately small.
 
+**[nix-ci](https://nix-ci.com/)** is the cleanest external proof of this document's central thesis: CI for any repository with a `flake.nix`, zero configuration, because the build tool's own description of the project *is* the pipeline — and automatic caching, because the tool's cache decides what runs. Nix is also the limit case of the selection argument: input-addressed, sandbox-enforced derivations make every unchanged thing a no-op by construction, so "affected" detection is not even a concept there — which is the direction this document's "the cache decides, selection prunes" model points. The honest difference is what the zero costs: nix-ci requires the project to be Nix-ified, the same total buy-in RFC 0007 declined when it rejected the Nix-backed package provider, and it leads with hosted runners where this sequence deliberately refuses the hosted product. pnpm ci takes the opposite bet on both — meet an ordinary pnpm workspace where it is, with hermeticity bought incrementally instead of demanded up front.
+
 **GitHub's merge queue** is the trusted-ref pattern the cache-write policy assumes: a serialized, post-approval lane whose runs are exactly the ones that should hold signing material.
 
 **`npm ci`** is prior art of an awkward kind: it established, ecosystem-wide, that `ci` after a package manager's name means "clean frozen install", not "run my pipeline". The collision is real and is bikeshedded below rather than waved off.
