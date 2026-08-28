@@ -79,6 +79,28 @@ Two git realities become pnpm's job the moment it owns selection, because every 
 - **The base is the merge base.** Diffing a PR against the tip of `origin/main` reports changes that landed on main after the branch point as if the PR made them. `pnpm ci` resolves `ci.base` to `merge-base(HEAD, base)` — three-dot, not two-dot — and says so in the run report.
 - **Shallow clones are the default, and history is the engine's dependency.** CI checkouts default to depth 1, under which the merge base does not exist. `pnpm ci` deepens the fetch until the merge base is reachable rather than failing or silently diffing against the wrong commit. This is the single most common way affected-CI setups are quietly broken today, and an engine that documents the pitfall instead of absorbing it has declined its job.
 
+### The version control is a provider
+
+Everything this document takes from the version control, it takes at project granularity, and that observation is worth turning into a boundary. The engine asks four questions and consumes nothing else:
+
+1. **What is the base?** — the revision selection compares against.
+2. **Which projects changed since it?**
+3. **What is each project's input identity?** — the content identity of the files a task's cache key covers.
+4. **What revision does the run record name, and how does a machine materialize it?**
+
+A *source provider* is an implementation of those four answers, and the engine above the line — the graph, the cache, the scheduler, the report — never knows which one it is talking to. The interface is deliberately project-shaped rather than file-shaped: "give me a diff" would be a git interface with every other tool squeezed through it, and a provider whose native model is richer than files would lose exactly what makes it worth supporting.
+
+**Git is the default provider and the floor.** Its implementation is the section above, plus the index: the base is the merge base with shallow-deepening, changed projects are diff paths attributed to the projects containing them, and input identity comes from content hashes the index already maintains — `git ls-files -s` returns them for free, so only files whose stat information marks them dirty need actual hashing, the same trick that keeps `git status` fast. The interface must remain implementable by plain git with no forge cooperation, or the abstraction quietly becomes some richer tool plus a git shim.
+
+**[Bit](https://github.com/teambit/bit) is the intended second instance, and the reason the boundary earns its place.** Bit's unit of change is the component, not the file tree, and for each of the four questions the answer the engine *computes on top of* git is state Bit *maintains natively*: which components changed against their lane heads is first-class status rather than diff attribution; a component's snap hash is its input identity, already content-addressed; and component boundaries are declared and enforced, so the input set can be exact where git's default must stay generously over-broad to be safe. Materialization is component-granular — an agent can fetch a task's dependency closure instead of a repository — and component identities (`scope/name`) are globally claimed names rather than client-invented slugs. The asymmetry is the point: for git the engine implements the answers; for Bit the tool is the answer.
+
+Two constraints keep the provider a boundary rather than a product:
+
+- **Read-only, plus materialize.** The engine observes the version control and reproduces a revision; it never commits, snaps, pushes, or merges. A pnpm that drives VCS mutations is a VCS frontend, which is a different product — the same discipline as "pnpm never provisions compute."
+- **Shell out, never link.** pnpm already runs `git` as a subprocess for git dependencies; another provider runs its own CLI the same way. For Bit specifically the direction is load-bearing: Bit embeds pnpm's install engine today, and linking the other way would close a cycle.
+
+The companion RFC inherits the generalization: "the forge keeps git hosting" reads as "the source provider keeps source hosting," agents materialize revisions through the provider, and the trigger tier gains a sibling of registry-native triggers that no git forge can express — a component exported to a scope triggering the pipelines of the components that depend on it.
+
 ### Cache policy is part of the engine
 
 A shared task cache in CI has an asymmetry that the configuration must be able to express, because getting it wrong is how a cache becomes an attack surface: **everyone may read; only trusted runs may write.**
@@ -159,3 +181,4 @@ Ordering: the command with selection and reporting first — it is useful with o
 - **Live logs.** Replayed-on-hit logs and an event stream serve the summary well; a developer watching a 40-minute run wants streaming output *now*, and piped-and-prefixed output is already the orchestration RFC's answer. Whether the event stream should carry incremental log chunks (making richer live host UIs possible) or only terminal-per-task results is open.
 - **`ci.base` per pipeline.** A `release` pipeline plausibly wants a different base (previous tag) than `check` (main). Whether `base` belongs at the `ci` level, the pipeline level, or both-with-override is pure bikeshed.
 - **Root-level work.** The orchestration RFC excludes root-project tasks; pipelines inherit the exclusion, and real pipelines have workspace-level steps (a repo-wide typecheck, docs build). This RFC takes no position and notes that whichever RFC lifts the exclusion, pipelines get it for free.
+- **Provider selection and dirty state.** How a workspace names its source provider — detection (a `.git` directory, a `workspace.jsonc`) or a setting — and whether every provider must give uncommitted local modifications the meaning selection gives them under git (the working tree counts, which is what a laptop wants and a clean CI checkout never notices). Both want settling with the second provider, not the fifth.
