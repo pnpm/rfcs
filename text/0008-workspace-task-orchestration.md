@@ -1,5 +1,7 @@
 # Workspace task orchestration
 
+> **Status: implemented.** Shipped in both the TypeScript CLI and pacquet: the per-task scheduler and `dependsOn` in [pnpm/pnpm#14209](https://github.com/pnpm/pnpm/pull/14209), extracted to a shared module in [pnpm/pnpm#14215](https://github.com/pnpm/pnpm/pull/14215), the chunk loops retired in [pnpm/pnpm#14221](https://github.com/pnpm/pnpm/pull/14221), per-task concurrency in [pnpm/pnpm#14229](https://github.com/pnpm/pnpm/pull/14229), bail cancellation in [pnpm/pnpm#14251](https://github.com/pnpm/pnpm/pull/14251), and `--resume-from`'s run-state journal in [pnpm/pnpm#14258](https://github.com/pnpm/pnpm/pull/14258). This document describes what shipped. Both questions it originally left open — per-task concurrency limits and persisted run state — were answered by the implementation and are specified in the body rather than deferred; the one rule that did not survive contact with real scripts is called out where it occurs.
+
 ## Summary
 
 `pnpm -r run` computes a real dependency graph and then throws most of it away, flattening it into topological chunks separated by barriers. This RFC replaces the chunk barrier with per-task scheduling, and adds a `dependsOn` declaration so a task can depend on something other than the same-named script in its workspace dependencies. Both are changes to *which tasks may start when*. Neither adds a cache; the workspace task cache RFC ([pnpm/rfcs#22](https://github.com/pnpm/rfcs/pull/22)) builds on this one.
@@ -44,6 +46,21 @@ What does not change: no task runs that did not run before, no task is skipped t
 
 `--sequential` continues to mean concurrency 1, and with a real graph it now has an unambiguous meaning it did not quite have before: one task at a time, in a topological order.
 
+### Per-task concurrency
+
+`--workspace-concurrency` is global, so a workspace with one greedy task — an integration suite that starts a database, a bundler that wants every core — can only slow that task down by slowing everything down. A task may therefore declare its own limit:
+
+```yaml
+tasks:
+  test:
+    dependsOn: ['build']
+    concurrency: 2
+```
+
+The limit is per task *name*, counted across projects, and it is a ceiling rather than a reservation: at most two projects' `test` tasks run at once, within whatever `--workspace-concurrency` allows overall. A positive integer is the only meaningful value.
+
+**The permit is taken before dispatch, not inside the worker.** A task waiting on its group's permit must not occupy a global concurrency slot, or the workspace idles behind its own narrowest task while unrelated work is ready to run. It also means a waiter is, until dispatched, indistinguishable from any other queued task — including when a `--bail` stops the run, where it is simply never dispatched.
+
 ### Declaring task dependencies
 
 A `tasks` section in `pnpm-workspace.yaml`, with Turborepo's `^` convention because it is the one the ecosystem already reads:
@@ -65,11 +82,15 @@ tasks:
 
 `lint: {}` above is a task with an explicitly empty dependency list — it depends on nothing and may start immediately. That is a different statement from omitting the entry, and the difference is deliberate.
 
+**What the graph contains and what the invocation requests are two inputs, not one.** The scheduler is given a project map and, separately, the set of projects whose tasks are actually asked for; everything else in the map participates only by being on the other end of an edge. `--filter` narrows both, which is what keeps its meaning exactly as it is today — filtering to one project does not conscript its dependencies into building. A caller that narrows only the requested set, which is what an affected-since-a-git-ref selection wants to do, gets edges that resolve identically however the run was narrowed. Keeping the two separable costs nothing here and is load-bearing for the cache RFC, whose task keys are wrong if a `^` edge can be truncated by a selection.
+
 ### Cycles
 
 Package-level cycles are already possible and `graphSequencer` already reports them through `safe`, which the run path currently ignores. Task-level `dependsOn` adds a second way to build one — `a:build → b:build → a:test → a:build` — without any package cycle existing.
 
-A cycle in the task graph is an error naming the participating tasks, not a warning. The current silent behaviour, where a cyclic graph is sequenced into some order and runs, is worse than it appears: it produces a run that succeeds or fails depending on which arbitrary order the sequencer chose. Since this RFC has to detect cycles anyway to schedule, reporting package cycles at the run layer comes along for free and should be taken.
+A cycle in the task graph is an error naming the participating tasks, not a warning: `ERR_PNPM_TASK_CYCLE`, spelling the cycle out as `a#build → b#build → a#build`. The current silent behaviour, where a cyclic graph is sequenced into some order and runs, is worse than it appears: it produces a run that succeeds or fails depending on which arbitrary order the sequencer chose. Since this RFC has to detect cycles anyway to schedule, reporting package cycles at the run layer comes along for free and should be taken.
+
+**`ignoreWorkspaceCycles` remains the escape hatch, and gains no new spelling.** A workspace that has already declared its cycles deliberate keeps that declaration here: the error is downgraded to a warning, the cycle members lose their mutual edges, and they run in the sequencer's deterministic order rather than an arbitrary one. Introducing a second, task-specific setting for the same statement would leave a workspace with two places to say it and one place to forget.
 
 **Detection is scoped to the invocation's own graph, not to the workspace.** It runs after project selection and after `^` expansion and missing-script pass-through, immediately before scheduling — not when `pnpm-workspace.yaml` is parsed. A cycle among tasks a `--filter` did not select cannot fail the run, because those tasks are not in the graph being scheduled and nothing about the run depends on them being acyclic. Validating the whole workspace at config load would make an unrelated corner of a large monorepo everyone's problem, which is a good way to have the feature disabled.
 
@@ -84,12 +105,19 @@ Three things are currently specified against the chunk list and need redefinitio
   **The resume set is every selected task except the anchor's transitive dependencies.** This is the graph-native reading of "from that chunk onward": what a chunk slice approximates positionally is "everything not ordered strictly before the anchor", and under a graph "before" means exactly "is a transitive dependency of". It is *more* precise than the chunk slice, which also re-runs everything sharing the anchor's chunk.
 
   An earlier draft of this RFC proposed "the anchor and its transitive dependents", which is wrong. After a `--bail` run stops, work unrelated to the failure has not run either, and a dependents-only closure would silently skip it — leaving the user to discover later that resuming did not resume everything. Excluding only the anchor's dependencies skips exactly what is known to have finished and nothing else.
+
+  **Completion is recorded, not only inferred.** The rule above *infers* that the anchor's dependencies finished. That holds when resuming after a failure and does not hold when resuming a run that was interrupted, or a deliberately partial one, where a dependency may never have started. pnpm therefore keeps an append-only journal of the tasks that passed, written as they pass, under `node_modules/.pnpm-task-run-state-v1/`, and `--resume-from` narrows the graph-derived resume set by it whenever a compatible journal exists. Where the two disagree the journal wins, because it is evidence and the graph rule is an assumption.
+
+  Compatibility carries the whole safety argument, so a journal is keyed by an invocation identity covering the selected task graph — each task's own scripts and edges included — the command and its arguments, and the execution settings that change what a script does. An edited script, a different filter, a changed shell or pre/post setting therefore yields a different identity and no reuse at all. That is the safe direction to fail in: the cost of a mismatch is re-running work that had already passed, never skipping work that never ran.
+
+  Each invocation owns its own journal behind an atomically published latest-run pointer, so overlapping runs cannot consume or delete one another's state; a state directory that cannot be written disables persistence rather than failing the run.
 - **`--reverse`** reverses the chunk array. Against a graph it means running the reverse graph — dependents before dependencies.
+- **`--no-sort`** (and `--parallel`, which implies it) means disregarding ordering entirely, and that has to extend to the declarations: every task becomes independent, `dependsOn` is not applied, and no task is pulled in by an edge. A workspace that has declared `tasks` and then asks for no ordering is given a warning rather than a silent reinterpretation, because the two requests genuinely conflict. `--reverse` and `--resume-from` have nothing left to order and become no-ops.
 - **Output mode.** `stdio` is `'inherit'` when concurrency is 1 or the chunk shape guarantees a single script, and `'pipe'` otherwise. The equivalent condition on a graph is that at most one task can ever be in flight; where that does not hold, output is piped and prefixed as it is today.
 
-**Failure handling** is not chunk-defined but needs a stated meaning, because "runnable when every dependency succeeded" leaves a dependent of a failed task with nowhere to go. Four states, and they are the same states in both modes: `passed`, `failed`, `skipped` (no such script, or a dependency did not pass), and `not run` (never dispatched because the run stopped).
+**Failure handling** is not chunk-defined but needs a stated meaning, because "runnable when every dependency succeeded" leaves a dependent of a failed task with nowhere to go. Four states, and they are the same states in both modes: `passed`, `failed`, `skipped` (no such script, or a dependency did not pass), and `not run` (never dispatched because the run stopped). A fifth exists only under `--bail`: a task interrupted mid-flight, which is reported as still `running`, because that is what it was when the run ended.
 
-- **`--bail`** (the default): on the first failure, no further tasks are dispatched. Tasks already running are allowed to finish and are reported with whatever they returned. Everything not dispatched is `not run`.
+- **`--bail`** (the default): on the first failure, no further tasks are dispatched **and tasks already running are cancelled**, their process trees along with them. Everything not dispatched is `not run`. Letting in-flight work finish is the gentler rule and it does not survive contact with real scripts: a watch-style task never exits, so a bailing run would hang indefinitely instead of reporting the failure the user is waiting to see. The failure that triggered the bail remains the reported one — an interrupted task is not a second failure, and does not add to the exit code's count.
 - **`--no-bail`**: the run continues. Every task whose dependencies all passed still runs, so an unrelated subtree completes normally. Tasks that transitively depended on a failed task are `skipped`, never `failed` — reporting them as failures, which a naive implementation does, turns a one-line error in a leaf package into what reads as a workspace-wide outage.
 
 **The exit code is non-zero if and only if at least one task is `failed`.** A `skipped` dependent does not add to the count and does not need to: the failure that blocked it is already counted, and counting both would say two things went wrong when one did.
@@ -124,9 +152,9 @@ The exclusions are not permanent judgements — watch mode in particular is a re
 
 **The scheduler.** Replace the chunk loop in `runRecursive` and the equivalent in `pnpm -r exec` with a runnable-set scheduler over the graph `sequenceGraph` already builds, preserving `sortFilteredProjects`'s per-project graph selection so prod-only selected projects keep tunnelling through the prod-pruned graph. The recursive summary is currently constructed from the chunk list (`createEmptyRecursiveSummary(chunks)`) and needs a task-keyed equivalent.
 
-**Configuration.** The `tasks` section in `pnpm-workspace.yaml` — the key is currently unused — with `dependsOn` parsing and validation at load, and `^` resolution, missing-script pass-through, and cycle detection per invocation against the selected graph.
+**Configuration.** The `tasks` section in `pnpm-workspace.yaml` — an unused key before this RFC — with `dependsOn` and `concurrency` parsing and validation at load, and `^` resolution, missing-script pass-through, and cycle detection per invocation against the selected graph. Task fields are validated against a known-key set in both stacks, so an unrecognised one is an error rather than a silent no-op; the cache RFC adds more fields to the same section and depends on that gate existing.
 
-**Flags.** `--resume-from`, `--reverse`, the output-mode condition, and the four task states with their `--bail`/`--no-bail` behaviour and exit code, per the section above.
+**Flags.** `--resume-from` with its run-state journal, `--reverse`, `--no-sort`, the output-mode condition, and the task states with their `--bail`/`--no-bail` behaviour and exit code, per the section above. Cancelling in-flight work on a bail is the part with the most ways to go wrong: a cancelled task must still settle, or the scheduler waits forever for a task nobody is going to report.
 
 **`--dry-run`,** with `--json`.
 
@@ -149,7 +177,6 @@ Ordering: scheduler first, since it is independently valuable, changes no config
 - **The `tasks` key name.** `tasks` is unused in `pnpm-workspace.yaml` today and reads well, but `scripts` is what package.json calls these and `pipeline` is what Turborepo called it before renaming to `tasks`. Also unresolved: whether per-project overrides live in `package.json` or as globs in the workspace file.
 
   The `^` sigil itself is settled rather than open, and deliberately: it is what Turborepo, Nx, Lerna (via Nx), and Lage all use, which is the overwhelming majority of the installed base and what anyone migrating will paste. Rush spells the same distinction as explicit `upstream`/`self` keys and moon uses `^:`/`~:`; both are more readable on first encounter and neither is a convention there is any compatibility argument for adopting.
-- **`--resume-from` and completed work.** The rule above excludes the anchor's transitive dependencies on the grounds that they must have finished. That holds for a resume after a failure, and does not hold if the user is resuming for some other reason — an interrupted run, or a deliberate partial one — where a dependency may not have run at all. Whether pnpm should persist per-task run state and resume against it, rather than inferring completion from graph position, is the real question underneath, and it is the same state a `--continue` flag would need.
-- **Per-task concurrency limits.** `--workspace-concurrency` is global. A workspace with a memory-hungry task may want to limit that task specifically, which is a natural extension and an easy one to over-design.
-- **Interaction with `pnpm -r exec`.** `exec` runs a command rather than a named script, so it has no name to hang `dependsOn` on. It should get the scheduler; whether it can participate in a declared graph at all is open.
+- **A `--continue` flag.** The run-state journal that `--resume-from` narrows against is the same state a bare "carry on from wherever the last run stopped" flag would need, and it now exists. Whether that flag is worth having, and whether it should be an alias for resuming from nothing in particular, is unsettled.
+- **Interaction with `pnpm -r exec`.** `exec` runs a command rather than a named script, so it has no name to hang `dependsOn` on. It has the scheduler, and its one task per project orders by package dependency as before; whether it can participate in a declared graph at all is still open.
 - **Cycles that exist today.** Making a currently silent cycle an error is a breaking change for any workspace that has one and has not noticed. Whether that needs a deprecation window or is simply a bug fix wants a survey of how common they are.
