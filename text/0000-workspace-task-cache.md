@@ -4,7 +4,7 @@
 
 pnpm knows which workspace projects exist, how they depend on each other, and what each one's dependency graph resolves to, and it already runs their scripts in topological order. What it does not do is notice that a script's inputs have not changed since the last time it ran. This RFC adds a content-addressed cache for the output of a workspace project's own scripts — files, logs, and exit code — keyed on the task's declared inputs. The local tier needs no new trust machinery. The remote tier is [RFC 0007](./0007-shared-side-effects-cache.md) with a different subject and nothing else new.
 
-It builds on the [workspace task orchestration](./0000-workspace-task-orchestration.md) RFC, which supplies the task graph. That dependency is load-bearing rather than cosmetic: a cache key has to name the upstream task whose output this task consumes, and package topology alone cannot.
+It builds on the [workspace task orchestration](./0008-workspace-task-orchestration.md) RFC, which supplies the task graph. That dependency is load-bearing rather than cosmetic: a cache key has to name the upstream task whose output this task consumes, and package topology alone cannot.
 
 ## Motivation
 
