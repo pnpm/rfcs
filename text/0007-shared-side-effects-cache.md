@@ -102,6 +102,12 @@ Organization-mode publication uses the builder's current macOS product version a
 
 The consumer platform fingerprint remains SHA-256 over its canonical supported-tag list. A macOS consumer therefore fingerprints its one exact tag, so changing macOS minor versions changes the fingerprint. Existing clients reject the unfamiliar `darwin` form as a miss, while v1 Linux matching and fingerprints remain byte-for-byte unchanged.
 
+**Windows vocabulary.** Windows adds `pnpm:v1:win32-<architecture>-node<major>-windows<major>.<minor>.<build>` to the same v1 vocabulary, with `architecture` in `{x64, arm64}` and canonical unsigned decimal components. The version is the NT kernel version returned by the operating system, not a marketing name such as Windows 10, Windows 11, or Windows Server 2025. Keeping the build component is necessary because supported Windows releases commonly share the same `10.0` major and minor version.
+
+The Windows version is also a minimum runtime. A consumer presents one exact tag; an artifact matches when the schema, operating system, architecture, and Node major are equal and the consumer's `(major, minor, build)` tuple is greater than or equal to the artifact's. The greatest matching floor wins, followed by `universal`. This is deliberately more conservative than the platform-and-architecture convention used by published Node prebuilds: Windows normally preserves application compatibility, but an arbitrary install script can still produce a binary that calls APIs introduced by its build host.
+
+Organization-mode publication uses the builder's current NT kernel version as the floor. A future publisher tool may derive an older floor by inspecting and testing its complete output, but must not claim one from the compiler or SDK version alone. If the kernel version cannot be determined, the client neither publishes nor restores a tagged Windows artifact. A Windows consumer fingerprints its one exact tag, so an OS upgrade that changes the kernel build gets a distinct pin namespace. Existing v1 Linux and macOS tags and fingerprints are unchanged, and clients that predate this form treat it as a miss.
+
 ### Fetching
 
 **The registry is the default channel; the signature is the authority.** An artifact is looked up at the registry a package resolved from, which is what makes per-registry auth, certificates, proxies, and the registry-qualified lockfile keys work unchanged. But acceptance turns on the signature, not on which host served the bytes — so a mirror, a proxying pnpr, or a publisher's own distribution point can serve an artifact the client will accept, and a registry serving one it cannot verify has gained nothing.
@@ -285,7 +291,7 @@ Ordering: the input-key/compatibility split is the prerequisite, and its format 
 - **Persistent origin metadata and quarantine.** Without them a remote artifact cannot be cached locally between installs, and a poisoned blob is re-fetched on every one.
 - **Key distribution, rotation, and revocation.** v0 distributes public keys by environment variable and has no revocation at all.
 - **Publisher mode.** Discovery, the attestation subject, and the authorization policy for who may attest artifacts on a package's behalf. The wire format already carries the owner arm.
-- **Platforms beyond Linux/glibc.** The macOS vocabulary is specified above. Windows and additional Linux libc families still need their own compatibility boundaries before implementation.
+- **Additional Linux libc families.** musl and other libc families still need their own compatibility boundaries before implementation.
 - **Multi-channel lookup.** Specified above, unexercised: a single-server deployment has no second channel to group by.
 - **The batching benchmark**, which now has a real implementation to measure instead of two assertions.
 
