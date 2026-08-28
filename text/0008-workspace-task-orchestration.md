@@ -1,6 +1,6 @@
 # Workspace task orchestration
 
-> **Status: implemented.** Shipped in both the TypeScript CLI and pacquet: the per-task scheduler and `dependsOn` in [pnpm/pnpm#14209](https://github.com/pnpm/pnpm/pull/14209), extracted to a shared module in [pnpm/pnpm#14215](https://github.com/pnpm/pnpm/pull/14215), the chunk loops retired in [pnpm/pnpm#14221](https://github.com/pnpm/pnpm/pull/14221), per-task concurrency in [pnpm/pnpm#14229](https://github.com/pnpm/pnpm/pull/14229), bail cancellation in [pnpm/pnpm#14251](https://github.com/pnpm/pnpm/pull/14251), and `--resume-from`'s run-state journal in [pnpm/pnpm#14258](https://github.com/pnpm/pnpm/pull/14258). This document describes what shipped. Both questions it originally left open — per-task concurrency limits and persisted run state — were answered by the implementation and are specified in the body rather than deferred; the one rule that did not survive contact with real scripts is called out where it occurs.
+> **Status: implemented.** Shipped in both the TypeScript CLI and pacquet: the per-task scheduler and `dependsOn` in [pnpm/pnpm#14209](https://github.com/pnpm/pnpm/pull/14209), extracted to a shared module in [pnpm/pnpm#14215](https://github.com/pnpm/pnpm/pull/14215), the chunk loops retired in [pnpm/pnpm#14221](https://github.com/pnpm/pnpm/pull/14221), per-task concurrency in [pnpm/pnpm#14229](https://github.com/pnpm/pnpm/pull/14229), bail cancellation in [pnpm/pnpm#14251](https://github.com/pnpm/pnpm/pull/14251), and `--resume-from`'s run-state journal in [pnpm/pnpm#14258](https://github.com/pnpm/pnpm/pull/14258). This document describes what shipped, with one exception marked where it occurs: `persistent` is specified and not yet implemented. Both questions it originally left open — per-task concurrency limits and persisted run state — were answered by the implementation and are specified in the body rather than deferred; the one rule that did not survive contact with real scripts is called out where it occurs.
 
 ## Summary
 
@@ -60,6 +60,24 @@ tasks:
 The limit is per task *name*, counted across projects, and it is a ceiling rather than a reservation: at most two projects' `test` tasks run at once, within whatever `--workspace-concurrency` allows overall. A positive integer is the only meaningful value.
 
 **The permit is taken before dispatch, not inside the worker.** A task waiting on its group's permit must not occupy a global concurrency slot, or the workspace idles behind its own narrowest task while unrelated work is ready to run. It also means a waiter is, until dispatched, indistinguishable from any other queued task — including when a `--bail` stops the run, where it is simply never dispatched.
+
+### Tasks that never exit
+
+*Not implemented.* A `dev` server, a `--watch` build, a file-syncing daemon: tasks that run until interrupted, which the graph has no way to distinguish from a task that is merely slow.
+
+```yaml
+tasks:
+  dev:
+    persistent: true
+```
+
+**A task may not depend on a persistent one, and declaring that is an error.** `dependsOn: ['dev']` asks the scheduler to wait for something that will never finish, and today it does exactly that — the run hangs, with no output explaining why, and the user's first theory is that pnpm deadlocked. Rejecting the configuration turns an unbounded wait into a sentence naming both tasks.
+
+Every comparable tool has this declaration, which is the strongest argument for it: Turborepo's `persistent: true`, moon's `persistent` with a `server` preset inferring it for `dev`, `start`, and `serve`, and Nx's `continuous: true`. The name here is `persistent`, being what two of the three use.
+
+**A persistent task still occupies a concurrency slot, and a run that cannot fit them all is an error rather than a hang.** Ten projects with a `dev` task and `--workspace-concurrency=4` is six servers that never start and four that never finish, which presents as a run that came up short and stayed there. The check is arithmetic — a run whose persistent tasks outnumber its concurrency limit fails before dispatch, naming the limit it would need — and it is Turborepo's answer to the same problem. The alternative, exempting persistent tasks from the limit as moon does by running them last and in parallel, silently overrides a number the user chose; a workspace that wants every server running can say so once.
+
+What this deliberately does *not* do is let a dependent proceed against a running persistent task. Nx's `continuous` does, which is how an `e2e` target waits for a `dev` server to be *ready* rather than *finished* — a genuinely better answer that needs a readiness signal pnpm has no way to observe. If that signal ever exists, this is the section to revisit; erroring is the honest behaviour until then.
 
 ### Declaring task dependencies
 
