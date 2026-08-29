@@ -119,6 +119,16 @@ For a new workspace, package names are normalized into the initial component-nam
 
 Components used for VCS tracking are allowed to be source-only. A valid workspace project need not have a Bit main file, build environment, publishable package name, or runnable entry point. Bit currently uses those concepts for development and packaging; the VCS layer must not invent them merely to store files. Existing Bit components retain their normal environment and build behavior.
 
+### Migration build contract
+
+Adopting a pnpm monorepo must not require translating its build into Bit env APIs. A migrated project may keep the conventional `build`, `test`, and `lint` scripts in its `package.json`. Projects with none of those scripts remain source-only; projects that already declare a non-adapter Bit env keep it.
+
+For the adapter-managed case, Bit treats the scripts as workspace tasks rather than isolated component commands. `bit compile` asks pnpm to run the workspace `build` scripts in dependency order from the real workspace root, then associates each project's conventional output directory with that component. This preserves root `tsconfig`, bundler configuration, catalogs, the lockfile, and workspace links. It also avoids relying on the order in which Bit happens to request individual component compilation.
+
+An isolated `bit build` reconstructs the canonical pnpm workspace under the capsule root from the versioned root component and its normalized topology, installs with the frozen lockfile, and runs `build`, `test`, and `lint` through pnpm. The root component is configuration-only and is not itself compiled. Conventional `dist`, `build`, `lib`, and `coverage` output is copied back to the relevant component capsules and recorded as build artifacts. A build selected for only one component may still materialize the workspace projects needed to preserve the root configuration and pnpm task ordering; selection controls which component receives the result, not which repository inputs are allowed to disappear.
+
+This is an adoption bridge, not a second permanent configuration model. A component can later move to a purpose-built Bit env or integrated toolchain and retain that env's normal build behavior. The generic script adapter is removed for that component rather than wrapping or overriding the explicit env.
+
 ### Workspace profile and component requirements
 
 A pnpm monorepo and a composable Bit workspace optimize configuration at different boundaries. A monorepo conventionally keeps one Node, TypeScript, bundler, lint, test, and package-manager configuration at its root. A Bit component needs to state where it can run after being imported elsewhere. Native VCS mode retains both properties with the same split package managers already use for engines: the workspace selects exact implementations and versions, while a component declares accepted implementations and version ranges.
@@ -437,6 +447,7 @@ Tools such as Jujutsu provide improved workflows while retaining Git storage and
 - Record one concrete workspace profile and generic component capability requirements.
 - Bootstrap root metadata before loading and materializing the rest of a cloned workspace.
 - Add Git-free integration tests with root-file-only and multi-project changes.
+- Run existing `package.json` build/test/lint scripts as topological pnpm workspace tasks for adapter-managed projects, preserving root configuration in local and capsule builds.
 
 ### Phase 2: make component dependencies portable
 
@@ -503,7 +514,9 @@ This phase is not required to call the native workflow complete.
 
 The current proof of concept covers raw-workspace adoption and the first end-to-end composition and repository-bootstrap slices in Bit. `bit pnpm sync` converts a regular pnpm workspace's local `workspace:` edges to catalogs, assigns every project a component identity, creates a root component, and permits ordinary `bit status` and `bit snap` to operate without Git. `bit import` imports only a consumer into a new empty pnpm workspace with an exact catalog binding and later rebinds that entry to `workspace:*` when the dependency component is imported, without editing the consumer's dependency declaration by hand.
 
-The prototype also writes the version-free path-to-component map into `pnpm-workspace.yaml`, stores its normalized projection on the root component, and recovers project identities without `.bitmap`. A previously prototyped Rust pnpm clone wrapper proved the root-first and lane-aware bootstrap algorithm against bit.cloud, including root and project overrides on a lane plus a project inherited from main. That wrapper has deliberately been removed: the validated algorithm belongs behind Bit-native clone UX. The path uses ordinary component and lane objects and therefore requires a compatible Bit client but no bit.cloud server change.
+The prototype also writes the version-free path-to-component map into `pnpm-workspace.yaml`, stores its normalized projection on the root component, and recovers project identities without `.bitmap`. Its generic migration environment runs ordinary `package.json` scripts through pnpm: local compile has been exercised with a root TypeScript configuration and an inter-project dependency, and an isolated build selected for only the dependency successfully reconstructed all three workspace projects, installed from the root lockfile, ran the topological build, copied component artifacts back into capsules, and completed Bit's full build pipeline. Projects without conventional scripts and the root component use the source-only environment; an explicitly selected non-adapter env is preserved.
+
+A previously prototyped Rust pnpm clone wrapper proved the root-first and lane-aware bootstrap algorithm against bit.cloud, including root and project overrides on a lane plus a project inherited from main. That wrapper has deliberately been removed: the validated algorithm belongs behind Bit-native clone UX. The path uses ordinary component and lane objects and therefore requires a compatible Bit client but no bit.cloud server change.
 
 The same workspace-profile contract has been exercised with Vite+ and with Bun used as an aggregate development toolchain while pnpm remains the package manager. This validates that the profile can describe a conventional collection of tools or one integrated distribution without making the package manager implicit.
 
