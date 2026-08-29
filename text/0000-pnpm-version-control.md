@@ -2,7 +2,7 @@
 
 ## Summary
 
-This RFC proposes that a pnpm workspace can use [Bit](https://github.com/teambit/bit) as its only version-control system, with no Git repository or Git executable. Every pnpm workspace project is treated as a Bit component. Files outside those projects belong to an implicit root component. A Bit snap operation is the workspace commit: all changed components receive versions carrying one shared batch ID and, on a lane, that batch also identifies the lane-history entry. During snap, Bit derives portable component state from workspace-wide authoring inputs: the pnpm lockfile produces each component's resolved dependency graph, while root configuration, workspace policy, and envs produce its effective configuration graph. A Bit lane is a branch and a Bit scope is the remote. As in Bit today, the lane stores component overrides on a main/fork baseline; the batch does not duplicate every unchanged component into a frozen Git-style tree.
+This RFC proposes that a pnpm workspace can use [Bit](https://github.com/teambit/bit) as its only version-control system, with no Git repository or Git executable. Every pnpm workspace project is treated as a Bit component. Files outside those projects belong to an implicit root component. A Bit snap operation is the workspace commit: all changed components receive versions carrying one shared batch ID and, on a lane, that batch also identifies the lane-history entry. During snap, Bit derives each component's resolved dependency graph from the pnpm lockfile and records its workspace-tool requirements. The workspace owns one concrete, locked toolchain profile; components declare compatible ranges in the same spirit as `engines.node`. A Bit lane is a branch and a Bit scope is the remote. As in Bit today, the lane stores component overrides on a main/fork baseline; the batch does not duplicate every unchanged component into a frozen Git-style tree.
 
 pnpm supplies an optional VCS-oriented command surface and automatic project discovery, while Bit remains the version-control implementation. The proposal does not introduce a second blob/tree/commit database beneath Bit, translate every snap into a Git-shaped root-tree commit, or require Git as an interoperability layer. Existing Bit component versions, snap batches, lanes, lane histories, import/export, checkout, and merge are the foundation. The new work makes those facilities complete for a Git-free workspace by covering root files, removing Git from workspace-state persistence and restoration, exposing snap batches coherently in pnpm, and defining a stable integration boundary.
 
@@ -23,7 +23,7 @@ Bit normally coexists with Git, however, and that division leaves several reposi
 
 Those are integration and workspace-coverage gaps, not evidence that Bit lacks a workspace commit. The proposal fills them without introducing a competing source of truth.
 
-Native repository mode must not reduce a scope to a monorepo that can only be cloned in full. A developer can also initialize an unrelated empty workspace and import any set of components they want to change. Those components bring their exact envs, effective portable configuration, aspect configuration, and lockfile-derived dependency graphs; the destination workspace derives its own root configuration and lockfile for that selection. This compositional workflow is a conformance requirement alongside reproducing the canonical monorepo.
+Native repository mode must not reduce a scope to a monorepo that can only be cloned in full. A developer can also initialize an unrelated empty workspace and import a selected component set. Composition is deliberately bounded: the destination workspace's concrete profile must satisfy every imported component's declared requirements. Bit does not merge arbitrary root configurations, choose parallel versions of one tool, or guess whether two configuration files are semantically compatible. An incompatible component is rejected before the workspace is changed. This constrained compositional workflow is a conformance requirement alongside reproducing the canonical monorepo.
 
 The intended result is a workflow such as:
 
@@ -101,32 +101,81 @@ The exact identity file and naming transformation are unresolved. The invariant 
 
 Components used for VCS tracking are allowed to be source-only. A valid workspace project need not have a Bit main file, build environment, publishable package name, or runnable entry point. Bit currently uses those concepts for development and packaging; the VCS layer must not invent them merely to store files. Existing Bit components retain their normal environment and build behavior.
 
-### Workspace inputs and portable component state
+### Workspace profile and component requirements
 
-A pnpm monorepo and a composable Bit workspace optimize configuration at different boundaries. A monorepo conventionally keeps one TypeScript, lint, test, and package-manager configuration at its root. A Bit component records its env and aspect configuration so that it can be imported into a newly created workspace without importing its original repository. Native VCS mode retains both properties by distinguishing authoring inputs from snap outputs and checkout projections:
+A pnpm monorepo and a composable Bit workspace optimize configuration at different boundaries. A monorepo conventionally keeps one Node, TypeScript, bundler, lint, test, and package-manager configuration at its root. A Bit component needs to state where it can run after being imported elsewhere. Native VCS mode retains both properties with the same split package managers already use for engines: the workspace selects exact implementations and versions, while a component declares accepted implementations and version ranges.
 
-| Concern | Workspace authoring input | Portable component state | Destination-workspace projection |
+| Concern | Workspace profile | Component requirement | Import behavior |
 | --- | --- | --- | --- |
-| Dependencies | `pnpm-lock.yaml`, manifests, catalogs, overrides | Resolved component dependency graph | A lockfile for the selected component set |
-| Tooling and build behavior | Shared root configuration, workspace variants and policy | Exact env/aspect references and normalized effective component configuration | Hoisted root configuration and per-component extending files |
-| Workspace layout | Project roots, globs, project references | Layout-independent component identity and relationships | Workspace globs, paths, and project references for the destination layout |
+| Runtime | `node@22.18.0` | `node >=20 <23` | accept when the selected Node satisfies the range |
+| Package manager | `pnpm@11.0.0` | `pnpm ^11` | one pnpm version for the workspace |
+| Compiler | `typescript@5.9.2` | `typescript ^5.7` | implementation and range must both agree |
+| Bundler | `vite@7.1.3` | `vite ^7` | `webpack` is a different implementation, not another version of `vite` |
+| Linter and test runner | exact workspace selections | implementation plus compatible ranges | one selection per capability slot |
+| Env configuration | exact env and configuration-schema version | env identity plus accepted schema range | migrate only through a migration declared by that env |
+| Dependencies | resolved `pnpm-lock.yaml` | resolved component dependency graph | generate a lockfile for the selected component set |
 
-The component model, not the original root files, is the portability boundary. During status and snap, Bit calculates the effective configuration of every component from its previously stored model configuration, exact env, workspace variants and policy, shared root authoring configuration, and versionable component overrides. The result is a configuration graph containing:
+The profile is a map keyed by capability slot. Each entry contains one implementation identity and one exact version. A component requirement uses the same slot and implementation identity with a semver range. Slots are open-ended so envs can add domain-specific tools, but their resolution rule is intentionally not extensible: one workspace selection either satisfies a requirement or it does not.
 
-- the exact env and aspect component references needed to interpret and execute the configuration;
-- normalized semantic settings required to build, test, lint, format, or otherwise develop the component;
-- references to shared, content-addressed configuration payloads when several components have the same effective settings;
-- component-specific deltas from those shared settings.
+The preferred declaration is usually one aggregate `toolchain` slot rather than every internal program. A self-contained distribution such as Vite+, Bun, Deno, Nub, or Bit can lock its runtime, compiler, bundler, linter, test runner, and configuration machinery behind one versioned identity:
 
-Absolute paths, workspace-relative project references, component directories, and other checkout-layout details are not portable semantic settings. They are regenerated in the destination workspace. A configuration graph may be stored inline in existing aspect data or through immutable referenced objects; either representation is part of the component object graph and does not introduce a repository commit DAG.
+```text
+workspace profile:     toolchain = bit@2.2.23
+component requirement: toolchain = bit@^2.2
+```
 
-Envs define the boundary for tool-specific configuration. An env may expose a resolver that converts its workspace authoring inputs into normalized portable component configuration, and a materializer that converts a set of component configurations into efficient workspace files. When the env component itself already contains all shared behavior, the portable state can consist primarily of the exact env reference and component-specific parameters. Conventional root configuration remains supported when an env knows how to capture its semantic fields. Generic pnpm or Bit code must not attempt to interpret every tool's configuration format.
+The internal tool versions are then the distribution's responsibility and do not become independent workspace choices. Granular slots remain useful for a component that genuinely interoperates at one of those boundaries—for example a library that requires Node `>=20` regardless of which aggregate toolchain supplies its development commands. This lets integrated binaries make configuration simpler without preventing smaller, conventional stacks from declaring the same contract explicitly.
 
-The fingerprint of the resulting dependency and configuration graphs participates in component status. A lockfile, root configuration, workspace variant, or env change that changes a component's calculated model marks that component as modified even if none of its source files changed. Snapping records new versions for all such affected components in the same batch as the changed root or env component. A filtered snap must either include the affected components automatically or refuse to create a state whose root authoring inputs disagree with the newly snapped component models.
+A profile may therefore contain only `toolchain = bun@…`, `toolchain = deno@…`, `toolchain = vite-plus@…`, `toolchain = nub@…`, or `toolchain = bit@…`. It does not also enumerate the programs locked inside that distribution unless a component intentionally declares compatibility with one of those internal boundaries.
 
-This is the same derivation pattern Bit already applies to dependencies. The root lockfile remains versioned so that the canonical workspace can be reproduced exactly, while each snapped component carries the dependency graph calculated from it. Likewise, root authoring configuration remains versioned for the canonical workspace, while each component carries the effective portable configuration calculated from it.
+The experimental pnpm-to-Bit protocol represents both sides as generic maps. Until envs and integrated toolchains expose the declarations directly, a regular pnpm workspace can author the bridge in `package.json`:
 
-Importing selected components into a different workspace follows only their component object graphs. Bit imports the referenced envs, aspects, configuration payloads, and dependencies, then generates a destination lockfile and workspace configuration for precisely that selected set. Components with the same effective configuration share one hoisted root projection where the tool permits it. Components using different envs or configurations receive separate generated bases and thin extending files. Incompatibilities are reported instead of silently discarding a component's snapped configuration.
+```json
+{
+  "pnpm": {
+    "vcs": {
+      "profile": {
+        "toolchain": { "implementation": "bit", "version": "2.2.23" },
+        "node": { "implementation": "node", "version": "22.18.0" }
+      }
+    }
+  }
+}
+```
+
+and a project can broaden the exact default contract where it is known to be portable:
+
+```json
+{
+  "engines": { "node": ">=20 <23" },
+  "pnpm": {
+    "vcs": {
+      "requirements": {
+        "toolchain": { "implementation": "bit", "version": "^2.2" }
+      }
+    }
+  }
+}
+```
+
+`engines.node` maps to the `node` capability automatically. An undeclared component receives the exact current profile as its initial requirement, which is safe but deliberately restrictive; its author can broaden the ranges later. Once snapped, requirements and the applied profile live in the component model, so they travel even when the source workspace's root component does not.
+
+The component model records both the requirements and the exact profile last applied to the component. The first may be broad and remains stable while compatible workspace tools advance. The second makes the component's last development context inspectable and lets import detect that configuration must be refreshed.
+
+An import into an existing workspace follows four rules:
+
+1. Every declared slot must exist in the workspace profile.
+2. The implementation identity must match exactly.
+3. The selected exact version must satisfy the component's range.
+4. If the applied profile differs, Bit reapplies the workspace profile and leaves the component modified for the next snap.
+
+Reapplying a compatible tool version is metadata, not a source migration. Configuration-schema changes are stricter. An env may declare a linear migration from an older schema to the profile's schema. Bit runs only that named migration, shows the resulting changes in status, and never rewrites the imported snap. If no migration exists, import fails. There is no generic configuration merger or inference from "latest".
+
+The fingerprint of the dependency graph, requirements, and applied profile participates in component status. A lockfile change that changes a component's graph or a profile change that changes its applied configuration marks that component modified even if none of its source files changed. Snapping records those affected components in the same batch as the root profile change. A filtered snap must include them automatically or refuse to create inconsistent state.
+
+This is the same division already present between `engines.node` and the Node version selected by a developer or CI image. A declaration expresses compatibility; a lock records the concrete environment. The root profile and root configuration remain versioned for exact workspace reproduction, while each component carries the minimum contract required to admit it elsewhere.
+
+Creating a new workspace does not invoke a general solver. The user or workspace template selects one concrete profile, or the workspace adopts an exact profile shared by all selected components. Bit then performs the same admission check. If the requirements have no common concrete profile, the components cannot inhabit one workspace until one of them broadens or migrates its contract.
 
 ### Exclusive file ownership and the root component
 
@@ -154,9 +203,9 @@ other non-ignored, unclaimed files
 
 If the workspace root is itself a pnpm project, it is also the root component; it owns root-level files but excludes nested project roots. Otherwise Bit creates a source-only internal component with a stable ID derived from the repository/scope identity.
 
-This component removes the main reason Git is currently needed for completeness. A CI-only change may change only the root component. A lockfile or shared-configuration change also changes every project component whose calculated dependency or configuration graph changed. A checkout or clone materializes the root component together with the package components and therefore reconstructs the whole tracked workspace.
+This component removes the main reason Git is currently needed for completeness. A CI-only change may change only the root component. A lockfile change also changes every project component whose calculated dependency graph changed; a workspace-profile change changes components whose applied profile must be refreshed. A checkout or clone materializes the root component together with the package components and therefore reconstructs the whole tracked workspace.
 
-Generated paths such as `node_modules`, the pnpm store, capsules, local VCS metadata, and env-materialized configuration files are excluded. A generated root facade may be replaced by a small tracked authoring file only when the env defines which fields are authoritative inputs and which are derived layout. Existing ignore files can be honored without requiring Git to be installed. The final native ignore filename and compatibility with `.gitignore` are product decisions, but ignore evaluation must be identical in pnpm's project inventory and Bit's file tracker.
+Generated paths such as `node_modules`, the pnpm store, capsules, local VCS metadata, and toolchain-generated configuration files are excluded. Existing ignore files can be honored without requiring Git to be installed. The final native ignore filename and compatibility with `.gitignore` are product decisions, but ignore evaluation must be identical in pnpm's project inventory and Bit's file tracker.
 
 ### Workspace metadata without Git
 
@@ -169,11 +218,11 @@ Native VCS mode separates two kinds of state:
 
 `.bitmap` may remain the local compatibility representation initially, but it is regenerated after clone, switch, checkout, and reset and is not the authority that a remote clone must preserve. In the longer term Bit may split its version-free mapping from checkout state explicitly.
 
-`workspace.jsonc`, `pnpm-workspace.yaml`, `pnpm-lock.yaml`, and authored root configuration remain real tracked files in the root component. They are restored before the canonical workspace is fully loaded. Bootstrapping a clone therefore has two stages: fetch enough root metadata to discover identities and authoring configuration, then resolve and materialize the effective lane/main component state and its derived files. A newly composed workspace that imports only selected components instead creates or uses its own root component and materializes from the portable state in those component versions; it does not require the source workspace's root component.
+`workspace.jsonc`, `pnpm-workspace.yaml`, `pnpm-lock.yaml`, the concrete workspace profile, and authored root configuration remain real tracked files in the root component. They are restored before the canonical workspace is fully loaded. Bootstrapping a clone therefore has two stages: fetch enough root metadata to discover identities and the locked profile, then resolve and materialize the effective lane/main component state. A newly composed workspace uses its own root component and an explicitly selected or commonly adopted profile; it does not import and merge the source workspaces' root configurations.
 
 ### Snap batches as workspace commits
 
-`pnpm vcs commit` delegates to a normal non-soft Bit snap. Before selecting the final component set, Bit calculates each component's resolved dependency graph from the lockfile and its effective configuration graph from env, aspect, workspace, root-authoring, and component inputs. A change in either calculated graph is a component change. Without an explicit filter, the operation includes all source-, dependency-, and configuration-changed components, matching the desired workspace-commit behavior. Bit may additionally auto-snap affected dependents according to its existing dependency rules. Every resulting version carries the operation's batch ID.
+`pnpm vcs commit` delegates to a normal non-soft Bit snap. Before selecting the final component set, Bit calculates each component's resolved dependency graph from the lockfile and validates its requirements against the locked workspace profile. A changed dependency graph, requirement declaration, or applied profile is a component change. Without an explicit filter, the operation includes all source-, dependency-, and profile-changed components, matching the desired workspace-commit behavior. Bit may additionally auto-snap affected dependents according to its existing dependency rules. Every resulting version carries the operation's batch ID.
 
 The workspace log displays one entry per batch rather than one row per changed component:
 
@@ -203,7 +252,7 @@ The first native mode assigns all components owned by one pnpm workspace—inclu
 The existing Bit object protocol transfers component versions, file objects, lanes, and lane histories. Native pnpm VCS mode builds on that protocol rather than adding a Git object server. The required high-level operations are:
 
 - **clone:** initialize local Bit metadata, fetch root metadata, the selected lane heads, and the main/fork heads needed to complete the effective workspace, then regenerate checkout metadata;
-- **compose/import:** create or retain a destination root component, import an arbitrary selected component set and its reachable env/configuration/dependency objects, then generate the destination workspace's lockfile and shared configuration;
+- **compose/import:** validate a selected component set against one locked destination profile before changing the workspace, import its reachable env/toolchain/dependency objects, apply explicit schema migrations, then generate the destination lockfile;
 - **fetch:** import new component versions, heads, and histories without modifying the working tree;
 - **pull:** fetch and then fast-forward or invoke the existing lane/component merge policy;
 - **push:** export every object required by the selected batch/lane and advance the remote lane only if its expected head state has not changed;
@@ -222,7 +271,7 @@ The integration protocol includes:
 - workspace project inventory;
 - root authoring inputs and generated-path classification;
 - command request and capability versions;
-- structured status, including source, dependency-graph, and configuration-graph changes;
+- structured status, including source, dependency-graph, requirement, and applied-profile changes;
 - structured history, diff, conflict, materialization, and progress events;
 - cancellation and exit classification;
 - the resulting batch, component, lane, and scope IDs.
@@ -249,11 +298,11 @@ Git-free operation is a conformance requirement, not a later optimization. Tests
 
 1. clone a main or lane state from a Bit scope;
 2. restore root configuration and every project;
-3. create a different workspace by importing any selected components without their source workspace's root component;
-4. fetch their envs, aspects, portable configuration, and dependency graphs;
-5. generate a destination lockfile and deduplicated root/per-component configuration;
+3. create a different workspace with one concrete toolchain profile and import any components compatible with it;
+4. fetch their envs, toolchains, aspects, and dependency graphs;
+5. generate a destination lockfile and apply only declared configuration-schema migrations;
 6. install the workspace with pnpm;
-7. detect source, root, dependency-graph, and configuration-graph changes;
+7. detect source, root, dependency-graph, requirement, and applied-profile changes;
 8. commit them as one snap batch;
 9. create, switch, and merge lanes;
 10. inspect component/batch history and reset a batch;
@@ -319,19 +368,22 @@ Tools such as Jujutsu provide improved workflows while retaining Git storage and
 - Automatically construct components from a pnpm project inventory.
 - Create the implicit root component and enforce exclusive ownership across nested projects.
 - Split durable, version-free workspace identity from derived `.bitmap` checkout state.
-- Classify authored root inputs separately from env-materialized configuration paths.
+- Record one concrete workspace profile and generic component capability requirements.
 - Bootstrap root metadata before loading and materializing the rest of a cloned workspace.
 - Add Git-free integration tests with root-file-only and multi-project changes.
 
-### Phase 2: derive portable component state
+### Phase 2: enforce workspace compatibility
 
 - Formalize the lockfile-derived dependency graph as a component change input during status and snap.
-- Define an env API for resolving workspace/root inputs into portable component configuration and materializing that state in another workspace.
-- Store exact env/aspect references, normalized component configuration, and any shared content-addressed configuration payloads in the reachable component object graph.
-- Include dependency-graph and configuration-graph fingerprints in component change detection.
-- Auto-include affected components or reject a filtered snap when root inputs would otherwise disagree with newly snapped component models.
-- Compose arbitrary imported component sets into a generated destination lockfile and deduplicated root/per-component configuration.
-- Test one-env monorepos, mixed-env workspaces, root configuration changes, env upgrades, and incompatible imported configurations.
+- Define a generic capability schema: slot, implementation identity, exact workspace version, and component semver range.
+- Make a single aggregate `toolchain` requirement the preferred path for integrated distributions while permitting granular capability slots.
+- Store requirements and the last applied exact profile in the component model.
+- Reject imports whose implementation or range is incompatible before mutating workspace state.
+- Refresh compatible imported components to the workspace profile and leave them modified for the next snap.
+- Define an env/toolchain API for explicit linear configuration-schema migrations; reject missing migrations.
+- Include dependency-graph, requirements, and applied-profile fingerprints in component change detection.
+- Auto-include affected components or reject a filtered snap when a profile change would otherwise leave inconsistent component models.
+- Test aggregate and granular profiles, compatible refreshes, implementation conflicts, unsatisfied ranges, schema migrations, and atomic rejection.
 
 ### Phase 3: expose the snap batch as the workspace operation
 
@@ -346,8 +398,8 @@ Tools such as Jujutsu provide improved workflows while retaining Git storage and
 
 - Add clone/compose/fetch/pull/push operations expressed entirely through scopes, lanes, histories, and component objects.
 - Regenerate derived checkout metadata after clone, switch, checkout, and reset.
-- Fetch reachable env, aspect, configuration, and dependency objects when composing a workspace from selected components.
-- Materialize the destination workspace without fetching the selected components' source root component.
+- Fetch reachable env, toolchain, aspect, and dependency objects when composing a workspace from selected components.
+- Apply the destination's single locked profile without fetching or merging the selected components' source root components.
 - Require expected remote state for lane updates and test concurrent pushes.
 - Restore the root component before full workspace initialization.
 - Validate operation without Git installed on Linux, macOS, and Windows.
@@ -357,7 +409,7 @@ Tools such as Jujutsu provide improved workflows while retaining Git storage and
 - Add the experimental `pnpm vcs` command namespace to both pnpm CLI implementations.
 - Define the versioned pnpm-to-Bit integration protocol and capability handshake.
 - Use pnpm's canonical workspace discovery to supply project inventory.
-- Expose structured source/dependency/configuration status, batch history, diff, materialization, lane, and remote results.
+- Expose structured source/dependency/profile status, batch history, diff, materialization, lane, and remote results.
 - Implement the native Bit source provider for pnpm CI.
 
 The Rust and TypeScript pnpm CLIs implement the same user-visible contract. They may share the process-protocol client, fixtures, and output golden tests even though Bit performs the VCS operation.
@@ -373,21 +425,29 @@ This phase is not required to call the native workflow complete.
 
 ### Affected repositories
 
-- **teambit/bit:** source-only component support, pnpm inventory ingestion, root component ownership, metadata bootstrapping, portable configuration resolution/materialization, dependency/configuration change detection, batch indexing and operations, Git-free clone/composition/collaboration, structured integration protocol, and recovery/security tests.
-- **pnpm/pnpm:** VCS command surface in both CLI stacks, canonical project inventory, root authoring inputs, Bit capability discovery, structured reporting, materialization coordination, configuration, and CI source-provider integration.
+- **teambit/bit:** source-only component support, pnpm inventory ingestion, root component ownership, metadata bootstrapping, profile admission and migration, dependency/profile change detection, batch indexing and operations, Git-free clone/composition/collaboration, structured integration protocol, and recovery/security tests.
+- **pnpm/pnpm:** VCS command surface in both CLI stacks, canonical project inventory, workspace profile and component requirement declarations, Bit capability discovery, structured reporting, and CI source-provider integration.
 - **pnpm/rfcs:** follow-up RFCs if final command UX, identity naming, or multi-scope collaboration need independent ratification.
 
 Bit and pnpm releases negotiate an explicit protocol version. pnpm does not assume that whichever `bit` executable is on `PATH` supports native VCS mode.
 
 ## Prior Art
 
-**[Bit snaps](https://bit.dev/reference/components/snaps)** are the direct foundation: component versions with parent history, lockfile-derived dependency graphs, env/aspect configuration, dependency-aware multi-component snapping, and immutable file objects. This RFC promotes the shared batch to the pnpm-facing workspace operation and generalizes the workspace-input-to-portable-model derivation to shared configuration.
+**[Bit snaps](https://bit.dev/reference/components/snaps)** are the direct foundation: component versions with parent history, lockfile-derived dependency graphs, env/aspect configuration, dependency-aware multi-component snapping, and immutable file objects. This RFC promotes the shared batch to the pnpm-facing workspace operation and records the profile contract alongside the dependency graph.
 
 **[Bit lanes](https://bit.dev/reference/lanes/merge-lanes)** provide switching, independent component heads, main/fork fallback, merge, and remote collaboration. Native pnpm mode keeps this component-overlay model instead of translating it into frozen Git branch trees.
 
 **[Git](https://git-scm.com/)** remains the compatibility baseline for user expectations around status, safe checkout, history, branches, concurrent push rejection, and recovery. Its single tree/commit representation is not copied where Bit's component graph already supplies the invariant.
 
 **[Jujutsu](https://jj-vcs.github.io/jj/latest/)** demonstrates that a VCS frontend and its underlying storage model need not share Git's command semantics, and that coexistence must make operation ownership explicit.
+
+**[`engines`](https://docs.npmjs.com/cli/configuring-npm/package-json#engines)** is the direct precedent for separating a package's compatible runtime range from the concrete runtime selected by a workspace or machine. This proposal applies the same small contract to aggregate toolchains and other development capabilities.
+
+**[Terraform provider requirements](https://developer.hashicorp.com/terraform/language/modules/develop/providers)** use the same root/leaf split at a larger scale: child modules declare compatible provider versions while the root owns the actual provider configuration and selects one version compatible with all modules. Provider aliases show an escape hatch this RFC intentionally omits in its first version.
+
+**[Bazel Bzlmod compatibility levels](https://docs.bazel.build.storage.googleapis.com/versions/main/bzlmod.html)** reject incompatible module families unless the root explicitly opts into multiple versions. This RFC adopts the default rejection but does not initially expose a multiple-profile override.
+
+**[Nix flakes](https://nix.dev/concepts/flakes.html)** preserve dependency input graphs and let a root make transitive inputs follow its selection. They demonstrate the reproducibility benefit of recording the exact root choice, although this RFC uses compatibility admission rather than arbitrary input override.
 
 **Monorepo tools** derive affected projects and project histories from Git paths plus a workspace graph. The Bit-native model stores project history directly and uses pnpm's declared boundaries, avoiding path attribution as the primary semantic model.
 
@@ -403,11 +463,13 @@ Bit and pnpm releases negotiate an explicit protocol version. pnpm does not assu
 - **Batch ID format.** Is the existing UUID sufficient as a public workspace revision ID, should it receive a short display form, or should future batches derive an ID from their resulting heads and metadata?
 - **Owned scopes.** Must all workspace projects use one repository scope in the first release, and how should existing multi-scope Bit workspaces behave?
 - **Lane overlay semantics.** How prominently must the pnpm frontend explain that a lane contains changed component heads and resolves other components through its baseline rather than freezing every workspace project as Git does?
-- **Configuration authority.** Which shared settings should be authored in an env component, which conventional root configuration formats may an env capture, and which settings are workspace-only policy?
-- **Portable configuration representation.** Is normalized configuration stored in existing aspect data, immutable shared objects referenced by component versions, or both? Which representation makes diffs and provenance understandable?
-- **Env protocol.** What resolver and materializer contract lets an env capture semantic settings while excluding source-workspace paths and later generate efficient configuration for a different layout?
-- **Change invalidation.** How does Bit efficiently determine which components' dependency or configuration graph changed after editing a lockfile, catalog, workspace variant, root tool configuration, or env?
-- **Mixed-env composition.** When imported components require incompatible root-level tool configurations or package-manager constraints, which cases can be isolated and which must prevent composition?
+- **Capability vocabulary.** Which slots deserve conventional names, and which should remain env/toolchain-specific? Slot names affect interoperability, so accidental synonyms such as `test`, `tests`, and `testRunner` must not become separate standards.
+- **Aggregate toolchain manifests.** Should an integrated binary expose the granular capabilities it locks for diagnostics and for satisfying independent requirements, or is its versioned `toolchain` identity the only supported boundary?
+- **Declaration authority.** When an env/toolchain-provided requirement and `package.json#pnpm.vcs.requirements` both exist, which one wins and how is the override displayed?
+- **Profile selection.** May a new workspace adopt an exact profile shared by all imported components automatically, or must its root/template always select one before import?
+- **Profile upgrades.** Which command changes the locked profile, previews affected components, and commits the root plus refreshed component models as one batch?
+- **Configuration migrations.** What minimal API lets an env or aggregate toolchain declare a deterministic schema migration, and how does Bit sandbox, preview, and attribute its source changes?
+- **Change invalidation.** How does Bit efficiently determine which components' dependency graph, requirements, or applied profile changed after editing a lockfile, catalog, root profile, or env?
 - **Generated-file ownership.** How are authored root inputs distinguished from generated facades so status neither loses user changes nor snaps materialized output as a second source of truth?
 - **Partial commits.** Is component-level selection sufficient, or must the pnpm frontend eventually support file- or hunk-level staging inside one component?
 - **Nested and overlapping projects.** Is deepest-root ownership always correct, and how are pnpm projects that intentionally consume sources outside their roots represented?
@@ -417,6 +479,6 @@ Bit and pnpm releases negotiate an explicit protocol version. pnpm does not assu
 - **Component-only operations.** How should a snap/export performed directly on a component outside a complete workspace appear in workspace batch history after import?
 - **History editing.** Squash, rebase, amend, and cherry-pick can be component-oriented or batch-oriented; their workspace semantics require a separate design.
 - **Git migration.** How much original Git history and parent structure must be retained when one Git commit maps to several component versions?
-- **Success criteria.** Before leaving experimental status, the feature needs cross-platform Git-free clone/compose/commit/branch/merge/push tests, arbitrary component import with env/configuration portability, crash recovery, concurrent remote updates, large-workspace performance targets, and a security review.
+- **Success criteria.** Before leaving experimental status, the feature needs cross-platform Git-free clone/compose/commit/branch/merge/push tests, compatible component import and atomic incompatibility rejection, profile-refresh and migration tests, crash recovery, concurrent remote updates, large-workspace performance targets, and a security review.
 
 These questions refine the existing Bit model; none requires a second canonical repository tree unless the component-ownership premise itself is rejected.
