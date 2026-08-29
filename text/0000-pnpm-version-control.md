@@ -1,10 +1,10 @@
-# pnpm as a version control system
+# Bit version control for pnpm workspaces
 
 ## Summary
 
 This RFC proposes that a pnpm workspace can use [Bit](https://github.com/teambit/bit) as its only version-control system, with no Git repository or Git executable. Every pnpm workspace project is treated as a Bit component. Files outside those projects belong to an implicit root component. A Bit snap operation is the workspace commit: all changed components receive versions carrying one shared batch ID and, on a lane, that batch also identifies the lane-history entry. During snap, Bit derives each component's resolved dependency graph from the pnpm lockfile and records its workspace-tool requirements. The workspace owns one concrete, locked toolchain profile; components declare compatible ranges in the same spirit as `engines.node`. A Bit lane is a branch and a Bit scope is the remote. As in Bit today, the lane stores component overrides on a main/fork baseline; the batch does not duplicate every unchanged component into a frozen Git-style tree.
 
-pnpm supplies an optional VCS-oriented command surface and automatic project discovery, while Bit remains the version-control implementation. Portable component-to-component dependencies use `catalog:` in package manifests; each destination workspace binds them to `workspace:*` when the dependency component is present and to the exact snapped version when it is absent. The proposal does not introduce a second blob/tree/commit database beneath Bit, translate every snap into a Git-shaped root-tree commit, or require Git as an interoperability layer. Existing Bit component versions, snap batches, lanes, lane histories, import/export, checkout, and merge are the foundation. The new work makes those facilities complete for a Git-free workspace by covering root files, removing Git from workspace-state persistence and restoration, exposing snap batches coherently in pnpm, and defining a stable integration boundary.
+Bit supplies a pnpm-workspace adapter, while pnpm remains the package manager rather than becoming a VCS frontend. Portable component-to-component dependencies use `catalog:` in package manifests; each destination workspace binds them to `workspace:*` when the dependency component is present and to the exact snapped version when it is absent. The proposal does not introduce a second blob/tree/commit database beneath Bit, translate every snap into a Git-shaped root-tree commit, or require Git as an interoperability layer. Existing Bit component versions, snap batches, lanes, lane histories, import/export, checkout, and merge are the foundation. The new work makes those facilities complete for a Git-free workspace by covering root files, removing Git from workspace-state persistence and restoration, and teaching ordinary Bit operations how to maintain pnpm workspace structure.
 
 ## Motivation
 
@@ -17,9 +17,9 @@ Bit normally coexists with Git, however, and that division leaves several reposi
 - root files such as `pnpm-workspace.yaml`, `pnpm-lock.yaml`, shared authoring configuration, CI configuration, documentation, and policy files may not belong to a component;
 - `.bitmap` and workspace configuration are commonly restored by checking out Git before Bit loads the component heads they refer to;
 - root configuration is convenient in a monorepo, but its effective component-level meaning is not yet captured and regenerated as systematically as the dependency graph derived from the lockfile;
-- batches on main are present on their component versions but are not yet exposed as one pnpm-facing workspace log;
+- batches on main are present on their component versions but are not yet exposed as one workspace log;
 - cloning a Git repository supplies the initial workspace structure before `bit import`, while a Bit-only clone must be able to reconstruct the entire directory from scope objects;
-- pnpm does not currently offer a VCS-oriented frontend or automatically register all workspace projects as components.
+- Bit does not currently adopt all projects in an otherwise ordinary pnpm workspace automatically.
 
 Those are integration and workspace-coverage gaps, not evidence that Bit lacks a workspace commit. The proposal fills them without introducing a competing source of truth.
 
@@ -28,15 +28,17 @@ Native repository mode must not reduce a scope to a monorepo that can only be cl
 The intended result is a workflow such as:
 
 ```shell
-pnpm vcs init --scope my-org.my-repository
-pnpm vcs import my-org.my-repository/parser
-pnpm vcs status
-pnpm vcs commit -m "update the parser"
-pnpm vcs switch --create feature
-pnpm vcs push --set-upstream origin feature
+bit init --standalone --external-package-manager --default-scope my-org.my-repository
+bit pnpm sync
+pnpm install
+bit import my-org.my-repository/parser
+bit status
+bit snap -m "update the parser"
+bit lane create feature
+bit export
 ```
 
-Internally these operations are Bit operations. `commit` snaps components, `switch` switches lanes, and `push` exports the lane and its component objects. A user may use the corresponding `bit` commands directly. Git is optional migration tooling, not part of native operation.
+`bit pnpm sync` is the adoption boundary: it discovers pnpm projects, assigns durable component identities, creates the root component, and normalizes portable workspace dependencies. After that, status, snap, lane, import, export, checkout, and merge are the ordinary Bit commands. pnpm installs dependencies and implements generic catalog semantics; it does not shell out to Bit or mirror Bit commands. Git is optional migration tooling, not part of native operation.
 
 The same model can cover a repository that is not a pnpm workspace. With no discovered projects, the implicit root component owns the complete tracked tree. Splitting the tree into package components is therefore a semantic enhancement rather than a prerequisite for version control.
 
@@ -61,9 +63,9 @@ The central mapping is:
 | Checkout | Component checkout/lane switch |
 | Merge | Lane/component merge |
 
-One invocation of Bit's version maker creates one batch ID and passes it into every component version made by that operation. On a lane, the same batch ID is used as the lane-history key. The history entry records that lane's component heads and deletions after the operation. Objects are persisted after component versions and lane history have been prepared. This is the workspace operation boundary the pnpm frontend consumes.
+One invocation of Bit's version maker creates one batch ID and passes it into every component version made by that operation. On a lane, the same batch ID is used as the lane-history key. The history entry records that lane's component heads and deletions after the operation. Objects are persisted after component versions and lane history have been prepared. This is the workspace operation boundary exposed by the Bit CLI.
 
-A lane is intentionally an overlay of component heads, not a Git branch containing a frozen copy of every component in the workspace. Components not present on the lane resolve through main or the lane it was forked from according to existing Bit semantics. Lane history therefore records lane-local state, not a second repository-wide tree. The pnpm frontend preserves this model rather than quietly changing lanes into Git branches.
+A lane is intentionally an overlay of component heads, not a Git branch containing a frozen copy of every component in the workspace. Components not present on the lane resolve through main or the lane it was forked from according to existing Bit semantics. Lane history therefore records lane-local state, not a second repository-wide tree. Native pnpm-workspace support preserves this model rather than quietly changing lanes into Git branches.
 
 A separate immutable object containing another copy of all component heads is not required. The lane records its current heads, lane history records its operations, and component versions record their individual parent DAGs. A batch ID is an operation identity rather than a content digest. Source objects remain content-addressed, while component version refs retain Bit's existing immutable identities.
 
@@ -80,7 +82,7 @@ This can be implemented by indexing existing version and history data. It does n
 
 ### Project discovery and component identity
 
-In native pnpm mode, the workspace manifest is the default component-boundary declaration. pnpm resolves the workspace projects using the same rules as installation and sends Bit a structured project inventory:
+In native pnpm mode, the workspace manifest is the default component-boundary declaration. Bit's pnpm adapter reads it and resolves projects with pnpm-compatible package-pattern and exclusion semantics:
 
 ```text
 ProjectInventory
@@ -94,7 +96,7 @@ ProjectInventory
   ignored paths
 ```
 
-Bit registers or updates these components before status or snap. Users do not have to run `bit add` for every package. Manual Bit components may coexist, but a path may have only one owner.
+`bit pnpm sync` registers or updates these components. It is required when project roots are added, moved, or deleted; ordinary status and snap then operate on the resulting component map. Users do not have to run `bit add` for every package. Manual Bit components may coexist, but a path may have only one owner. A future on-load hook may make synchronization automatic, but the explicit command keeps adoption and identity changes reviewable.
 
 Package names are useful defaults for component identity but are not sufficient by themselves: packages may be unnamed, two private projects may temporarily declare the same name, and a package may be renamed. A version-free identity map persists the selected Bit component ID for every project root. It is workspace source configuration and can itself be tracked by the root component. Component versions never appear in that map, avoiding a self-reference when a snap updates component heads.
 
@@ -111,7 +113,7 @@ vcs:
       manifestFile: package.json
 ```
 
-IDs in this block are scoped and version-free. pnpm writes the block after Bit has assigned identities, reads it when `.bitmap` is absent, and rejects unsupported providers or schema versions. The root component stores the same topology in normalized aspect data so Bit can recognize and safely materialize the root before `pnpm-workspace.yaml` exists locally. The source YAML is authoritative; the model copy is a bootstrap projection of the same version-free data, not another checkout-state database.
+IDs in this block are scoped and version-free. Bit writes the block after assigning identities, reads it when `.bitmap` is absent, and rejects unsupported providers or schema versions. pnpm treats the block as opaque workspace metadata. The root component stores the same topology in normalized aspect data so Bit can recognize and safely materialize the root before `pnpm-workspace.yaml` exists locally. The source YAML is authoritative; the model copy is a bootstrap projection of the same version-free data, not another checkout-state database.
 
 For a new workspace, package names are normalized into the initial component-name candidates; unnamed packages fall back to their project paths and collisions receive path-derived suffixes. Once written, the durable ID wins over later package-name changes. Moving a project requires moving its identity-map entry as part of the same change, making the move an explicit component-identity operation rather than an accidental deletion and creation.
 
@@ -144,7 +146,7 @@ The internal tool versions are then the distribution's responsibility and do not
 
 A profile may therefore contain only `toolchain = bun@…`, `toolchain = deno@…`, `toolchain = vite-plus@…`, `toolchain = nub@…`, or `toolchain = bit@…`. It does not also enumerate the programs locked inside that distribution unless a component intentionally declares compatibility with one of those internal boundaries.
 
-The experimental pnpm-to-Bit protocol represents both sides as generic maps. Until envs and integrated toolchains expose the declarations directly, a regular pnpm workspace can author the bridge in `package.json`:
+The experimental Bit pnpm-workspace adapter represents both sides as generic maps. Until envs and integrated toolchains expose the declarations directly, a regular pnpm workspace can author the bridge in `package.json`:
 
 ```json
 {
@@ -217,16 +219,16 @@ catalog:
 
 Catalog entries therefore allow the `workspace:` protocol. Resolution first dereferences `catalog:` and then applies normal workspace-protocol resolution. Publication performs the same two transformations in that order, so the exported package manifest receives a registry-installable version rather than either protocol.
 
-`pnpm vcs init` migrates existing intra-workspace `workspace:` declarations in `dependencies`, `devDependencies`, `optionalDependencies`, and `peerDependencies` to the default `catalog:` and copies their original specifiers into `pnpm-workspace.yaml`. One catalog key has one workspace-wide meaning. If projects use inconsistent `workspace:` specifiers for the same package, initialization rejects the migration and asks the user to choose one binding instead of silently changing dependency semantics.
+`bit pnpm sync` migrates existing intra-workspace `workspace:` declarations in `dependencies`, `devDependencies`, `optionalDependencies`, and `peerDependencies` to the default `catalog:` and copies their original specifiers into `pnpm-workspace.yaml`. One catalog key has one workspace-wide meaning. If projects use inconsistent `workspace:` specifiers for the same package, synchronization rejects the migration and asks the user to choose one binding instead of silently changing dependency semantics.
 
 During snap, Bit already derives the resolved dependency graph from `pnpm-lock.yaml` and stores the exact component dependency in the component model. The source `package.json` can consequently retain `catalog:` without losing the dependency component ID or version. This model data is the authority used when composing another workspace; the source workspace's catalog is not copied wholesale.
 
-Selective import uses a versioned client protocol:
+Selective import is maintained by Bit itself:
 
-1. pnpm synchronizes its project inventory, then asks Bit to import the requested components without installing dependencies or writing generated tool configuration.
-2. After materializing the components, Bit returns a `pnpmVcs` import plan in its structured JSON result. For each imported component the plan contains its component ID, package name, and destination root. For each `catalog:` dependency it contains the catalog name, package name, resolved registry specifier, and component ID where applicable.
-3. pnpm adds the imported roots to `pnpm-workspace.yaml`. A catalog dependency whose project is present is bound to `workspace:*`; one whose project is absent is bound to the exact version recorded in the imported component model. A snap hash is represented by its publish-compatible `0.0.0-<hash>` version.
-4. pnpm installs the resulting workspace and synchronizes Bit's inventory again. If the dependency component is imported later, pnpm changes its existing exact catalog binding to `workspace:*`, so the same consumer manifest now resolves to the local project.
+1. `bit import` materializes the requested components and reads each `catalog:` dependency from the component's resolved dependency model. Legacy imported `workspace:` declarations are normalized to `catalog:` at this boundary.
+2. Bit adds the imported roots and durable component identities to `pnpm-workspace.yaml`.
+3. A catalog dependency whose project is present is bound to `workspace:*`; one whose project is absent is bound to the exact version recorded in the imported component model. A snap hash is represented by its publish-compatible `0.0.0-<hash>` version.
+4. If the dependency component is imported later, Bit changes its existing exact catalog binding to `workspace:*`, so the same consumer manifest now resolves to the local project. The user then runs ordinary `pnpm install`, or an integration may request installation explicitly.
 
 For example, importing only `@acme/app` produces:
 
@@ -244,7 +246,7 @@ catalog:
   '@acme/math': workspace:*
 ```
 
-Bit creates this plan from component objects already fetched by the normal import operation. Existing Bit scopes and bit.cloud need no server-side protocol or storage change: the dependency graph required for the plan is already part of each snapped component model. The additional contract is between the local Bit and pnpm clients.
+Bit calculates these edits from component objects already fetched by the normal import operation. Existing Bit scopes and bit.cloud need no server-side protocol or storage change: the dependency graph required for reconciliation is already part of each snapped component model. pnpm only needs generic support for resolving and publishing `workspace:` values reached through catalogs.
 
 ### Exclusive file ownership and the root component
 
@@ -274,7 +276,7 @@ If the workspace root is itself a pnpm project, it is also the root component; i
 
 This component removes the main reason Git is currently needed for completeness. A CI-only change may change only the root component. A lockfile change also changes every project component whose calculated dependency graph changed; a workspace-profile change changes components whose applied profile must be refreshed. A checkout or clone materializes the root component together with the package components and therefore reconstructs the whole tracked workspace.
 
-Generated paths such as `node_modules`, the pnpm store, capsules, local VCS metadata, and toolchain-generated configuration files are excluded. Existing ignore files can be honored without requiring Git to be installed. The final native ignore filename and compatibility with `.gitignore` are product decisions, but ignore evaluation must be identical in pnpm's project inventory and Bit's file tracker.
+Generated paths such as `node_modules`, the pnpm store, capsules, local VCS metadata, and toolchain-generated configuration files are excluded. Existing ignore files can be honored without requiring Git to be installed. The final native ignore filename and compatibility with `.gitignore` are product decisions, but the Bit adapter's project discovery and file tracker must apply one consistent ownership and exclusion model.
 
 ### Workspace metadata without Git
 
@@ -289,11 +291,11 @@ Native VCS mode separates two kinds of state:
 
 `workspace.jsonc`, `pnpm-workspace.yaml`, `pnpm-lock.yaml`, the concrete workspace profile, and authored root configuration remain real tracked files in the root component. They are restored before the canonical workspace is fully loaded. The root component's model carries a normalized copy of the version-free topology. This small projection lets a clean client validate that it fetched the requested root, materialize it at `.`, read the authoritative YAML, and only then import every mapped component at its declared project root. Bit generates `.bitmap` entries with the fetched heads during those imports.
 
-`pnpm vcs clone <root-component> <new-directory>` implements this bootstrap in a temporary sibling directory. It initializes standalone Bit metadata, imports the validated root component at `.`, imports the mapped main heads, runs `pnpm install`, and renames the completed staging directory into place. `--lane <scope>/<lane>` instead resolves the root against the remote lane first, activates that lane from the validated one-component bootstrap state, and then imports every mapped component through normal lane resolution. Components carried by the lane use its heads and the rest fall back to main. Bit permits the initial cross-lane root materialization only in its restricted pnpm VCS root mode: exactly one component is written at `.`, its model must contain a valid root topology, and the staged-component switch exception accepts only that one explicit-files root. An existing destination is never overwritten and unsafe component roots are rejected. Recovery of an interrupted non-staged materialization remains follow-up work. A newly composed workspace uses its own root component and an explicitly selected or commonly adopted profile; it does not import and merge the source workspaces' root configurations.
+A Bit-native clone command will implement this bootstrap in a temporary sibling directory. It initializes standalone Bit metadata, imports the validated root component at `.`, imports the mapped main heads, runs or requests `pnpm install`, and renames the completed staging directory into place. A lane form instead resolves the root against the remote lane first, activates that lane from the validated one-component bootstrap state, and then imports every mapped component through normal lane resolution. Components carried by the lane use its heads and the rest fall back to main. Bit permits the initial cross-lane root materialization only in its restricted pnpm-root mode: exactly one component is written at `.`, its model must contain a valid root topology, and the staged-component switch exception accepts only that one explicit-files root. An existing destination is never overwritten and unsafe component roots are rejected. Recovery of an interrupted non-staged materialization remains follow-up work. A newly composed workspace uses its own root component and an explicitly selected or commonly adopted profile; it does not import and merge the source workspaces' root configurations.
 
 ### Snap batches as workspace commits
 
-`pnpm vcs commit` delegates to a normal non-soft Bit snap. Before selecting the final component set, Bit calculates each component's resolved dependency graph from the lockfile and validates its requirements against the locked workspace profile. A changed dependency graph, requirement declaration, or applied profile is a component change. Without an explicit filter, the operation includes all source-, dependency-, and profile-changed components, matching the desired workspace-commit behavior. Bit may additionally auto-snap affected dependents according to its existing dependency rules. Every resulting version carries the operation's batch ID.
+`bit snap` is the workspace commit. Before selecting the final component set, Bit calculates each component's resolved dependency graph from the lockfile and validates its requirements against the locked workspace profile. A changed dependency graph, requirement declaration, applied profile, or used catalog binding is a component change. Without an explicit filter, the operation includes all source-, dependency-, and profile-changed components, matching the desired workspace-commit behavior. Bit may additionally auto-snap affected dependents according to its existing dependency rules. Every resulting version carries the operation's batch ID.
 
 The workspace log displays one entry per batch rather than one row per changed component:
 
@@ -333,24 +335,16 @@ Bit's existing divergence and export logic supplies most of this behavior. The V
 
 Repository discovery and authorization can use scope identity initially. A separate forge, Git host, or Git credential is not required. Code review, issues, and a pull-request UI are distinct hosting features; they are not prerequisites for source transfer.
 
-### pnpm and Bit integration
+### Bit-native pnpm workspace integration
 
-pnpm is the frontend, not a second implementation of Bit version control. During the initial implementation `pnpm vcs` communicates with a compatible Bit installation through a versioned structured subprocess or daemon protocol. This avoids a package dependency cycle: Bit embeds pnpm's installation engine, so the pnpm CLI must not load Bit's full Harmony runtime in-process.
+Bit owns the version-control command surface and the pnpm-workspace adapter. There is no `pnpm vcs` subprocess protocol and no duplicate status, commit, lane, clone, import, or export command implemented by pnpm. This avoids a fragile wrapper layer and keeps operation semantics, diagnostics, capability checks, and recovery in the system that owns the component model.
 
-The integration protocol includes:
+The adapter has two responsibilities:
 
-- workspace project inventory;
-- root authoring inputs and generated-path classification;
-- command request and capability versions;
-- structured status, including source, dependency-graph, requirement, and applied-profile changes;
-- a versioned selective-import plan containing materialized project roots and catalog bindings derived from component dependency models;
-- structured history, diff, conflict, materialization, and progress events;
-- cancellation and exit classification;
-- the resulting batch, component, lane, and scope IDs.
+- `bit pnpm sync` adopts a raw pnpm workspace, discovers project boundaries, assigns durable identities, creates or refreshes the root component, migrates portable dependency declarations, and validates toolchain requirements;
+- ordinary Bit lifecycle hooks keep dependency graphs, used catalog bindings, profile fingerprints, import reconciliation, topology, and derived checkout state current.
 
-Human-readable Bit output is not parsed. pnpm can report how to install a compatible Bit version when the capability is unavailable. A future extracted headless Bit client library may replace the subprocess without changing command semantics.
-
-Direct Bit usage remains fully supported:
+The public workflow uses existing Bit terminology:
 
 ```shell
 bit status
@@ -360,7 +354,7 @@ bit switch feature
 bit export
 ```
 
-The pnpm commands add automatic pnpm project discovery and familiar VCS terminology; they do not create history invisible to Bit.
+pnpm remains responsible for installation, lockfile generation, and catalog/workspace-protocol resolution. Its changes are generic and independently useful: catalogs may contain `workspace:` values, exportable manifests dereference catalogs before converting workspace ranges, and opaque workspace-owner metadata is tolerated. pnpm neither knows how to snap a component nor locates or invokes a Bit executable.
 
 The [draft pnpm CI RFC](https://github.com/pnpm/rfcs/pull/25) treats version control as a read-only source provider. This native Bit mode implements that provider directly: changed projects come from component status/history, project input identity comes from component versions, and agents materialize a lane/batch through Bit. The CI engine remains read-only and never snaps or exports merely by running a pipeline.
 
@@ -426,7 +420,7 @@ One component rooted at the workspace would make Bit a general file-tree VCS wit
 
 ### Implement a separate VCS inside pnpm
 
-pnpm could implement commits, branches, storage, and remotes independently and optionally publish package projections to Bit. This creates two implementations and makes Bit an export target rather than the version-control system. It also duplicates scope hosting, component history, checkout, merge, and dependency-aware behavior. The proposal instead keeps one authority and adds a pnpm frontend.
+pnpm could implement commits, branches, storage, and remotes independently and optionally publish package projections to Bit. This creates two implementations and makes Bit an export target rather than the version-control system. It also duplicates scope hosting, component history, checkout, merge, and dependency-aware behavior. The proposal instead keeps one authority and adds a Bit-owned pnpm-workspace adapter.
 
 ### Adopt another Git-compatible frontend
 
@@ -448,11 +442,11 @@ Tools such as Jujutsu provide improved workflows while retaining Git storage and
 
 - Allow `workspace:` values in pnpm catalogs and resolve them after catalog dereferencing.
 - Convert catalog references before workspace references when producing a publishable package manifest.
-- Migrate consistent intra-workspace `workspace:` declarations to `catalog:` during `pnpm vcs init`.
-- Return a versioned Bit import plan derived from each imported component's manifest and lockfile-derived dependency model.
-- Add imported component roots to the destination workspace and bind catalog entries to exact versions or `workspace:*` according to which projects are present.
+- Migrate consistent intra-workspace `workspace:` declarations to `catalog:` during `bit pnpm sync`.
+- Derive import reconciliation from each imported component's manifest and lockfile-derived dependency model inside Bit.
+- Have `bit import` add component roots and durable identities to the destination pnpm workspace and bind catalog entries to exact versions or `workspace:*` according to which projects are present.
 - Rebind an exact entry to `workspace:*` when its component is imported later.
-- Keep dependency installation and root workspace-file ownership in pnpm when Bit is operating inside a pnpm VCS workspace.
+- Keep dependency installation in pnpm while root workspace-file ownership and composition remain in Bit.
 - Test consumer-only import, subsequent dependency import, named catalogs, conflicting bindings, snap versions, and ordinary semver versions against an unchanged Bit remote.
 
 ### Phase 3: enforce workspace compatibility
@@ -487,14 +481,14 @@ Tools such as Jujutsu provide improved workflows while retaining Git storage and
 - Restore the root component before full workspace initialization.
 - Validate operation without Git installed on Linux, macOS, and Windows.
 
-### Phase 6: pnpm frontend
+### Phase 6: Bit-native product surface
 
-- Add the experimental `pnpm vcs` command namespace to the Rust pnpm CLI. A TypeScript pnpm implementation is outside the scope of this RFC and prototype.
-- Define the versioned pnpm-to-Bit integration protocol and capability handshake.
-- Use pnpm's canonical workspace discovery to supply project inventory.
-- Make `pnpm vcs import` own workspace package patterns, catalog reconciliation, dependency installation, and the post-import Bit inventory sync.
-- Expose structured source/dependency/profile status, batch history, diff, materialization, lane, and remote results.
-- Implement the native Bit source provider for pnpm CI.
+- Stabilize `bit pnpm sync` as the explicit raw-workspace adoption and topology-refresh command.
+- Make `bit import` reconcile pnpm package patterns, durable identities, and catalogs automatically when the destination has a Bit-owned root component.
+- Add Bit-native repository clone/materialization UX over the validated root-bootstrap path.
+- Expose structured source/dependency/profile status, batch history, diff, materialization, lane, and remote results from ordinary Bit commands.
+- Keep pnpm changes limited to generic catalog resolution/publication and opaque workspace metadata support.
+- Implement the native Bit source provider for pnpm CI without routing mutations through pnpm.
 
 ### Phase 7: optional Git bridge
 
@@ -507,9 +501,9 @@ This phase is not required to call the native workflow complete.
 
 ### Prototype validation
 
-The current proof of concept covers the first end-to-end composition and repository-bootstrap slices in the Rust pnpm CLI and the Bit client. It converts a regular pnpm workspace's local `workspace:` edges to catalogs, snaps the workspace as components, imports only a consumer into a new empty pnpm workspace with an exact catalog binding, and later imports the dependency and rebinds that entry to `workspace:*`. Both installations resolve and run without editing the consumer's `package.json`.
+The current proof of concept covers raw-workspace adoption and the first end-to-end composition and repository-bootstrap slices in Bit. `bit pnpm sync` converts a regular pnpm workspace's local `workspace:` edges to catalogs, assigns every project a component identity, creates a root component, and permits ordinary `bit status` and `bit snap` to operate without Git. `bit import` imports only a consumer into a new empty pnpm workspace with an exact catalog binding and later rebinds that entry to `workspace:*` when the dependency component is imported, without editing the consumer's dependency declaration by hand.
 
-The prototype also writes the version-free path-to-component map into `pnpm-workspace.yaml`, stores its normalized projection on the root component, recovers project identities without `.bitmap`, and exposes `pnpm vcs clone <root-component> <new-directory>`. Clone bootstraps the root through Bit's component model, reconstructs the mapped workspace in a staging directory, generates local checkout metadata, and installs it with pnpm. The `--lane <scope>/<lane>` form has been exercised against bit.cloud with root and project overrides on the lane plus a project inherited from main; the resulting Git-free workspace tracks the remote lane and starts with clean status. This path uses ordinary component and lane objects and therefore requires compatible pnpm and Bit clients but no bit.cloud server change.
+The prototype also writes the version-free path-to-component map into `pnpm-workspace.yaml`, stores its normalized projection on the root component, and recovers project identities without `.bitmap`. A previously prototyped Rust pnpm clone wrapper proved the root-first and lane-aware bootstrap algorithm against bit.cloud, including root and project overrides on a lane plus a project inherited from main. That wrapper has deliberately been removed: the validated algorithm belongs behind Bit-native clone UX. The path uses ordinary component and lane objects and therefore requires a compatible Bit client but no bit.cloud server change.
 
 The same workspace-profile contract has been exercised with Vite+ and with Bun used as an aggregate development toolchain while pnpm remains the package manager. This validates that the profile can describe a conventional collection of tools or one integrated distribution without making the package manager implicit.
 
@@ -517,15 +511,15 @@ This prototype does not imply that all phases above are complete. In particular,
 
 ### Affected repositories
 
-- **teambit/bit:** source-only component support, pnpm inventory ingestion, root component ownership and topology projection, validated root bootstrapping, profile admission and migration, dependency/profile change detection, client-side import-plan generation, batch indexing and operations, Git-free clone/composition/collaboration, structured integration protocol, and recovery/security tests. Existing Bit scope servers do not require a catalog-bridge or root-bootstrap change.
-- **pnpm/pnpm:** VCS command surface in the Rust CLI, canonical project inventory, durable `pnpm-workspace.yaml#vcs` identity, staged root-component clone, workspace profile and component requirement declarations, `workspace:` catalog values, initialization migration, selective-import reconciliation, Bit capability discovery, structured reporting, and CI source-provider integration.
+- **teambit/bit:** raw pnpm workspace discovery, source-only component support, root component ownership and topology projection, durable identity, validated root bootstrapping, profile admission and migration, dependency/profile/catalog change detection, selective-import reconciliation, batch indexing and operations, Git-free clone/composition/collaboration, and recovery/security tests. Existing Bit scope servers do not require a catalog-bridge or root-bootstrap change.
+- **pnpm/pnpm:** generic `workspace:` catalog values, catalog-before-workspace publication conversion, and tolerance for opaque durable workspace-owner metadata. pnpm contains no Bit client and no VCS command surface.
 - **pnpm/rfcs:** follow-up RFCs if final command UX, identity naming, or multi-scope collaboration need independent ratification.
 
-Bit and pnpm releases negotiate an explicit protocol version. pnpm does not assume that whichever `bit` executable is on `PATH` supports native VCS mode.
+The durable manifest and Bit component metadata are schema-versioned. There is no pnpm-to-Bit executable protocol to negotiate.
 
 ## Prior Art
 
-**[Bit snaps](https://bit.dev/reference/components/snaps)** are the direct foundation: component versions with parent history, lockfile-derived dependency graphs, env/aspect configuration, dependency-aware multi-component snapping, and immutable file objects. This RFC promotes the shared batch to the pnpm-facing workspace operation and records the profile contract alongside the dependency graph.
+**[Bit snaps](https://bit.dev/reference/components/snaps)** are the direct foundation: component versions with parent history, lockfile-derived dependency graphs, env/aspect configuration, dependency-aware multi-component snapping, and immutable file objects. This RFC promotes the shared batch to a workspace operation and records the profile contract alongside the dependency graph.
 
 **[Bit lanes](https://bit.dev/reference/lanes/merge-lanes)** provide switching, independent component heads, main/fork fallback, merge, and remote collaboration. Native pnpm mode keeps this component-overlay model instead of translating it into frozen Git branch trees.
 
@@ -547,15 +541,14 @@ Bit and pnpm releases negotiate an explicit protocol version. pnpm does not assu
 
 ## Unresolved Questions and Bikeshedding
 
-- **Command name.** Is `pnpm vcs` an incubation namespace, the permanent frontend, or should pnpm expose Bit terminology such as `snap` and `lane` directly?
-- **Bit distribution.** Is a separately installed Bit executable required, can pnpm provision a compatible version, or should a headless Bit client eventually ship independently?
+- **Adapter command.** Should `bit pnpm sync` remain an explicit topology-changing operation, run automatically before selected Bit commands, or graduate into generic workspace discovery with pnpm as one boundary provider?
 - **Root component identity.** The prototype derives an initial `<root-package-name>-workspace` name and then persists the assigned ID. Is that naming policy suitable for the permanent UX, and how should the root be displayed and protected from collision with a user component?
 - **Project identity UX.** The durable map settles identity after initialization, but which explicit command should move, rename, or reassign an entry and preview its effect on history?
 - **Main workspace log.** Is grouping component histories by batch ID sufficient, or is a derived persistent index needed for large scopes?
 - **Batch ancestry.** Component version parents carry merge ancestry, while a batch groups an operation. Does workspace-level UI need explicit parent batch IDs, or would that incorrectly imply a second repository DAG?
 - **Batch ID format.** Is the existing UUID sufficient as a public workspace revision ID, should it receive a short display form, or should future batches derive an ID from their resulting heads and metadata?
 - **Owned scopes.** Must all workspace projects use one repository scope in the first release, and how should existing multi-scope Bit workspaces behave?
-- **Lane overlay semantics.** How prominently must the pnpm frontend explain that a lane contains changed component heads and resolves other components through its baseline rather than freezing every workspace project as Git does?
+- **Lane overlay semantics.** How prominently must Bit explain that a lane contains changed component heads and resolves other components through its baseline rather than freezing every workspace project as Git does?
 - **Capability vocabulary.** Which slots deserve conventional names, and which should remain env/toolchain-specific? Slot names affect interoperability, so accidental synonyms such as `test`, `tests`, and `testRunner` must not become separate standards.
 - **Aggregate toolchain manifests.** Should an integrated binary expose the granular capabilities it locks for diagnostics and for satisfying independent requirements, or is its versioned `toolchain` identity the only supported boundary?
 - **Declaration authority.** When an env/toolchain-provided requirement and `package.json#pnpm.vcs.requirements` both exist, which one wins and how is the override displayed?
@@ -565,7 +558,7 @@ Bit and pnpm releases negotiate an explicit protocol version. pnpm does not assu
 - **Change invalidation.** How does Bit efficiently determine which components' dependency graph, requirements, or applied profile changed after editing a lockfile, catalog, root profile, or env?
 - **Catalog conflict UX.** Native mode deliberately requires one binding per package in a catalog. Should pnpm offer a guided normalization command when an existing workspace uses different `workspace:` ranges for the same internal dependency, or is an actionable initialization error sufficient?
 - **Generated-file ownership.** How are authored root inputs distinguished from generated facades so status neither loses user changes nor snaps materialized output as a second source of truth?
-- **Partial commits.** Is component-level selection sufficient, or must the pnpm frontend eventually support file- or hunk-level staging inside one component?
+- **Partial commits.** Is component-level selection sufficient, or must Bit eventually support file- or hunk-level staging inside one component?
 - **Nested and overlapping projects.** Is deepest-root ownership always correct, and how are pnpm projects that intentionally consume sources outside their roots represented?
 - **Ignored files.** Should native mode keep `.gitignore` as a compatible convention without Git, introduce `.bitignore`, or support both with a defined precedence?
 - **Clone address.** What user-facing URL identifies a repository scope and lane distinctly from importing an ordinary Bit component?
