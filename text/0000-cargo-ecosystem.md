@@ -201,7 +201,7 @@ $ pnpm update crate:tokio                      # re-resolve one crate within its
 $ pnpm update --latest crate:tokio             # bump the requirement too
 ```
 
-**`pnpm install`** resolves and materializes both ecosystems in one run, crates first; they share nothing at resolution time, and a crate project with a `build.rs` that needs `node_modules` is not a case worth ordering around. `--frozen-lockfile`, `--prefer-offline`, `--offline`, `--lockfile-only`, `--ignore-scripts` mean what they mean; scripts do not exist on the crate side, so the last is a no-op there.
+**`pnpm install`** resolves and materializes both ecosystems concurrently in one run. Their graphs are independent, so serializing them would add their wall times without establishing a useful ordering; a crate project with a `build.rs` that needs `node_modules` is not a case worth ordering installation around. The installers share one configured HTTP client and its throttles, so concurrency does not multiply `networkConcurrency` or `maxSockets`. The coordinator is ecosystem-neutral: a later PyPI installer joins the same set of concurrent tasks and receives the same network client rather than introducing another serial phase or an independent connection budget. `--frozen-lockfile`, `--prefer-offline`, `--offline`, `--lockfile-only`, `--ignore-scripts` mean what they mean; scripts do not exist on the crate side, so the last is a no-op there.
 
 **Manifest edits are format-preserving** — `toml_edit`, as cargo itself uses, so `pnpm add` on a hand-formatted `Cargo.toml` changes one line. In a workspace whose root declares the crate under `[workspace.dependencies]`, `pnpm add crate:serde` in a member writes `serde.workspace = true` and leaves the requirement where it lives; `[workspace.dependencies]` **is** the crate catalog, and `catalog:` for a `crate:` specifier is spelled `workspace = true`. Adding to the catalog itself is `pnpm add --catalog crate:serde@^1` at the root. Named catalogs have no cargo equivalent and are not invented.
 
@@ -287,7 +287,7 @@ The migration is the acceptance test, and it is incremental. Each step is useful
 3. **pnpm materializes; cargo builds offline.** `cargo.enabled: true`, the managed region replaces the step-1 mirror entry, `pnpm install --frozen-lockfile` precedes every `cargo` invocation in `pacquet-ci.yml`, `build-pnpr.yml`, `release.yml`, and the benchmark workflows, and `Swatinem/rust-cache`'s registry caching is dropped in favour of the store cache `pnpm/action-setup` already restores. `cargo build --locked --offline` is the invocation from then on.
 4. **pnpm replaces the satellites.** `pnpm audit` and `pnpm licenses` take over `deny.toml`'s advisories and licenses sections in `audit.yml`; Dependabot's cargo ecosystem is replaced by `pnpm update`; the `chore(cargo): bump` commit convention goes away.
 
-Bootstrapping is not circular. The repository already installs its own released binary through `devEngines` with `onFail: download`; the released pnpm builds the next pnpm, as the released TypeScript pnpm always installed the TypeScript workspace.
+Bootstrapping needs an explicit transition. Until a released pnpm understands `cargo.enabled`, the repository cannot commit that setting or the source-replacement block: CI installs the released binary before it builds the branch, and that binary would either reject the setting or point Cargo at a directory it cannot populate. During milestone 2, a CI job first builds the candidate pnpm with ordinary Cargo and then uses that binary for the lockfile-reproduction gate. The repository commits the opt-in and generated source replacement only after the feature ships in a released pnpm; from then on the released pnpm builds the next pnpm, as the released TypeScript pnpm always installed the TypeScript workspace.
 
 ## Rationale and Alternatives
 
@@ -330,6 +330,10 @@ Isolates the new code and the new dependencies. Rejected because most of the val
 ## Implementation
 
 ### pnpm
+
+The initial proof of concept implements a deliberately smaller vertical slice: when `cargo.enabled` is set, `pnpm install` invokes `cargo metadata --no-deps` only to normalize workspace manifests, fetches crates.io sparse-index entries itself, resolves the fresh maximal graph with `pubgrub` and Cargo's `semver` and index schemas, writes a format-v4 `Cargo.lock` through `cargo-lock`, and materializes that lock through pnpm's store. This work runs concurrently with the npm install through an ecosystem coordinator whose task collection can grow beyond two languages; both paths share the install-wide throttled HTTP client. A fixture with an optional workspace dependency and serde's derive graph is byte-identical to `cargo generate-lockfile` and builds with `cargo build --locked --offline` from the generated directory source. It activates every workspace feature, unifies requested registry features, includes target-specific and workspace dev-dependencies while excluding registry dev-dependencies, understands renamed dependencies, and excludes freshly yanked versions.
+
+That result validates the end-to-end seam, not Cargo compatibility. The proof of concept is crates.io-only and does not yet implement existing-lock preferences and stale-lock detection, alternate registries, git and non-member path dependencies, `[patch]`, `links` uniqueness, resolver-3 MSRV filtering, conditional index requests, or backtracking to older compatibility lines and candidates whose dependency names differ from the newest candidate. Those remain acceptance gates before enabling dogfooding in this repository.
 
 New crates under `pnpm/crates/`, following the domain-prefix convention:
 
