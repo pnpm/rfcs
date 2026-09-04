@@ -4,7 +4,7 @@
 
 ## Summary
 
-pnpm learns a second ecosystem. A workspace that opts in has its Rust crate dependencies resolved, fetched, verified and materialized by pnpm, from the same content-addressable store and with the same registry, auth, audit, licensing, filtering and task machinery the npm side already has. Cargo keeps its job: it compiles. It never touches the network in a pnpm-managed workspace, because pnpm points every registry and git source at a directory it materializes from the store, and `Cargo.lock` stays exactly the file cargo would have written. pnpr grows a `cargo` registry protocol alongside npm: the sparse index, the download endpoint, the publish/yank/owners/search web API, and an upstream mode that proxies crates.io — so the same server, the same `registries:` model, and the same access rules serve both ecosystems.
+pnpm learns a second ecosystem. A workspace that opts in has its Rust crate dependencies resolved, fetched, verified and materialized by pnpm, from the same content-addressable store and with the same registry, auth, audit, licensing, filtering and task machinery the npm side already has. Cargo keeps its job: it compiles. It never touches the network in a pnpm-managed workspace, because pnpm points every registry and git source at a per-workspace directory of links into crates unpacked once, machine-wide, in the store — the global virtual store, applied to crates — and `Cargo.lock` stays exactly the file cargo would have written. pnpr grows a `cargo` registry protocol alongside npm: the sparse index, the download endpoint, the publish/yank/owners/search web API, and an upstream mode that proxies crates.io — so the same server, the same `registries:` model, and the same access rules serve both ecosystems.
 
 The immediate reason is that pnpm no longer dogfoods itself. The CLI is Rust now; its more than seven hundred crates.io dependencies are fetched by cargo, cached by a GitHub Action, audited by cargo-deny, and never pass through pnpm or pnpr. This RFC puts them back on the path we ship.
 
@@ -24,7 +24,7 @@ In this repository, after this RFC:
 
 ```console
 $ pnpm install --frozen-lockfile
-Crates: 714 resolved from Cargo.lock, 714 materialized into .pnpm/crates (hardlinked from the store)
+Crates: 714 resolved from Cargo.lock, 714 linked into .pnpm/crates from the store
 Packages: already up to date
 $ cargo build --locked --release --bin pnpm      # no network, same Cargo.lock
 ```
@@ -38,7 +38,8 @@ $ cargo build --locked --release --bin pnpm      # no network, same Cargo.lock
 - **Cargo ecosystem** — the set of behaviours this RFC adds. A workspace is *cargo-managed* when it has opted in (below).
 - **crate registry** — a registry speaking Cargo's sparse index protocol: a `config.json`, index files, a download endpoint and, optionally, the web API. crates.io is one; a pnpr registry declared with `protocol: cargo` is another.
 - **crate project** — a workspace project whose manifest is a `Cargo.toml` with a `[package]` table. A directory holding both `package.json` and `Cargo.toml` is one project with two manifests.
-- **crate source directory** — the directory pnpm materializes for one replaced cargo source, in the layout cargo's `directory` source reads: one unpacked crate per subdirectory, each with a `.cargo-checksum.json`.
+- **crate slot** — one crate, unpacked once per machine under the store, with its `.cargo-checksum.json`. The crate-side counterpart of a global virtual store slot.
+- **crate source directory** — the per-workspace directory pnpm maintains for one replaced cargo source, in the layout cargo's `directory` source reads: one entry per locked crate, each a link to that crate's slot.
 - **source key** — cargo's identity for where a package comes from, as written in `Cargo.lock`: `registry+https://github.com/rust-lang/crates.io-index`, `sparse+https://…`, or `git+https://…#…`.
 
 > **pnpm owns resolution, fetching, verification and materialization; cargo owns compilation. Cargo never contacts a registry in a cargo-managed workspace, and `Cargo.lock` is byte-for-byte the file cargo would write for the same graph.**
@@ -52,7 +53,7 @@ Cargo already has the seam this needs: **source replacement**. A `[source]` tabl
 - Cargo's stated core assumption is that "the source code is exactly the same from both sources" and that "a replacement source is not allowed to have crates which are not present in the original source". A crate source directory that contains exactly the packages `Cargo.lock` records for that source satisfies this by construction.
 - `Cargo.lock` records the *original* source key, not the replacement. Vendoring crates.io does not put a local path in the lockfile. The lockfile therefore stays portable and identical to the one an unmanaged cargo would write, which is what lets the two worlds coexist in one repository.
 
-pnpm's side of the seam is machinery it already has. The store keeps unpacked files by sha512 in a content-addressable layout; `import_indexed_dir` in `deps-restorer` materializes any directory from any in-package-path → CAS-path map and is already used outside `node_modules` for `.pnpm-config/`; hardlink/reflink/copy selection and its downgrade ladder are shared. A crate source directory is that primitive pointed at a new target with a different naming convention.
+pnpm's side of the seam is machinery it already has. The store keeps unpacked files by sha512 in a content-addressable layout; `import_indexed_dir` in `deps-restorer` materializes any directory from any in-package-path → CAS-path map and is already used outside `node_modules` for `.pnpm-config/`; the global virtual store keeps one materialized copy per machine under `<store>/links` with a projects registry for pruning. A crate slot is the first primitive filling a directory under the store, and a crate source directory is the second primitive's symlink farm pointed at those slots.
 
 **What pnpm does not do: build.** No feature resolution for a particular target, no `cfg()` evaluation, no rustc invocation, no `target/`. `cargo build` is a task like `tsc` is a task; it runs under `pnpm run`/`exec` or directly, and it reads what pnpm materialized.
 
@@ -118,26 +119,36 @@ Git dependencies are fetched by the existing git fetcher and resolver at the loc
 
 ### Materialization and `.cargo/config.toml`
 
-The crate source directories live under the workspace root:
+Crates are unpacked once per machine, and a workspace holds links:
 
 ```
-.pnpm/crates/
-  crates-io/                        # one directory per replaced source key
-    serde-1.0.229/
-      .cargo-checksum.json
-      Cargo.toml
-      src/…
-    serde_derive-1.0.229/
-  registry-pnpr.example.com-9f1c2a/ # sparse+https://pnpr.example.com/~internal/
-    acme-telemetry-0.4.1/
-  git-bar-3f2a8c1/                  # git+https://github.com/foo/bar#3f2a8c1…
-    bar-0.9.0/
-  .state.json                       # lock hash, layout version, import method used
+<store>/v11/crates/                          # machine-wide crate slots
+  serde-1.0.229-4148590a/                    # <name>-<version>-<cksum prefix>
+    .cargo-checksum.json
+    Cargo.toml
+    src/…
+  serde_derive-1.0.229-1c6b0f52/
+
+<workspace>/.pnpm/crates/                    # per workspace: one link per locked crate
+  crates-io/                                 # one directory per replaced source key
+    serde-1.0.229        -> <store>/v11/crates/serde-1.0.229-4148590a
+    serde_derive-1.0.229 -> <store>/v11/crates/serde_derive-1.0.229-1c6b0f52
+  registry-pnpr.example.com-9f1c2a/          # sparse+https://pnpr.example.com/~internal/
+    acme-telemetry-0.4.1 -> …
+  git-bar-3f2a8c1/                           # git+https://github.com/foo/bar#3f2a8c1…
+    bar-0.9.0            -> …
+  .state.json                                # lock hash, layout version
 ```
 
-One directory per source, not one for all of them, because cargo's replacement rule is per source and a directory source that mixed two registries' crates would let a name present in both be served for either. Directory names are for readability only — a source directory is named by the registry host or git repository plus a short hash of the full source key, a crate directory by `<name>-<version>` — because cargo's directory source reads every subdirectory's `Cargo.toml` and does not care what the directory is called.
+**This is the global virtual store, not a per-workspace tree.** A crate slot is filled once, under the store, by hardlinking its files out of the CAS through `import_indexed_dir`; every workspace that locks that crate gets a symlink — a junction on Windows, as `node_modules` already does — and nothing else. An install of 714 crates is 714 symlinks, not tens of thousands of file links, and two workspaces on one machine share every byte and every path. The slot is keyed by name, version and a prefix of the crate's sha256, so two registries serving different bytes under one `name@version` get two slots, and the slot for a given checksum is immutable once filled.
 
-Files are hardlinked or reflinked from the store through `import_indexed_dir`, with the same `package-import-method` and the same auto-tier downgrade as `node_modules`. The tree is pruned to the locked set on every install; a stale crate that cargo would otherwise still see is the one way to violate the "exactly the same as the original source" rule.
+Cargo is indifferent to the indirection. Its directory source lists the source directory's entries, skips dot-prefixed ones (so `.state.json` is invisible to it), keeps every entry under which `Cargo.toml` *exists* — a check that follows symlinks — and reads the package through the link. It records the package's checksum from `.cargo-checksum.json` and verifies each listed file's sha256 when it compiles the crate, with an error that says directory sources are not meant to be edited. Two scratch workspaces sharing one central tree through symlink farms both build offline on cargo 1.97; the same run confirmed that a fresh target directory is not recompiled when a shared file changes, because cargo fingerprints non-path sources by version rather than by mtime — which is the behaviour that makes sharing safe, and also why the slots are made read-only.
+
+One source directory per replaced source, not one for all of them, because cargo's replacement rule is per source and a directory that mixed two registries' crates would let a name present in both be served for either. Directory names are for readability only — a source directory is named by the registry host or git repository plus a short hash of the full source key, a link by `<name>-<version>` — because cargo does not care what an entry is called.
+
+Pruning happens at two levels, as it does for the npm global virtual store. The workspace's links are pruned to the locked set on every install; a stale link that cargo would otherwise still see is the one way to violate the "exactly the same as the original source" rule. Slots are pruned by `pnpm store prune`, which walks the store's projects registry — every cargo-managed workspace registers itself there, as global-virtual-store projects do — and removes slots no registered workspace's `Cargo.lock` references.
+
+Identical absolute source paths across every workspace on a machine are also the precondition for anything that would later share compiled artifacts between workspaces: rustc embeds source paths in debug info and fingerprints, and a per-workspace tree would make every workspace's build unique by construction.
 
 **pnpm owns a marked region of the workspace's `.cargo/config.toml`, and that file is committed.**
 
@@ -294,7 +305,7 @@ The `cargo` crate is on crates.io and its resolver is the oracle this RFC tests 
 
 ### A `local-registry` source instead of a `directory` source
 
-Cargo's other vendoring shape keeps `.crate` archives and an index. Rejected: pnpm's store holds unpacked files, not archives, and a local registry would mean keeping both or re-packing on link. The directory source hardlinks straight out of the store, which is the property pnpm exists for. The cost is the synthesized `.cargo-checksum.json`, which is one small file per crate.
+Cargo's other vendoring shape keeps `.crate` archives and an index. Rejected: pnpm's store holds unpacked files, not archives, and a local registry would mean keeping both or re-packing on link. The directory source is a slot filled straight out of the store and shared by every workspace on the machine, which is the property pnpm exists for. The cost is the synthesized `.cargo-checksum.json`, which is one small file per crate.
 
 ### Record crates in `pnpm-lock.yaml` and derive `Cargo.lock`
 
@@ -303,6 +314,10 @@ One lockfile for the workspace is attractive and is rejected. Cargo will not run
 ### Inject `--config` when spawning cargo instead of editing `.cargo/config.toml`
 
 Keeps the user's file pristine and works for `pnpm run build`. Rejected because the user's editor does not run cargo through pnpm: rust-analyzer, `cargo clippy` from a shell, CI steps that call cargo directly would all fetch from crates.io and silently bypass the workspace's decision. A committed, generated region is explicit about what it owns and fails loudly when skipped.
+
+### A per-workspace tree of hardlinked files instead of the global virtual store
+
+The first draft of this RFC materialized every crate's files into the workspace, hardlinked from the store, the way `node_modules` is built without the global virtual store. The objections to a central layout were that cargo scans a directory source wholesale, that a shared tree cannot be pruned per workspace, and that a committed `.cargo/config.toml` needs a relative path. All three are objections to a *single shared directory source*, and none survives a per-workspace symlink farm: cargo scans only the workspace's links, the links are pruned per workspace and the slots per machine, and the config path stays relative. Rejected in favour of the layout above; a self-contained tree remains a possible opt-in for checkouts that must build without the store present, which is an open question.
 
 ### Infer management from the presence of `Cargo.toml`
 
@@ -322,14 +337,14 @@ New crates under `pnpm/crates/`, following the domain-prefix convention:
 2. **`cargo-index-client`** — sparse index fetch over `pnpm-network` with the conditional-request mirror at `<cache_dir>/v11/cargo-index/`, `config.json` discovery, cargo config discovery (`[registries]`, `credentials.toml`, `CARGO_REGISTRIES_*_TOKEN`) and the `cratesIoIndex` override. Index lines typed by `cargo-util-schemas::index`.
 3. **`cargo-resolver`** — PubGrub solver with cargo's semantics: feature unification into the maximal graph, optional and weak dependencies, `dep:` features, `links` uniqueness, yank rules, MSRV eligibility under `resolver = "3"`, `[patch]`, lock preference and `update` widening. `PackageVersionGuard` is honoured for `audit --fix`.
 4. **`cargo-lockfile`** — `Cargo.lock` v4 read/write, starting from the `cargo-lock` crate; golden round-trip test on this repository's lockfile; canonical ordering and dependency qualification rules.
-5. **`cargo-source-linker`** — materialize crate source directories through `deps-restorer::import_indexed_dir`, prune, write `.pnpm/crates/.state.json`, and regenerate the managed region of `.cargo/config.toml` idempotently.
+5. **`cargo-source-linker`** — fill crate slots under `<store>/crates/` through `deps-restorer::import_indexed_dir` and mark them read-only; maintain the per-workspace symlink farms (junctions on Windows), prune them to the lock, write `.pnpm/crates/.state.json`, register the workspace in the store's projects registry, and regenerate the managed region of `.cargo/config.toml` idempotently.
 6. **`cargo-registry-api`** — publish framing, yank/unyank, owners, search, against a registry's `api`.
 
 Changes to existing crates:
 
 7. **`workspace`** — `Cargo.toml` as a manifest basename; `Project` gets an optional crate manifest; discovery unions `[workspace].members`. **`workspace-projects-graph`** — edges from path deps and `workspace = true`. **`workspace-projects-filter`** — name aliases over the union.
 8. **`config`** — `cargo.enabled` and `cargo.cratesIoIndex` in `WorkspaceSettings`/`Config`/`known_settings.rs`.
-9. **`tarball`** / **`store-dir`** — `.crate` unpack with the synthesized `.cargo-checksum.json`; sha256-keyed index rows (`algo` per row already exists). No store version bump.
+9. **`tarball`** / **`store-dir`** — `.crate` unpack with the synthesized `.cargo-checksum.json`; sha256-keyed index rows (`algo` per row already exists); `StoreDir::crates()` beside `links()`; `store prune` extended to crate slots via the projects registry. No store version bump.
 10. **`deps-path`** — `crate` in `RESERVED_VERSION_PREFIXES`.
 11. **`package-manager`** — the crate phase of `install`, run before the npm phase; `--frozen-lockfile`/`--lockfile-only`/`--offline` plumbing.
 12. **`cli`** — `crate:` handling in `add`/`remove`/`update`/`outdated`/`list`/`why`/`audit`/`licenses`/`publish`/`pack`; the `--features`, `--no-default-features`, `--save-build`, `--optional` flags; ecosystem defaulting by project shape; `login --cargo-registry`.
@@ -358,7 +373,7 @@ Steps 15–21 first (dogfooding milestone 1, pnpr proxying crates.io for plain c
 - **Lockfile reproduction**: this repository's `Cargo.lock` is reproduced byte-for-byte from its manifests with the lock as preference; `cargo metadata --locked --offline` accepts every lockfile pnpm writes without rewriting it.
 - **Differential resolution** against `cargo generate-lockfile` on a fixture corpus: semver-compatible unification, backtracking to an older version on conflict, `0.x` minor-as-major, pre-release matching, `=`/`~`/`*` requirements, optional deps activated by features from different dependents, `dep:` and weak `?/` features, `links` conflicts (must error, matching cargo's message class), yanked versions kept from a lock and refused fresh, `rust_version` eligibility under `resolver = "3"` with fallback when nothing eligible exists, `[patch]` overriding an index candidate, renamed dependencies (`package =`), target-specific dependencies included regardless of host, dev-dependencies of members included and of non-members excluded.
 - **Fetch and store**: `.crate` checksum mismatch fails before any file reaches the store; the synthesized `.cargo-checksum.json` matches what `cargo vendor` writes for the same crate; sha256-keyed rows do not collide with sha512 rows; a store shared between the TypeScript CLI and pacquet round-trips crate rows.
-- **Materialization**: hardlink, reflink and copy tiers; pruning of a removed crate; two versions of one crate side by side; one directory per source key; `cargo build --locked --offline` succeeds on a fresh clone after `pnpm install`; the managed region is idempotent, preserves the user's own tables and comments, and is regenerated when a git source is added or removed.
+- **Materialization**: a slot is filled once and reused by a second workspace; slots are read-only and an edited file fails `cargo build` with cargo's checksum error; two registries serving different bytes for one `name@version` get two slots; pruning of a removed crate's link leaves the slot until `store prune` finds no registered workspace referencing it; two versions of one crate side by side; one directory per source key; junctions on Windows; `cargo build --locked --offline` succeeds on a fresh clone after `pnpm install`; the managed region is idempotent, preserves the user's own tables and comments, and is regenerated when a git source is added or removed.
 - **Commands**: `add` writes `workspace = true` when the root catalog has the crate and a requirement otherwise; `-O` on a `crate:` spec is refused; bare names default by project shape; `remove` cleans the managed region; `update`/`--latest`; `audit` against a recorded OSV response; `licenses` over both ecosystems; `publish --dry-run` framing round-trip; `unpublish` yanks.
 - **Workspace**: a directory with both manifests is one project; `--filter` by crate name; `...[ref]` over crate paths; a name shared by an npm package and a crate in different directories is an error listing both.
 - **pnpr protocol**: `config.json` per base, index path scheme for 1/2/3/4+ character names, `304` on `If-None-Match`, `404` for unknown names, publish framing incl. truncated and oversized bodies, `cksum` computed server-side, duplicate version including build-metadata variants refused, yank/unyank as the only mutation, owners as a team view, search shape, bare-token auth accepted on cargo and refused on npm registries, `WWW-Authenticate` on `401`, `-`/`_` namespace folding, router protocol mismatch refused at startup, upstream served byte-identical to `index.crates.io` with the crawler `User-Agent`, breaker and cache behaviour under upstream failure, journal recovery across a crashed publish.
@@ -378,6 +393,7 @@ Steps 15–21 first (dogfooding milestone 1, pnpr proxying crates.io for plain c
 - **Specifier prefix**: `crate:` reads naturally in `pnpm add crate:serde` and is what this RFC uses; `cargo:` names the tool rather than the thing. Lean `crate:`.
 - **Opt-in key**: `cargo.enabled` under a `cargo:` block that can grow (`cratesIoIndex`, a future `sourceDir`, a future toolchain setting), versus a flat `manageCargo: true`. Lean the block.
 - **Directory name**: `.pnpm/crates/` at the workspace root is new territory — `node_modules/.pnpm` is inside a directory cargo has no reason to read, and `target/` is cargo's to `clean`. A single `.pnpm/` root beside `node_modules/` also gives a future home to other non-npm materializations. Lean `.pnpm/crates/`.
+- **A self-contained layout for checkouts without a store**: a Docker build that copies the workspace, or a `cargo vendor`-style handoff, needs the crate files inside the workspace rather than links into a store that is not there. `pnpm deploy` is the npm answer; a `--cargo-source-layout=local` that fills the source directories with hardlinked or copied files is the obvious crate answer, and is not proposed here. Lean a follow-up once the global layout has shipped.
 - **`--optional`** for cargo's feature-gated dependencies collides in spirit with `-O`. `--optional` is what `cargo add` calls it and this RFC keeps it, refusing `-O` on crate specs. Alternatively `--feature-gated`. Lean `--optional`.
 - **Committing the managed region** versus generating `.cargo/config.toml` into an ignored file. The committed region is the explicit contract and the dogfooding requirement; it also means every contributor to a cargo-managed workspace runs pnpm. That is the intent for this repository and a stronger ask for a general Rust project. Lean committed, with the failure mode documented.
 - **How faithfully the `cargo-lock` crate serializes**: it is a parser with a serializer, not cargo's serializer. If it cannot be made byte-identical for v4, `cargo-lockfile` writes its own, which is a small amount of code. Verify before milestone 2.
