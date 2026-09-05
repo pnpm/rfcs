@@ -217,6 +217,26 @@ $ pnpm update --latest crate:tokio             # bump the requirement too
 
 **Not in this RFC:** `pnpm dlx crate:…` (it would mean compiling, which is a build cache question), toolchain management from `rust-toolchain.toml` (the `runtime:` machinery is the obvious home and it is a follow-up), and a `cargo build` task cache (the workspace task cache RFC's problem, once `cargo build` is a task).
 
+### Architecture exposed by a second ecosystem
+
+Cargo is the first case that forces a distinction which was mostly invisible while pnpm managed only npm packages: dependency management has an ecosystem-neutral lifecycle, but its semantics are not ecosystem-neutral. pnpm should share the lifecycle and the resources it consumes. It should not make Cargo, npm and a future Python implementation conform to one resolver, one package-name grammar or one lockfile model.
+
+The shared install kernel owns orchestration. It supplies an install context containing the configured HTTP client and aggregate concurrency budget, request-auth routing, store access, reporting, cancellation, filesystem capabilities and install-wide flags. It schedules independent ecosystem plans concurrently, coordinates failure, and commits their staged workspace changes. Workspace discovery and verified artifact ingestion also belong here once more than one adapter needs them: the repository should be walked once, and download, integrity verification, extraction and CAS insertion should have one implementation.
+
+An ecosystem adapter owns the meaning of its inputs and outputs. It detects its manifests within the shared workspace inventory, parses its own package specifiers, resolves according to its native rules, reads and writes its native lockfile, and produces its ecosystem-specific projection from verified store content. Cargo therefore keeps feature unification, source keys, Cargo semver and `Cargo.lock`; npm keeps peers, npm package identities and `pnpm-lock.yaml`; a Python adapter will own extras, environment markers, wheels and whichever native lockfile contract is selected. Package identities crossing the shared boundary are ecosystem-qualified values rather than strings that assume npm scopes or Cargo's flat namespace.
+
+The adapter boundary is initially internal and plan-based, not a public plugin API. A command partitions package specifiers by protocol and asks each selected adapter to prepare a plan. A plan progresses through discovery, resolution and validation, verified artifact ingestion, staged workspace writes, commit, and projection materialization. Store insertions may survive a failed install because immutable unreferenced content is harmless and prunable. User-owned manifests and native lockfiles must not be left in a mixed old/new state when another ecosystem's plan fails. Generated projections use completion markers or atomic replacement so an interrupted install is distinguishable from a complete one.
+
+Credential discovery is separate from request authentication. `.npmrc`, pnpm's global configuration, Cargo credentials and future Python credential sources may all feed a normalized URL-based routing layer. Ecosystem concepts such as npm scopes remain inputs to their adapter rather than fields every credential source must emulate.
+
+This boundary is deliberately demand-driven. The proof of concept supplies enough evidence to separate coordination from Cargo, but Python should be the next implementation used to validate the plan and artifact contracts before they become stable traits. Resolver algorithms, manifest grammars, feature or marker evaluation, lockfile formats and projection layouts are explicit non-goals for unification.
+
+#### npm install performance is an invariant
+
+The architecture must retain the current performance of an npm-only CLI install. When no non-Node.js ecosystem is enabled, dispatch stays on the existing npm path: no adapter collection is built, no additional manifest discovery runs, and no ecosystem-neutral workspace inventory, lockfile parsing, filesystem traversal or synchronization primitive is introduced. Adapter dispatch is once per participating ecosystem, never once per dependency or inside resolver and linker hot loops.
+
+A mixed install shares the existing install-wide HTTP client and its limits. Adding an adapter must not multiply `networkConcurrency` or create an independent socket budget, and scheduling another ecosystem must not serialize the npm graph behind it. The repository's integrated benchmark suite is the acceptance gate for every extraction touching install. A repeatable npm-only regression means the abstraction must change; the regression is not an accepted cost of the multi-ecosystem design.
+
 ### pnpr as a crate registry
 
 pnpr's registry model is preserved and gains a discriminator. A registry declares its **protocol**, and everything else about it — its name under `~<name>/`, its kind, its namespace, its access rules, the no-fall-through invariant — is the same model:
