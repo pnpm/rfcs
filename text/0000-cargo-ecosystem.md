@@ -306,7 +306,7 @@ The `api` base has no trailing slash and `dl` has no markers, so cargo appends `
 
 ### Parity with the TypeScript CLI
 
-This RFC is the first deliberate exception to the cardinal rule that pacquet and the TypeScript CLI ship every user-visible change together. The cargo ecosystem lands in pacquet only; that is a maintainer decision, not a proposal. The justification is the motivation: the point is to put the build of the Rust CLI on pnpm, the 11.x line is the maintenance line for the TypeScript implementation, and the largest component — a cargo-compatible whole-graph resolver — would be written twice for a stack that will never build a Rust workspace. The exception must be written into `AGENTS.md` as an explicit carve-out with this RFC as its reference, so that it reads as a decision and not as drift; every *other* change this work touches (the `Project` shape, the store index key rules, reserved specifier prefixes) remains subject to the rule and is mirrored.
+The Cargo ecosystem lands only in the Rust pnpm v12 CLI. This follows the repository's version policy in `AGENTS.md`: new features target v12, while the TypeScript v11 CLI is maintained for bug fixes. Shared bug fixes still require implementation and tests in every affected version. Ecosystem features and the supporting architecture do not require a TypeScript implementation merely because they extend shared concepts such as workspace discovery or artifact storage.
 
 ### Dogfooding this repository
 
@@ -389,7 +389,7 @@ Changes to existing crates:
 11. **`package-manager`** / **`cli`** — independent ecosystem phases of `install`, coordinated concurrently through the shared install context; `--frozen-lockfile`/`--lockfile-only`/`--offline` plumbing and explicit settlement before mixed-write rollback.
 12. **`cli`** — `crate:` handling in `add`/`remove`/`update`/`outdated`/`list`/`why`/`audit`/`licenses`/`publish`/`pack`; the `--features`, `--no-default-features`, `--save-build`, `--optional` flags; ecosystem defaulting by project shape; `login --cargo-registry`.
 13. **`deps-inspection`** — a crate node kind and `Cargo.lock` as a graph source.
-14. **`AGENTS.md`** (root and `pnpm/`) — the parity carve-out, referencing this RFC.
+14. **`AGENTS.md`** (root and `pnpm/`) — apply the existing v12-only feature policy and affected-version coverage for shared bug fixes.
 
 New third-party dependencies, each needing the usual approval and `deny.toml` review: `pubgrub`, `cargo-util-schemas`, `cargo-lock`, `toml_edit`, `cargo-platform` (to parse `cfg()` targets for display and validation, not evaluation). `semver` is already present.
 
