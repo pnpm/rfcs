@@ -124,7 +124,9 @@ skills:
 
 Settings for this feature live under a `skills` section rather than as flat top-level keys, following `update:` and `audit:`, which pnpm already groups this way — `updateConfig` was superseded by `update:` for exactly this reason. The unresolved questions below imply siblings already: whether global and `dlx` installs participate, and whether pnpm manages the nested `.gitignore` or leaves that to the project.
 
-When set, the setting is authoritative: it replaces both the scan and environment detection, so it can also be used to keep pnpm out of a directory that does exist. An empty list disables linking entirely.
+When set, the setting is authoritative: it replaces both the scan and environment detection, so it can also be used to keep pnpm out of a directory that does exist.
+
+An empty list disables the capability rather than merely linking. Skills stop being offered for approval at all, so no grant can exist that pnpm is then unable to honour. This is what keeps the always-materialise rule from contradicting itself: that rule fires when pnpm cannot find a target, never when the project has said there is not one. Grants already recorded stay in the file and do nothing.
 
 The scan avoids creating directories because the absence of one carries no instruction. An explicitly named directory and a self-identifying agent both do, so either causes pnpm to create it.
 
@@ -133,16 +135,18 @@ Paths are relative to the workspace root.
 Skill discovery in these directories is one level deep, so entries are flat and named:
 
 ```
-npm-<package>-<skill>
+pnpm-<package>-<skill>
 ```
 
 The package segment is escaped the way pnpm already escapes one for the virtual store, so `@supabase/supabase-js` becomes `@supabase+supabase-js` — `dep_path_to_filename` is the existing implementation. Without it, `@supabase/supabase-js` with a skill `auth` and a package `supabase` with a skill `supabase-js-auth` would flatten to the same name, and which link survived would depend on installation order.
 
 Escaping removes the scoped case but not every one: two unscoped packages can still collide across the package-skill boundary. pnpm therefore also detects a collision before writing and fails, rather than letting one approved skill silently replace another.
 
-The prefix matches what skills-npm already writes, which lets pnpm and `npx skills` share a directory without conflict, and it marks which entries pnpm owns and may remove. Links point at the skill **directory**, never at `SKILL.md`, because a skill's supporting files are referenced relatively.
+The prefix is pnpm's own, not the `npm-` that skills-npm writes. Sharing that prefix would have made the two tools produce the same name for the same skill, which is a collision rather than coexistence, and would have left pnpm unable to tell its own entries from another tool's when pruning.
 
-Entries are pruned when the dependency is removed, the approval is revoked, or the resolved version no longer ships that skill.
+Ownership is therefore established twice over. The prefix marks intent, and pnpm additionally removes an entry only when it is a symlink resolving inside this project's `node_modules`. A directory, a regular file, or a link pointing anywhere else is left alone even if it matches the prefix, so a hand-authored skill that happens to be named this way is never replaced or deleted. Links point at the skill **directory**, never at `SKILL.md`, because a skill's supporting files are referenced relatively.
+
+Entries pnpm owns are pruned when the dependency is removed, the approval is revoked, or the resolved version no longer ships that skill.
 
 ### Git
 
@@ -150,10 +154,10 @@ A symlink into `node_modules` dangles on a fresh clone, so these entries cannot 
 
 ```
 # .claude/skills/.gitignore
-npm-*
+pnpm-*
 ```
 
-This keeps pnpm out of the root `.gitignore`, and the `npm-` prefix serves three purposes at once: coexistence, ownership for pruning, and a single stable ignore pattern.
+This keeps pnpm out of the root `.gitignore`, and the `pnpm-` prefix serves three purposes at once: staying clear of other tools' entries, marking ownership for pruning, and giving the ignore rule one stable pattern.
 
 ### What pnpm deliberately does not do
 
@@ -206,7 +210,7 @@ A changeset targets `pacquet`.
 
 ## Prior Art
 
-- **skills-npm** (antfu) — globs `node_modules/**/skills/*/SKILL.md` and symlinks into agent directories as `npm-<package>-<skill>`. Deliberately defines no manifest field. Requires a `prepare` script the user opts into. This RFC adopts its directory convention and naming.
+- **skills-npm** (antfu) — globs `node_modules/**/skills/*/SKILL.md` and symlinks into agent directories as `npm-<package>-<skill>`. Deliberately defines no manifest field. Requires a `prepare` script the user opts into. This RFC adopts its directory convention, but not its link naming: a shared prefix would collide on the same skill and would make the two tools' entries indistinguishable when pruning.
 - **agentskills/agentskills#81** and **npm-agentskills** (onmax) — proposed an `agentskills` field with an exporter to `.claude/skills/` and `.github/skills/`. Closed as not planned.
 - **node-agent-skill-coordinator** (netresearch) — writes discovered skills into `AGENTS.md` from a `postinstall` hook, which pnpm users must allowlist.
 - **skills** (vercel-labs) — installs skills from git repositories into agent directories. Solves installation rather than discovery, and is version-decoupled from the package a skill documents.
@@ -222,4 +226,4 @@ A changeset targets `pacquet`.
 - **How many agents to recognise.** The environment table maps a variable to a directory, which is narrower than knowing whether some agent is running, but it still has to be maintained. How many entries are worth carrying before the explicit setting is the better answer is an open question.
 - **Global and `dlx` installs.** Whether globally installed packages should link into `~/.claude/skills/`, and whether `pnpm dlx` should participate at all.
 - **Reporting wording** is settled in the permissions RFC, which replaces `Ignored build scripts:` with one section covering every pending capability.
-- **Interaction with `npx skills`.** Sharing a directory is handled by the prefix, but a skill installed by both routes will appear twice under different names.
+- **Interaction with `npx skills`.** Distinct prefixes keep the two tools from overwriting or pruning each other, at the cost of a skill installed by both routes appearing twice under different names.
