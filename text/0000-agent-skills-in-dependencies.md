@@ -13,7 +13,7 @@ Packages awaiting approval:
   drizzle-kit  build, skills
   esbuild      build
 
-Run "pnpm permissions approve" to review them.
+Run "pnpm approve" to review them.
 ```
 
 Skills appear alongside build scripts in that one section rather than in a section of their own, per the permissions RFC.
