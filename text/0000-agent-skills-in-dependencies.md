@@ -68,7 +68,7 @@ Transitive dependencies are never considered. A package that wants its skills se
 
 ### Version selection
 
-Within a workspace a package may resolve to more than one version. The **highest resolved version decides**, including when that version ships no skills at all — in which case nothing is linked and nothing is reported. A `skills/` directory removed in a later release is a deliberate act by the author, and falling back to an older version's copy would resurrect content that was withdrawn, from a version nobody is running.
+Within a workspace a package may resolve to more than one version. Where those versions are comparable, the **highest resolved version decides**, including when that version ships no skills at all — in which case nothing is linked and nothing is reported. A `skills/` directory removed in a later release is a deliberate act by the author, and falling back to an older version's copy would resurrect content that was withdrawn, from a version nobody is running.
 
 Divergence is not reported during install. The rule is documented, the symlink resolves to a versioned path in the virtual store, and an install line that fires on every install in any workspace holding two versions of a skill-shipping package would be noise on the one surface that can least afford it. `pnpm permissions list` shows which version a linked skill came from, which is where someone asking the question is already looking.
 
@@ -99,6 +99,8 @@ The flow is the existing one:
 **An approved skill is always materialised.** If pnpm cannot determine a target directory, cannot create one, or cannot create the link, the command fails and names `skills.dirs` as the fix. An approval that silently links nothing is worse than a failure: the grant is recorded, the file says the agent has the skill, and nothing tells anyone otherwise.
 
 This is why the nested `.gitignore` matters beyond keeping links out of commits. It is a real committed file, so the directory holding it survives a fresh clone, and CI detects the same target the developer approved against rather than failing on a directory that git could not carry.
+
+The package is identified in `permissions` exactly as it is for build scripts, through `allow_build_key_from_ignored_build`: a bare name when the dep path is `name@version` with a valid semver version, and the full pkgId otherwise. A git-hosted or tarball dependency is therefore keyed by its source identity, and one package means the same thing across every capability rather than each one inventing its own key shape.
 
 An approval covers a package, not an individual skill, and persists across upgrades. As with build scripts, this is trust in a publisher rather than review of a specific text: a later release may change a skill or add one.
 
@@ -141,6 +143,10 @@ pnpm-<package>-<skill>
 The package segment is escaped the way pnpm already escapes one for the virtual store, so `@supabase/supabase-js` becomes `@supabase+supabase-js` — `dep_path_to_filename` is the existing implementation. Without it, `@supabase/supabase-js` with a skill `auth` and a package `supabase` with a skill `supabase-js-auth` would flatten to the same name, and which link survived would depend on installation order.
 
 Escaping removes the scoped case but not every one: two unscoped packages can still collide across the package-skill boundary. pnpm therefore also detects a collision before writing and fails, rather than letting one approved skill silently replace another.
+
+The package segment is the package's own name from its manifest, whatever the source. A git-hosted, tarball or `file:` dependency links as `pnpm-foo-<skill>` like any other, and an aliased dependency uses the real name rather than the alias, since an alias renames the dependency locally without changing whose skill it is. The pkgId that keys the permission is deliberately not used here: a directory called `pnpm-foo@https+++codeload.github.com+user+repo+abc123-migrations` is a label no one can read, and the link is a label rather than an identity.
+
+That leaves one case the version rule cannot arbitrate. Two sources can supply the same package name — a fork pinned by git in one project and the registry copy in another — and their versions are not comparable, since two git refs can each declare `1.0.0`. "Highest version wins" has no meaning across them, so this is treated as the collision it is: pnpm links neither and fails, naming both sources.
 
 The prefix is pnpm's own, not the `npm-` that skills-npm writes. Sharing that prefix would have made the two tools produce the same name for the same skill, which is a collision rather than coexistence, and would have left pnpm unable to tell its own entries from another tool's when pruning.
 
