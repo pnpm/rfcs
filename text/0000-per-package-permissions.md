@@ -51,7 +51,11 @@ permissions:
 
 Keys are package names, or `name@version`, exactly as `allowBuilds` keys are today. The value is a map of capability to boolean.
 
-`false` is meaningful and must be recorded: it is how a denial persists so that the next install does not prompt again. This is why the canonical form is a map rather than a list of granted capabilities.
+`false` is meaningful and must be recorded: it is how a denial persists so that the next install does not prompt again.
+
+Denials are not the rare case. The interactive prompt records `false` for every pending package the user does not tick, so approving two of five pending packages writes two `true` and three `false`. A typical file holds more denials than grants.
+
+Entries are written in block style, one capability per line, rather than as a flow mapping. `pnpm-workspace.yaml` is committed and reviewed, and block style makes a new grant a single added line instead of a rewrite of the package's entire entry.
 
 ### Scope rule
 
@@ -112,7 +116,9 @@ permissions:
   drizzle-kit: [build, skills]
 ```
 
-Compact and readable, but it cannot express a recorded denial, which is load-bearing: without it every install re-prompts for things the user already refused. Worth considering as accepted sugar that pnpm normalises to the map form on write, not as the canonical shape.
+Compact, and the most attractive of the alternatives at first glance. It fails on denials, which are the majority of what gets written: a list of grants can only express "denied" by omission, which is indistinguishable from "not yet decided", so every install would re-prompt for things the user already refused. A fully denied package would be written `drizzle-kit: []`, which reads as no opinion rather than as a decision.
+
+Adding a negation marker rescues the semantics but not the ergonomics. `!` is the natural choice, since `pnpm approve-builds` already accepts `!<pkg>` on the command line, but `!` introduces a **tag** in YAML — `[build, !skills]` does not parse as intended and has to be quoted as `"!skills"`. That puts an escape character on the majority of entries in the file.
 
 ### Defer until a third capability exists
 
@@ -120,6 +126,7 @@ Reasonable in isolation, but the second capability is the moment the cost of wai
 
 ## Implementation
 
+- `pnpm-workspace-manifest-writer`: block-style emission for these entries, so an approval adds lines rather than rewriting them. The existing `flow.rs` single-line splicing is deliberately not used here.
 - `pnpm_config`: a `permissions` setting; `allow_builds` becomes a legacy input folded into it rather than a separate consumer-facing map. `AllowBuildPolicy::from_config` reads the `build` capability.
 - `pnpm_workspace_manifest_writer`: extend the existing legacy-clearing write so it targets `permissions` and clears `allowBuilds`, alongside the `onlyBuiltDependencies` handling already there.
 - `approve_builds.rs`: generalise the pending/prompt/write flow over a capability set rather than assuming build scripts, and keep `approve-builds` as a filtered entry point.
@@ -138,7 +145,6 @@ v12 only, per the version policy. A changeset targets `pacquet`.
 ## Unresolved Questions and Bikeshedding
 
 - **Do the policy exemptions join?** `minimumReleaseAgeExclude` and `trustPolicyExclude` are per-package trust decisions and belong here by intent. Two things block a clean merge: they are **glob** patterns (`@babel/*`) where `allowBuilds` keys are exact, so one map would have to settle whether `foo@1.0.0` is a key or a pattern; and they are exemptions rather than grants, so `minimumReleaseAge: false` reads backwards. A grant-shaped name (`installBeforeMinimumAge: true`) reads correctly but is clumsy. Both also have pruning machinery tied to their list shape. This RFC proposes leaving them out initially and revisiting once the grant vocabulary is settled.
-- **Shorthand.** Whether `drizzle-kit: [build, skills]` is accepted on read and normalised on write.
 - **Command naming.** Whether a unified `pnpm approve` is introduced alongside the filtered `pnpm approve-builds`, or the per-capability commands remain the only entry points.
 - **Whether `dangerouslyAllowAllBuilds` generalises** to a per-capability escape hatch, or stays specific to builds.
 - **Capability naming.** `build` and `skills` are nouns describing the artifact; `runScripts` and `provideSkills` would be verbs describing the act.
