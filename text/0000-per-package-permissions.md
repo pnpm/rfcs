@@ -87,7 +87,7 @@ Packages awaiting approval:
   drizzle-kit  build, skills
   esbuild      build
 
-Run "pnpm approve" to review them.
+Run "pnpm permissions approve" to review them.
 ```
 
 This replaces `Ignored build scripts: …`, whose wording does not extend. An ignored build script is one that did not run; an unapproved skill was never going to do anything on its own, so "ignored" describes the wrong thing.
@@ -103,11 +103,16 @@ One prompt per install instead of one per capability. A package appears once wit
   esbuild      build
 ```
 
-`pnpm permissions` lists the current state — granted, denied, and awaiting approval — which is the per-package question the field is organised around, and the better home for per-capability auditing than the file layout.
+The commands live under a `permissions` namespace, named for the field:
+
+- **`pnpm permissions approve`** — the interactive prompt above.
+- **`pnpm permissions list`**, or a bare `pnpm permissions` — the current state: granted, denied, and awaiting approval. This is the per-package question the field is organised around, and a better home for per-capability auditing than the file layout.
+
+A namespace rather than a bare `pnpm approve` because pnpm already qualifies approval by what is being approved: `pnpm stage approve` approves a staged publish. A bare `approve` would be the only unqualified one, and would read as the approval command rather than as one of several. The verb stays `approve` — it is already the verb in `approve-builds`, in `stage approve`, and in the prompt's own wording.
 
 Approving dispatches per capability afterwards: a `build` grant schedules a rebuild, a `skills` grant links the skill. That is why one command is workable at all — the prompt is shared, the consequence is not.
 
-**New capabilities do not get their own commands.** `pnpm approve-builds` and `pnpm ignored-builds` remain as views filtered to the `build` capability, so existing muscle memory, documentation and CI scripts keep working, but they are compatibility surface rather than a pattern to extend. A user who wants to review one capability in isolation filters the unified command rather than learning a new verb per capability.
+**New capabilities do not get their own commands.** `pnpm approve-builds` and `pnpm ignored-builds` remain as flat aliases for the `build`-filtered views, so existing muscle memory, documentation and CI scripts keep working, but they are compatibility surface rather than a pattern to extend. A user who wants to review one capability in isolation filters the unified command rather than learning a new verb per capability.
 
 ## Rationale and Alternatives
 
@@ -149,7 +154,7 @@ Reasonable in isolation, but the second capability is the moment the cost of wai
 - `pnpm-workspace-manifest-writer`: block-style emission for these entries, so an approval adds lines rather than rewriting them. The existing `flow.rs` single-line splicing is deliberately not used here.
 - `pnpm_config`: a `permissions` setting; `allow_builds` becomes a legacy input folded into it rather than a separate consumer-facing map. `AllowBuildPolicy::from_config` reads the `build` capability.
 - `pnpm_workspace_manifest_writer`: extend the existing legacy-clearing write so it targets `permissions` and clears `allowBuilds`, alongside the `onlyBuiltDependencies` handling already there.
-- `approve_builds.rs`: generalise the pending/prompt/write flow over a capability set rather than assuming build scripts, and keep `approve-builds` as a filtered entry point.
+- `approve_builds.rs`: generalise the pending/prompt/write flow over a capability set rather than assuming build scripts, move it under the `permissions` namespace, and keep `approve-builds` as a filtered alias.
 - `.modules.yaml`: `ignoredBuilds` gains a sibling for other capabilities, or generalises, so pending state is capability-aware.
 - `default-reporter/src/state/notices.rs` and `package-manager/src/install/errors.rs`: the two places carrying the `Ignored build scripts:` wording, which change together.
 - Unknown-capability reporting joins the existing unknown-settings path.
@@ -166,7 +171,7 @@ v12 only, per the version policy. A changeset targets `pacquet`.
 ## Unresolved Questions and Bikeshedding
 
 - **Do the policy exemptions join?** `minimumReleaseAgeExclude` and `trustPolicyExclude` are per-package trust decisions and belong here by intent. Two things block a clean merge: they are **glob** patterns (`@babel/*`) where `allowBuilds` keys are exact, so one map would have to settle whether `foo@1.0.0` is a key or a pattern; and they are exemptions rather than grants, so `minimumReleaseAge: false` reads backwards. A grant-shaped name (`installBeforeMinimumAge: true`) reads correctly but is clumsy. Both also have pruning machinery tied to their list shape. This RFC proposes leaving them out initially and revisiting once the grant vocabulary is settled.
-- **Command naming.** `pnpm approve` is unqualified, and `pnpm stage approve` already uses the verb in another namespace. Whether the filter is a flag (`--capability`) or positional. Whether `pnpm permissions` should also be the command that revokes one, or whether revocation stays inside `approve`.
+- **Command naming.** `permissions` is plural to match the settings field, where most pnpm namespaces are singular (`config`, `access`, `stage`). Whether the capability filter is a flag (`--capability`) or positional. Whether revoking a granted permission is a third verb or a pass through `approve`.
 - **Whether `strictDepBuilds` generalises.** It exists so that CI fails rather than silently skipping a build script. The same argument applies to a pending skill, but not with the same severity: a skipped build script can break the install, while an unapproved skill only means an agent does not receive it. One strictness setting across capabilities, or one per capability.
 - **Long pending lists.** Whether the section truncates, and at what point, given that today's single line simply wraps.
 - **Whether `dangerouslyAllowAllBuilds` generalises** to a per-capability escape hatch, or stays specific to builds.
