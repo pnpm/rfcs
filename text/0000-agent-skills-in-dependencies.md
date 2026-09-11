@@ -2,6 +2,8 @@
 
 ## Summary
 
+> Depends on the per-package permissions RFC, which defines the `permissions` field this RFC writes its `skills` capability into.
+
 Packages increasingly ship agent skills — directories containing a `SKILL.md` that AI coding agents load as instructions. Today nothing connects a skill sitting in `node_modules` to the agent working in the repository, so the skill is discovered only if a human already knew it existed and ran a separate CLI.
 
 This RFC proposes that `pnpm install` discover skills shipped by direct dependencies, record them as awaiting approval, and link the approved ones into the agent skill directories a project already uses. Approval works exactly like build-script approval: nothing reaches an agent until a human says so.
@@ -35,7 +37,7 @@ my-skill/
     └── helper.py
 ```
 
-So approving a skill can mean approving code that an agent will run. That makes this an exact analogue of the decision pnpm already gates: `allowBuilds` does not gate *reading* a lifecycle script, it gates *running* one. A skill is a build script for an agent's instruction set — one that runs on every session instead of once at install time.
+So approving a skill can mean approving code that an agent will run. That makes this an exact analogue of the decision pnpm already gates: the `build` permission does not gate *reading* a lifecycle script, it gates *running* one. A skill is a build script for an agent's instruction set — one that runs on every session instead of once at install time.
 
 pnpm is therefore not merely a convenient place to put discovery. It is the layer that already owns this class of decision, already has the approval ledger, and already has the UX for it.
 
@@ -77,7 +79,15 @@ Packages shipping skills that have not been approved are recorded in `node_modul
 
 - With no arguments, it presents the pending packages in a checkbox prompt.
 - It accepts `<pkg>` to approve and `!<pkg>` to deny, for non-interactive use.
-- The decision is written to `pnpm-workspace.yaml` as `allowSkills`, shaped like `allowBuilds`: a map of package to boolean, so that a denial is recorded as deliberate rather than as an absence.
+- The decision is written to `pnpm-workspace.yaml` as the `skills` capability of that package's entry in `permissions`, defined by the per-package permissions RFC:
+
+  ```yaml
+  permissions:
+    drizzle-kit:
+      skills: true
+  ```
+
+  `false` is recorded rather than omitted, so a denial persists and the next install does not prompt again.
 - Decided entries are cleared from `.modules.yaml`.
 - Newly approved skills are linked immediately.
 
@@ -167,7 +177,7 @@ A changeset targets `pacquet`.
 - **node-agent-skill-coordinator** (netresearch) — writes discovered skills into `AGENTS.md` from a `postinstall` hook, which pnpm users must allowlist.
 - **skills** (vercel-labs) — installs skills from git repositories into agent directories. Solves installation rather than discovery, and is version-decoupled from the package a skill documents.
 - **Claude Code plugin hints** — a vendor channel by which a CLI can ask a harness to offer a plugin. One vendor, one artifact type, and a push channel rather than an install-time one.
-- **pnpm's own `allowBuilds`** — the existing precedent for gating untrusted package-supplied behaviour behind explicit approval, with the interactive flow this RFC reuses.
+- **pnpm's own `allowBuilds`** — the existing precedent for gating untrusted package-supplied behaviour behind explicit approval, with the interactive flow this RFC reuses. It becomes the `build` capability under the per-package permissions RFC.
 
 ## Unresolved Questions and Bikeshedding
 
@@ -175,5 +185,5 @@ A changeset targets `pacquet`.
 - **Per-package or per-skill approval.** Per-package matches build scripts and keeps the prompt short; per-skill is finer but means re-prompting whenever a package adds one.
 - **One level deep is verified for one agent.** Claude Code's discovery is documented as non-recursive. Whether every target directory behaves the same way has not been confirmed, and a nested layout would be tidier if they do.
 - **Global and `dlx` installs.** Whether globally installed packages should link into `~/.claude/skills/`, and whether `pnpm dlx` should participate at all.
-- **Naming.** `allowSkills`, `approve-skills` and `ignored-skills` mirror `allowBuilds` and its commands; `Ignored skills:` reuses the `Ignored build scripts:` phrasing.
+- **Naming.** `approve-skills` and `ignored-skills` mirror the build commands; `Ignored skills:` reuses the `Ignored build scripts:` phrasing.
 - **Interaction with `npx skills`.** Sharing a directory is handled by the prefix, but a skill installed by both routes will appear twice under different names.
