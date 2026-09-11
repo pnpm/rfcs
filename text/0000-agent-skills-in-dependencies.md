@@ -9,9 +9,14 @@ Packages increasingly ship agent skills — directories containing a `SKILL.md` 
 This RFC proposes that `pnpm install` discover skills shipped by direct dependencies, record them as awaiting approval, and link the approved ones into the agent skill directories a project already uses. Approval works exactly like build-script approval: nothing reaches an agent until a human says so.
 
 ```
-Ignored skills: drizzle-kit, @supabase/supabase-js
-Run "pnpm approve" to pick which ones your agents can load.
+Packages awaiting approval:
+  drizzle-kit  build, skills
+  esbuild      build
+
+Run "pnpm approve" to review them.
 ```
+
+Skills appear alongside build scripts in that one section rather than in a section of their own, per the permissions RFC.
 
 No new `package.json` field is introduced. pnpm never reads the contents of a skill.
 
@@ -210,5 +215,5 @@ A changeset targets `pacquet`.
 - **How many agents to recognise.** The environment table maps a variable to a directory, which is narrower than knowing whether some agent is running, but it still has to be maintained. How many entries are worth carrying before the explicit setting is the better answer is an open question.
 - **Reporting the cold-start case.** When skills are approved and no directory is detected, identified or configured, `pnpm approve` should say so and name the setting rather than succeed silently.
 - **Global and `dlx` installs.** Whether globally installed packages should link into `~/.claude/skills/`, and whether `pnpm dlx` should participate at all.
-- **Naming.** `Ignored skills:` reuses the `Ignored build scripts:` phrasing, which reads oddly for something that was never going to run. `Skills awaiting approval:` may be better for both.
+- **Reporting wording** is settled in the permissions RFC, which replaces `Ignored build scripts:` with one section covering every pending capability.
 - **Interaction with `npx skills`.** Sharing a directory is handled by the prefix, but a skill installed by both routes will appear twice under different names.
