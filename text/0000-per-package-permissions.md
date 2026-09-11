@@ -63,6 +63,13 @@ Entries are written in block style, one capability per line, rather than as a fl
 
 A capability grant answers "what may this package do to my machine". `overrides`, `packageExtensions`, `patchedDependencies`, `configDependencies` and `ignoredOptionalDependencies` answer "what is this package, and is it installed at all" — a different question, and one for which a permission reads as nonsense. They stay where they are.
 
+The general test, now that pnpm has two grouping shapes, is which question the setting answers:
+
+- **Package-major**, like this field: facts *about a package*, where the set of things you can say is open-ended. "What may esbuild do" is a question about esbuild.
+- **Feature-major**, like the `update:` and `audit:` sections: parameters *of a feature* that happen to name packages. "Why is `@babel/*` not being delayed" is a question about the release-age check, not about babel.
+
+That test also explains why the key shapes differ. A permission is granted to a specific package identity somebody reviewed, so its keys are exact. A policy exemption covers a class of packages whose publisher is trusted wholesale, so its keys are globs.
+
 ### Capabilities
 
 - **`build`** — run lifecycle scripts. Replaces `allowBuilds`.
@@ -113,6 +120,8 @@ The namespace exists because listing needs a home and because pnpm qualifies app
 The verb stays `approve`: it is already the verb in `approve-builds`, in `stage approve`, and in the prompt's own wording.
 
 Approving dispatches per capability afterwards: a `build` grant schedules a rebuild, a `skills` grant links the skill. That is why one command is workable at all — the prompt is shared, the consequence is not.
+
+The grant is written before its action runs, and a failing action fails the command without rolling the grant back. The user did approve; it is the environment that is wrong. Because `pnpm install` performs the same action for every already-granted capability, the failure recurs on each install until it is fixed, rather than being a one-time error that leaves a grant nothing enforces.
 
 **New capabilities do not get their own commands.** `pnpm approve-builds` and `pnpm ignored-builds` remain as flat aliases for the `build`-filtered views, so existing muscle memory, documentation and CI scripts keep working, but they are compatibility surface rather than a pattern to extend. A user who wants to review one capability in isolation filters the unified command rather than learning a new verb per capability.
 
@@ -172,7 +181,7 @@ v12 only, per the version policy. A changeset targets `pacquet`.
 
 ## Unresolved Questions and Bikeshedding
 
-- **Do the policy exemptions join?** `minimumReleaseAgeExclude` and `trustPolicyExclude` are per-package trust decisions and belong here by intent. Two things block a clean merge: they are **glob** patterns (`@babel/*`) where `allowBuilds` keys are exact, so one map would have to settle whether `foo@1.0.0` is a key or a pattern; and they are exemptions rather than grants, so `minimumReleaseAge: false` reads backwards. A grant-shaped name (`installBeforeMinimumAge: true`) reads correctly but is clumsy. Both also have pruning machinery tied to their list shape. This RFC proposes leaving them out initially and revisiting once the grant vocabulary is settled.
+- **The policy exemptions do not join, but they have their own consolidation.** `minimumReleaseAgeExclude` and `trustPolicyExclude` are per-package trust decisions, so merging them here is tempting. They fail the test above: both are parameters of a check rather than facts about a package, both are globs where these keys are exact, and `minimumReleaseAge: false` reads backwards as a permission. The grouping they want is feature-major — `minimumReleaseAge: { minutes, exclude, excludePrune }` — which also puts `minimumReleaseAgeExcludePrune` next to what it prunes instead of leaving two flat siblings that only make sense together. That is a separate, smaller cleanup, with one wrinkle: `minimumReleaseAge` is a scalar today, so a section form has to keep accepting `minimumReleaseAge: 1440` as shorthand.
 - **Command naming.** `permissions` is plural to match the settings field, where most pnpm namespaces are singular (`config`, `access`, `stage`). Whether the capability filter is a flag (`--capability`) or positional. Whether revoking a granted permission is a third verb or a pass through `approve`.
 - **Whether `strictDepBuilds` generalises.** It exists so that CI fails rather than silently skipping a build script. The same argument applies to a pending skill, but not with the same severity: a skipped build script can break the install, while an unapproved skill only means an agent does not receive it. One strictness setting across capabilities, or one per capability.
 - **Long pending lists.** Whether the section truncates, and at what point, given that today's single line simply wraps.
