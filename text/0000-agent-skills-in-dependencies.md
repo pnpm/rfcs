@@ -96,7 +96,7 @@ The flow is the existing one:
 
 `pnpm install` links everything already approved, so a fresh clone or a CI run materialises skills without any prompt. `pnpm permissions approve` handles only the newly approved delta, linking for a `skills` grant the way it schedules a rebuild for a `build` grant. This split matches what `install` and `approve-builds` already do between them.
 
-**An approved skill is always materialised.** If pnpm cannot determine a target directory, cannot create one, or cannot create the link, the command fails and names `skillsDirs` as the fix. An approval that silently links nothing is worse than a failure: the grant is recorded, the file says the agent has the skill, and nothing tells anyone otherwise.
+**An approved skill is always materialised.** If pnpm cannot determine a target directory, cannot create one, or cannot create the link, the command fails and names `skills.dirs` as the fix. An approval that silently links nothing is worse than a failure: the grant is recorded, the file says the agent has the skill, and nothing tells anyone otherwise.
 
 This is why the nested `.gitignore` matters beyond keeping links out of commits. It is a real committed file, so the directory holding it survives a fresh clone, and CI detects the same target the developer approved against rather than failing on a directory that git could not carry.
 
@@ -117,9 +117,12 @@ The set of target directories is therefore the union of those detected on disk a
 **The directories can also be named explicitly:**
 
 ```yaml
-skillsDirs:
-  - .claude/skills
+skills:
+  dirs:
+    - .claude/skills
 ```
+
+Settings for this feature live under a `skills` section rather than as flat top-level keys, following `update:` and `audit:`, which pnpm already groups this way — `updateConfig` was superseded by `update:` for exactly this reason. The unresolved questions below imply siblings already: whether global and `dlx` installs participate, and whether pnpm manages the nested `.gitignore` or leaves that to the project.
 
 When set, the setting is authoritative: it replaces both the scan and environment detection, so it can also be used to keep pnpm out of a directory that does exist. An empty list disables linking entirely.
 
@@ -214,7 +217,8 @@ A changeset targets `pacquet`.
 
 - **Per-package or per-skill approval.** Per-package matches build scripts and keeps the prompt short; per-skill is finer but means re-prompting whenever a package adds one.
 - **One level deep is verified for one agent.** Claude Code's discovery is documented as non-recursive. Whether every target directory behaves the same way has not been confirmed, and a nested layout would be tidier if they do.
-- **Naming and path scope of `skillsDirs`.** Whether the plural reads better than pnpm's list-valued singulars such as `hoistPattern`, and whether absolute paths are accepted so that a home directory such as `~/.claude/skills` can be targeted.
+- **Path scope of `skills.dirs`.** Whether absolute paths are accepted, so that a home directory such as `~/.claude/skills` can be targeted, or whether the global-install question below should settle that instead.
+- **Whether disabling deserves its own key.** `skills.dirs: []` disables linking today, which works but reads obliquely next to an explicit `skills.enabled: false`.
 - **How many agents to recognise.** The environment table maps a variable to a directory, which is narrower than knowing whether some agent is running, but it still has to be maintained. How many entries are worth carrying before the explicit setting is the better answer is an open question.
 - **Global and `dlx` installs.** Whether globally installed packages should link into `~/.claude/skills/`, and whether `pnpm dlx` should participate at all.
 - **Reporting wording** is settled in the permissions RFC, which replaces `Ignored build scripts:` with one section covering every pending capability.
