@@ -96,7 +96,11 @@ The flow is the existing one:
 
 `pnpm install` links everything already approved, so a fresh clone or a CI run materialises skills without any prompt. `pnpm permissions approve` handles only the newly approved delta, linking for a `skills` grant the way it schedules a rebuild for a `build` grant. This split matches what `install` and `approve-builds` already do between them.
 
+**A pending skill never fails the install.** `strictDepBuilds` defaults to `true`, so an ignored build script fails the install with `ERR_PNPM_IGNORED_BUILDS` today. Skills do not join that: a skipped build script can leave a package unusable, whereas an unapproved skill only means an agent does not receive extra instructions. Nothing is broken, so nothing should fail. The practical consequence matters as much as the principle — sharing a pending section with build scripts would otherwise mean that adding any skill-shipping dependency reddens CI until somebody approves it.
+
 **An approved skill is always materialised.** If pnpm cannot determine a target directory, cannot create one, or cannot create the link, the command fails and names `skills.dirs` as the fix. An approval that silently links nothing is worse than a failure: the grant is recorded, the file says the agent has the skill, and nothing tells anyone otherwise.
+
+These two rules meet rather than conflict. A capability nobody granted is not pnpm's problem to enforce, so it warns. A capability somebody granted and pnpm cannot honour is a broken promise, so it fails.
 
 This is why the nested `.gitignore` matters beyond keeping links out of commits. It is a real committed file, so the directory holding it survives a fresh clone, and CI detects the same target the developer approved against rather than failing on a directory that git could not carry.
 
