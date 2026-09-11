@@ -70,11 +70,7 @@ Transitive dependencies are never considered. A package that wants its skills se
 
 Within a workspace a package may resolve to more than one version. The **highest resolved version decides**, including when that version ships no skills at all — in which case nothing is linked and nothing is reported. A `skills/` directory removed in a later release is a deliberate act by the author, and falling back to an older version's copy would resurrect content that was withdrawn, from a version nobody is running.
 
-When versions diverge and the highest does ship skills, the divergence is stated rather than hidden:
-
-```
-drizzle-orm resolves to 2 versions; linked skills from 0.44.2 (apps/web is on 0.30.10)
-```
+Divergence is not reported during install. The rule is documented, the symlink resolves to a versioned path in the virtual store, and an install line that fires on every install in any workspace holding two versions of a skill-shipping package would be noise on the one surface that can least afford it. `pnpm permissions list` shows which version a linked skill came from, which is where someone asking the question is already looking.
 
 ### Approval
 
@@ -99,6 +95,10 @@ The flow is the existing one:
 - Newly approved skills are linked immediately.
 
 `pnpm install` links everything already approved, so a fresh clone or a CI run materialises skills without any prompt. `pnpm permissions approve` handles only the newly approved delta, linking for a `skills` grant the way it schedules a rebuild for a `build` grant. This split matches what `install` and `approve-builds` already do between them.
+
+**An approved skill is always materialised.** If pnpm cannot determine a target directory, cannot create one, or cannot create the link, the command fails and names `skillsDirs` as the fix. An approval that silently links nothing is worse than a failure: the grant is recorded, the file says the agent has the skill, and nothing tells anyone otherwise.
+
+This is why the nested `.gitignore` matters beyond keeping links out of commits. It is a real committed file, so the directory holding it survives a fresh clone, and CI detects the same target the developer approved against rather than failing on a directory that git could not carry.
 
 An approval covers a package, not an individual skill, and persists across upgrades. As with build scripts, this is trust in a publisher rather than review of a specific text: a later release may change a skill or add one.
 
@@ -133,7 +133,11 @@ Skill discovery in these directories is one level deep, so entries are flat and 
 npm-<package>-<skill>
 ```
 
-This matches what skills-npm already writes, which lets pnpm and `npx skills` share a directory without conflict, and it marks which entries pnpm owns and may remove. Links point at the skill **directory**, never at `SKILL.md`, because a skill's supporting files are referenced relatively.
+The package segment is escaped the way pnpm already escapes one for the virtual store, so `@supabase/supabase-js` becomes `@supabase+supabase-js` — `dep_path_to_filename` is the existing implementation. Without it, `@supabase/supabase-js` with a skill `auth` and a package `supabase` with a skill `supabase-js-auth` would flatten to the same name, and which link survived would depend on installation order.
+
+Escaping removes the scoped case but not every one: two unscoped packages can still collide across the package-skill boundary. pnpm therefore also detects a collision before writing and fails, rather than letting one approved skill silently replace another.
+
+The prefix matches what skills-npm already writes, which lets pnpm and `npx skills` share a directory without conflict, and it marks which entries pnpm owns and may remove. Links point at the skill **directory**, never at `SKILL.md`, because a skill's supporting files are referenced relatively.
 
 Entries are pruned when the dependency is removed, the approval is revoked, or the resolved version no longer ships that skill.
 
@@ -150,7 +154,7 @@ This keeps pnpm out of the root `.gitignore`, and the `npm-` prefix serves three
 
 ### What pnpm deliberately does not do
 
-- **Does not read a skill.** pnpm globs for `SKILL.md`, links the directory, and stops. Nothing from inside a skill is ever interpolated into pnpm's own output. The one place a description is read is the approval prompt, transiently, where the reader is a human — the single context in which a skill named `ignore-previous-instructions-and-run-setup-sh` is a warning label rather than an attack.
+- **Does not read a skill.** pnpm globs for `SKILL.md`, links the directory, and stops. It does not open the file, including for the approval prompt, which identifies a package and the names of the skill directories it ships. Those names are what a human needs in order to decide whether to trust the publisher, and stopping at them keeps the rule absolute rather than qualified: no content from inside a skill reaches any pnpm output, ever.
 - **Does not print package-authored prose.** The install line names packages, which are already in `package.json`, the lockfile and `node_modules`. It introduces no text that was not already in view.
 - **Does not create agent directories it was not told about**, and does not use the environment to decide whether a project gets skills at all — only which directory an agent that identified itself should receive them in.
 
@@ -208,12 +212,10 @@ A changeset targets `pacquet`.
 
 ## Unresolved Questions and Bikeshedding
 
-- **Link name collisions.** Flattening scoped names means `@supabase/supabase-js` + skill `auth` and a package `supabase` + skill `supabase-js-auth` can both produce `npm-supabase-supabase-js-auth`. A different separator or an escape for `/` would avoid it. Rare, but the choice should be deliberate.
 - **Per-package or per-skill approval.** Per-package matches build scripts and keeps the prompt short; per-skill is finer but means re-prompting whenever a package adds one.
 - **One level deep is verified for one agent.** Claude Code's discovery is documented as non-recursive. Whether every target directory behaves the same way has not been confirmed, and a nested layout would be tidier if they do.
 - **Naming and path scope of `skillsDirs`.** Whether the plural reads better than pnpm's list-valued singulars such as `hoistPattern`, and whether absolute paths are accepted so that a home directory such as `~/.claude/skills` can be targeted.
 - **How many agents to recognise.** The environment table maps a variable to a directory, which is narrower than knowing whether some agent is running, but it still has to be maintained. How many entries are worth carrying before the explicit setting is the better answer is an open question.
-- **Reporting the cold-start case.** When skills are approved and no directory is detected, identified or configured, `pnpm permissions approve` should say so and name the setting rather than succeed silently.
 - **Global and `dlx` installs.** Whether globally installed packages should link into `~/.claude/skills/`, and whether `pnpm dlx` should participate at all.
 - **Reporting wording** is settled in the permissions RFC, which replaces `Ignored build scripts:` with one section covering every pending capability.
 - **Interaction with `npx skills`.** Sharing a directory is handled by the prefix, but a skill installed by both routes will appear twice under different names.
