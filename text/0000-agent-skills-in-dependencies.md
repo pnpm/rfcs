@@ -68,7 +68,7 @@ Transitive dependencies are never considered. A package that wants its skills se
 
 ### Version selection
 
-Within a workspace a package may resolve to more than one version. Where those versions are comparable, the **highest resolved version decides**, including when that version ships no skills at all — in which case nothing is linked and nothing is reported. A `skills/` directory removed in a later release is a deliberate act by the author, and falling back to an older version's copy would resurrect content that was withdrawn, from a version nobody is running.
+Within a workspace a package may resolve to more than one version. Comparable here has the same meaning it already has for build permissions: every resolution parses as `name@version` with a valid semver version, which is exactly the test that makes `allow_build_key_from_ignored_build` key the package by its bare name. When that holds, the **highest resolved version decides**, including when that version ships no skills at all — in which case nothing is linked and nothing is reported. A `skills/` directory removed in a later release is a deliberate act by the author, and falling back to an older version's copy would resurrect content that was withdrawn, from a version nobody is running.
 
 Divergence is not reported during install. The rule is documented, the symlink resolves to a versioned path in the virtual store, and an install line that fires on every install in any workspace holding two versions of a skill-shipping package would be noise on the one surface that can least afford it. `pnpm permissions list` shows which version a linked skill came from, which is where someone asking the question is already looking.
 
