@@ -87,7 +87,11 @@ One prompt per install instead of one per capability. A package appears once wit
   esbuild      build
 ```
 
-`pnpm approve-builds` remains as a view filtered to the `build` capability, so existing muscle memory, documentation and CI scripts keep working.
+`pnpm permissions` lists the current state — granted, denied, and awaiting approval — which is the per-package question the field is organised around, and the better home for per-capability auditing than the file layout.
+
+Approving dispatches per capability afterwards: a `build` grant schedules a rebuild, a `skills` grant links the skill. That is why one command is workable at all — the prompt is shared, the consequence is not.
+
+**New capabilities do not get their own commands.** `pnpm approve-builds` and `pnpm ignored-builds` remain as views filtered to the `build` capability, so existing muscle memory, documentation and CI scripts keep working, but they are compatibility surface rather than a pattern to extend. A user who wants to review one capability in isolation filters the unified command rather than learning a new verb per capability.
 
 ## Rationale and Alternatives
 
@@ -145,6 +149,6 @@ v12 only, per the version policy. A changeset targets `pacquet`.
 ## Unresolved Questions and Bikeshedding
 
 - **Do the policy exemptions join?** `minimumReleaseAgeExclude` and `trustPolicyExclude` are per-package trust decisions and belong here by intent. Two things block a clean merge: they are **glob** patterns (`@babel/*`) where `allowBuilds` keys are exact, so one map would have to settle whether `foo@1.0.0` is a key or a pattern; and they are exemptions rather than grants, so `minimumReleaseAge: false` reads backwards. A grant-shaped name (`installBeforeMinimumAge: true`) reads correctly but is clumsy. Both also have pruning machinery tied to their list shape. This RFC proposes leaving them out initially and revisiting once the grant vocabulary is settled.
-- **Command naming.** Whether a unified `pnpm approve` is introduced alongside the filtered `pnpm approve-builds`, or the per-capability commands remain the only entry points.
+- **Command naming.** `pnpm approve` is unqualified, and `pnpm stage approve` already uses the verb in another namespace. Whether the filter is a flag (`--capability`) or positional. Whether `pnpm permissions` should also be the command that revokes one, or whether revocation stays inside `approve`.
 - **Whether `dangerouslyAllowAllBuilds` generalises** to a per-capability escape hatch, or stays specific to builds.
 - **Capability naming.** `build` and `skills` are nouns describing the artifact; `runScripts` and `provideSkills` would be verbs describing the act.
