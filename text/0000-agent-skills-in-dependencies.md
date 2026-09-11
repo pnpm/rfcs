@@ -97,7 +97,20 @@ An approval covers a package, not an individual skill, and persists across upgra
 
 ### Materialisation
 
-Approved skills are symlinked into agent skill directories **that already exist in the project** — `.claude/skills/`, `.cursor/skills/`, and so on. pnpm does not maintain a list of agents and does not detect whether an agent is running; it checks which directories are present. A new agent works on the day it ships with no pnpm release, and a project with no agent directory has nothing written to it.
+Approved skills are symlinked into agent skill directories. By default pnpm writes to those **that already exist in the project** — `.claude/skills/`, `.cursor/skills/`, and so on. It does not maintain a list of agents and does not detect whether an agent is running; it checks which directories are present, so a new agent works on the day it ships with no pnpm release.
+
+Detection is a default, not the only mechanism. A project that does not have an agent directory yet would otherwise never get one, so the directories can be named explicitly:
+
+```yaml
+skillsDirs:
+  - .claude/skills
+```
+
+When set, the setting is authoritative: it replaces detection rather than adding to it, so it can also be used to keep pnpm out of a directory that does exist. An empty list disables linking entirely.
+
+The reason detection avoids creating directories is that it is a guess. An explicitly named directory is not, so pnpm creates it if it is missing.
+
+Paths are relative to the workspace root.
 
 Skill discovery in these directories is one level deep, so entries are flat and named:
 
@@ -124,7 +137,7 @@ This keeps pnpm out of the root `.gitignore`, and the `npm-` prefix serves three
 
 - **Does not read a skill.** pnpm globs for `SKILL.md`, links the directory, and stops. Nothing from inside a skill is ever interpolated into pnpm's own output. The one place a description is read is the approval prompt, transiently, where the reader is a human — the single context in which a skill named `ignore-previous-instructions-and-run-setup-sh` is a warning label rather than an attack.
 - **Does not print package-authored prose.** The install line names packages, which are already in `package.json`, the lockfile and `node_modules`. It introduces no text that was not already in view.
-- **Does not create agent directories**, detect agent environments, or write outside directories that already exist.
+- **Does not create agent directories it was not told about**, detect agent environments, or write outside the directories it detected or was given.
 
 ## Rationale and Alternatives
 
@@ -184,6 +197,8 @@ A changeset targets `pacquet`.
 - **Link name collisions.** Flattening scoped names means `@supabase/supabase-js` + skill `auth` and a package `supabase` + skill `supabase-js-auth` can both produce `npm-supabase-supabase-js-auth`. A different separator or an escape for `/` would avoid it. Rare, but the choice should be deliberate.
 - **Per-package or per-skill approval.** Per-package matches build scripts and keeps the prompt short; per-skill is finer but means re-prompting whenever a package adds one.
 - **One level deep is verified for one agent.** Claude Code's discovery is documented as non-recursive. Whether every target directory behaves the same way has not been confirmed, and a nested layout would be tidier if they do.
+- **Naming and path scope of `skillsDirs`.** Whether the plural reads better than pnpm's list-valued singulars such as `hoistPattern`, and whether absolute paths are accepted so that a home directory such as `~/.claude/skills` can be targeted.
+- **Reporting the cold-start case.** When skills are approved and no directory is detected or configured, `approve-skills` should say so and name the setting rather than succeed silently.
 - **Global and `dlx` installs.** Whether globally installed packages should link into `~/.claude/skills/`, and whether `pnpm dlx` should participate at all.
 - **Naming.** `approve-skills` and `ignored-skills` mirror the build commands; `Ignored skills:` reuses the `Ignored build scripts:` phrasing.
 - **Interaction with `npx skills`.** Sharing a directory is handled by the prefix, but a skill installed by both routes will appear twice under different names.
