@@ -102,7 +102,9 @@ This is why the nested `.gitignore` matters beyond keeping links out of commits.
 
 The package is identified in `permissions` exactly as it is for build scripts, through `allow_build_key_from_ignored_build`: a bare name when the dep path is `name@version` with a valid semver version, and the full pkgId otherwise. A git-hosted or tarball dependency is therefore keyed by its source identity, and one package means the same thing across every capability rather than each one inventing its own key shape.
 
-An approval covers a package, not an individual skill, and persists across upgrades. As with build scripts, this is trust in a publisher rather than review of a specific text: a later release may change a skill or add one.
+An approval covers a package, not an individual skill. As with build scripts, this is trust in a publisher rather than review of a specific text: a later release may change a skill or add one.
+
+It persists across upgrades for a package keyed by name. A package keyed by pkgId is asked about again when its source identity changes, because a new commit, ref or tarball URL produces a different key. That is a consequence of the shared key shape rather than a separate rule, and it is the behaviour worth having: a different commit of a git dependency is different code, and re-approving it is the point of approving it at all.
 
 ### Materialisation
 
@@ -128,7 +130,7 @@ Settings for this feature live under a `skills` section rather than as flat top-
 
 When set, the setting is authoritative: it replaces both the scan and environment detection, so it can also be used to keep pnpm out of a directory that does exist.
 
-An empty list disables the capability rather than merely linking. Skills stop being offered for approval at all, so no grant can exist that pnpm is then unable to honour. This is what keeps the always-materialise rule from contradicting itself: that rule fires when pnpm cannot find a target, never when the project has said there is not one. Grants already recorded stay in the file and do nothing.
+An empty list disables the capability rather than merely linking. Skills stop being offered for approval at all, so no grant can exist that pnpm is then unable to honour, and anything already materialised is pruned on the next install. This is what keeps the always-materialise rule from contradicting itself: that rule fires when pnpm cannot find a target, never when the project has said there is not one. Grants already recorded stay in the file and do nothing.
 
 The scan avoids creating directories because the absence of one carries no instruction. An explicitly named directory and a self-identifying agent both do, so either causes pnpm to create it.
 
@@ -146,13 +148,17 @@ Escaping removes the scoped case but not every one: two unscoped packages can st
 
 The package segment is the package's own name from its manifest, whatever the source. A git-hosted, tarball or `file:` dependency links as `pnpm-foo-<skill>` like any other, and an aliased dependency uses the real name rather than the alias, since an alias renames the dependency locally without changing whose skill it is. The pkgId that keys the permission is deliberately not used here: a directory called `pnpm-foo@https+++codeload.github.com+user+repo+abc123-migrations` is a label no one can read, and the link is a label rather than an identity.
 
-That leaves one case the version rule cannot arbitrate. Two sources can supply the same package name — a fork pinned by git in one project and the registry copy in another — and their versions are not comparable, since two git refs can each declare `1.0.0`. "Highest version wins" has no meaning across them, so this is treated as the collision it is: pnpm links neither and fails, naming both sources.
+That leaves one case the version rule cannot arbitrate. Two sources can supply the same package name — a fork pinned by git in one project and the registry copy in another — and their versions are not comparable, since two git refs can each declare `1.0.0`. "Highest version wins" has no meaning across them, so neither is preferred and both materialise.
+
+This needs no rule of its own: it resolves through the collision check above, which compares generated link names rather than package names. Two sources shipping different skills produce different names and both link. Two shipping a skill of the same name produce the same link name and fail, which is the same failure any other collision produces.
 
 The prefix is pnpm's own, not the `npm-` that skills-npm writes. Sharing that prefix would have made the two tools produce the same name for the same skill, which is a collision rather than coexistence, and would have left pnpm unable to tell its own entries from another tool's when pruning.
 
-Ownership is therefore established twice over. The prefix marks intent, and pnpm additionally removes an entry only when it is a symlink resolving inside this project's `node_modules`. A directory, a regular file, or a link pointing anywhere else is left alone even if it matches the prefix, so a hand-authored skill that happens to be named this way is never replaced or deleted. Links point at the skill **directory**, never at `SKILL.md`, because a skill's supporting files are referenced relatively.
+The prefix marks intent, but it cannot establish ownership on its own, because an entry is not always a symlink: the Windows fallback produces a junction or a copy, and a copy carries no target to inspect. pnpm therefore records the entries it materialises in `.modules.yaml`, and prunes exactly those. Anything it did not record is left alone whatever its name or type, so a hand-authored skill, or one written by another tool, is never replaced or deleted.
 
-Entries pnpm owns are pruned when the dependency is removed, the approval is revoked, or the resolved version no longer ships that skill.
+Links point at the skill **directory**, never at `SKILL.md`, because a skill's supporting files are referenced relatively.
+
+Recorded entries are pruned when the dependency is removed, the approval is revoked, the resolved version no longer ships that skill, or the capability is turned off by emptying `skills.dirs`. Disabling removes what was materialised rather than stranding it: a revoked or disabled skill that stays on disk keeps being loaded, which is the failure the approval gate exists to prevent.
 
 ### Git
 
