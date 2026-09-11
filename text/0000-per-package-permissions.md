@@ -78,6 +78,22 @@ New capabilities are added as keys. An unknown capability key is reported throug
 
 Precedence, when both are present for the same package: `permissions` wins, and the duplicate is reported.
 
+### Reporting
+
+Capabilities awaiting approval are reported in one section rather than one per capability, since a single install produces a single pending set and the package is the unit of the decision:
+
+```
+Packages awaiting approval:
+  drizzle-kit  build, skills
+  esbuild      build
+
+Run "pnpm approve" to review them.
+```
+
+This replaces `Ignored build scripts: …`, whose wording does not extend. An ignored build script is one that did not run; an unapproved skill was never going to do anything on its own, so "ignored" describes the wrong thing.
+
+Two things survive the rename. The text appears twice today — as a notice in `default-reporter`, and as an install failure in `package-manager` when `strictDepBuilds` is set — and both move together. `ERR_PNPM_IGNORED_BUILDS` keeps its code even though its message changes, because the code is the stable identity that CI matches on.
+
 ### Approval
 
 One prompt per install instead of one per capability. A package appears once with everything it is requesting:
@@ -135,6 +151,7 @@ Reasonable in isolation, but the second capability is the moment the cost of wai
 - `pnpm_workspace_manifest_writer`: extend the existing legacy-clearing write so it targets `permissions` and clears `allowBuilds`, alongside the `onlyBuiltDependencies` handling already there.
 - `approve_builds.rs`: generalise the pending/prompt/write flow over a capability set rather than assuming build scripts, and keep `approve-builds` as a filtered entry point.
 - `.modules.yaml`: `ignoredBuilds` gains a sibling for other capabilities, or generalises, so pending state is capability-aware.
+- `default-reporter/src/state/notices.rs` and `package-manager/src/install/errors.rs`: the two places carrying the `Ignored build scripts:` wording, which change together.
 - Unknown-capability reporting joins the existing unknown-settings path.
 
 v12 only, per the version policy. A changeset targets `pacquet`.
@@ -150,5 +167,7 @@ v12 only, per the version policy. A changeset targets `pacquet`.
 
 - **Do the policy exemptions join?** `minimumReleaseAgeExclude` and `trustPolicyExclude` are per-package trust decisions and belong here by intent. Two things block a clean merge: they are **glob** patterns (`@babel/*`) where `allowBuilds` keys are exact, so one map would have to settle whether `foo@1.0.0` is a key or a pattern; and they are exemptions rather than grants, so `minimumReleaseAge: false` reads backwards. A grant-shaped name (`installBeforeMinimumAge: true`) reads correctly but is clumsy. Both also have pruning machinery tied to their list shape. This RFC proposes leaving them out initially and revisiting once the grant vocabulary is settled.
 - **Command naming.** `pnpm approve` is unqualified, and `pnpm stage approve` already uses the verb in another namespace. Whether the filter is a flag (`--capability`) or positional. Whether `pnpm permissions` should also be the command that revokes one, or whether revocation stays inside `approve`.
+- **Whether `strictDepBuilds` generalises.** It exists so that CI fails rather than silently skipping a build script. The same argument applies to a pending skill, but not with the same severity: a skipped build script can break the install, while an unapproved skill only means an agent does not receive it. One strictness setting across capabilities, or one per capability.
+- **Long pending lists.** Whether the section truncates, and at what point, given that today's single line simply wraps.
 - **Whether `dangerouslyAllowAllBuilds` generalises** to a per-capability escape hatch, or stays specific to builds.
 - **Capability naming.** `build` and `skills` are nouns describing the artifact; `runScripts` and `provideSkills` would be verbs describing the act.
