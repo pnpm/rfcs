@@ -87,7 +87,7 @@ Packages awaiting approval:
   drizzle-kit  build, skills
   esbuild      build
 
-Run "pnpm permissions approve" to review them.
+Run "pnpm approve" to review them.
 ```
 
 This replaces `Ignored build scripts: …`, whose wording does not extend. An ignored build script is one that did not run; an unapproved skill was never going to do anything on its own, so "ignored" describes the wrong thing.
@@ -105,10 +105,12 @@ One prompt per install instead of one per capability. A package appears once wit
 
 The commands live under a `permissions` namespace, named for the field:
 
-- **`pnpm permissions approve`** — the interactive prompt above.
+- **`pnpm permissions approve`**, aliased to **`pnpm approve`** — the interactive prompt above.
 - **`pnpm permissions list`**, or a bare `pnpm permissions` — the current state: granted, denied, and awaiting approval. This is the per-package question the field is organised around, and a better home for per-capability auditing than the file layout.
 
-A namespace rather than a bare `pnpm approve` because pnpm already qualifies approval by what is being approved: `pnpm stage approve` approves a staged publish. A bare `approve` would be the only unqualified one, and would read as the approval command rather than as one of several. The verb stays `approve` — it is already the verb in `approve-builds`, in `stage approve`, and in the prompt's own wording.
+The namespace exists because listing needs a home and because pnpm qualifies approval by its object elsewhere: `pnpm stage approve` approves a staged publish. The alias exists because this is the most-travelled path in the whole feature, and `pnpm permissions approve` is longer to type than the `pnpm approve-builds` it replaces. pnpm aliases freely — `i`, `up`, `ls`, `rm`, `rb` — so the short form is the idiomatic answer rather than a compromise. The install hint prints `pnpm approve`, since that is the line people copy.
+
+The verb stays `approve`: it is already the verb in `approve-builds`, in `stage approve`, and in the prompt's own wording.
 
 Approving dispatches per capability afterwards: a `build` grant schedules a rebuild, a `skills` grant links the skill. That is why one command is workable at all — the prompt is shared, the consequence is not.
 
