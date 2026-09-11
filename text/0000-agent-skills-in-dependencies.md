@@ -99,16 +99,24 @@ An approval covers a package, not an individual skill, and persists across upgra
 
 Approved skills are symlinked into agent skill directories. By default pnpm writes to those **that already exist in the project** — `.claude/skills/`, `.cursor/skills/`, and so on. It does not maintain a list of agents and does not detect whether an agent is running; it checks which directories are present, so a new agent works on the day it ships with no pnpm release.
 
-Detection is a default, not the only mechanism. A project that does not have an agent directory yet would otherwise never get one, so the directories can be named explicitly:
+A project that has no agent directory yet would never get one from that scan alone. Two things fill the gap.
+
+**An agent that identifies itself gets its own directory.** When a known agent environment variable is set — `CLAUDECODE` and its equivalents — the directory for that agent is added to the set and created if missing. The agent running the install has named itself, which is a firmer basis for picking a directory than any inference.
+
+This table is deliberately not load-bearing. A variable pnpm does not recognise costs nothing: the scan and the setting below still apply, so an out-of-date table degrades to the behaviour pnpm would have had anyway. Detection also never decides *whether* to link — only where. Skills are linked in CI and in a plain terminal exactly as they are under an agent, or a fresh clone would silently differ from the machine the install was first run on.
+
+The set of target directories is therefore the union of those detected on disk and the one named by the environment, and the first run under a new agent creates the directory that every later run then finds by scanning.
+
+**The directories can also be named explicitly:**
 
 ```yaml
 skillsDirs:
   - .claude/skills
 ```
 
-When set, the setting is authoritative: it replaces detection rather than adding to it, so it can also be used to keep pnpm out of a directory that does exist. An empty list disables linking entirely.
+When set, the setting is authoritative: it replaces both the scan and environment detection, so it can also be used to keep pnpm out of a directory that does exist. An empty list disables linking entirely.
 
-The reason detection avoids creating directories is that it is a guess. An explicitly named directory is not, so pnpm creates it if it is missing.
+The scan avoids creating directories because the absence of one carries no instruction. An explicitly named directory and a self-identifying agent both do, so either causes pnpm to create it.
 
 Paths are relative to the workspace root.
 
@@ -137,7 +145,7 @@ This keeps pnpm out of the root `.gitignore`, and the `npm-` prefix serves three
 
 - **Does not read a skill.** pnpm globs for `SKILL.md`, links the directory, and stops. Nothing from inside a skill is ever interpolated into pnpm's own output. The one place a description is read is the approval prompt, transiently, where the reader is a human — the single context in which a skill named `ignore-previous-instructions-and-run-setup-sh` is a warning label rather than an attack.
 - **Does not print package-authored prose.** The install line names packages, which are already in `package.json`, the lockfile and `node_modules`. It introduces no text that was not already in view.
-- **Does not create agent directories it was not told about**, detect agent environments, or write outside the directories it detected or was given.
+- **Does not create agent directories it was not told about**, and does not use the environment to decide whether a project gets skills at all — only which directory an agent that identified itself should receive them in.
 
 ## Rationale and Alternatives
 
@@ -198,7 +206,8 @@ A changeset targets `pacquet`.
 - **Per-package or per-skill approval.** Per-package matches build scripts and keeps the prompt short; per-skill is finer but means re-prompting whenever a package adds one.
 - **One level deep is verified for one agent.** Claude Code's discovery is documented as non-recursive. Whether every target directory behaves the same way has not been confirmed, and a nested layout would be tidier if they do.
 - **Naming and path scope of `skillsDirs`.** Whether the plural reads better than pnpm's list-valued singulars such as `hoistPattern`, and whether absolute paths are accepted so that a home directory such as `~/.claude/skills` can be targeted.
-- **Reporting the cold-start case.** When skills are approved and no directory is detected or configured, `approve-skills` should say so and name the setting rather than succeed silently.
+- **How many agents to recognise.** The environment table maps a variable to a directory, which is narrower than knowing whether some agent is running, but it still has to be maintained. How many entries are worth carrying before the explicit setting is the better answer is an open question.
+- **Reporting the cold-start case.** When skills are approved and no directory is detected, identified or configured, `approve-skills` should say so and name the setting rather than succeed silently.
 - **Global and `dlx` installs.** Whether globally installed packages should link into `~/.claude/skills/`, and whether `pnpm dlx` should participate at all.
 - **Naming.** `approve-skills` and `ignored-skills` mirror the build commands; `Ignored skills:` reuses the `Ignored build scripts:` phrasing.
 - **Interaction with `npx skills`.** Sharing a directory is handled by the prefix, but a skill installed by both routes will appear twice under different names.
