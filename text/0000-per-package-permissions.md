@@ -99,6 +99,8 @@ Run "pnpm approve" to review them.
 
 This replaces `Ignored build scripts: …`, whose wording does not extend. An ignored build script is one that did not run; an unapproved skill was never going to do anything on its own, so "ignored" describes the wrong thing.
 
+Being listed in that section does not imply that the install fails. Strictness is per capability, and `build` is the only capability that carries it: `strictDepBuilds` defaults to `true`, so an ignored build script fails the install, while a pending `skills` grant only warns. A skipped build script can leave a package unusable; an ungranted capability that withholds instructions from an agent breaks nothing. A capability that failed the install merely for being unapproved would make adding a dependency that requests it redden CI.
+
 Two things survive the rename. The text appears twice today — as a notice in `default-reporter`, and as an install failure in `package-manager` when `strictDepBuilds` is set — and both move together. `ERR_PNPM_IGNORED_BUILDS` keeps its code even though its message changes, because the code is the stable identity that CI matches on.
 
 ### Approval
@@ -183,7 +185,6 @@ v12 only, per the version policy. A changeset targets `pacquet`.
 
 - **The policy exemptions do not join, but they have their own consolidation.** `minimumReleaseAgeExclude` and `trustPolicyExclude` are per-package trust decisions, so merging them here is tempting. They fail the test above: both are parameters of a check rather than facts about a package, both are globs where these keys are exact, and `minimumReleaseAge: false` reads backwards as a permission. The grouping they want is feature-major — `minimumReleaseAge: { minutes, exclude, excludePrune }` — which also puts `minimumReleaseAgeExcludePrune` next to what it prunes instead of leaving two flat siblings that only make sense together. That is a separate, smaller cleanup, with one wrinkle: `minimumReleaseAge` is a scalar today, so a section form has to keep accepting `minimumReleaseAge: 1440` as shorthand.
 - **Command naming.** `permissions` is plural to match the settings field, where most pnpm namespaces are singular (`config`, `access`, `stage`). Whether the capability filter is a flag (`--capability`) or positional. Whether revoking a granted permission is a third verb or a pass through `approve`.
-- **Whether `strictDepBuilds` generalises.** It exists so that CI fails rather than silently skipping a build script. The same argument applies to a pending skill, but not with the same severity: a skipped build script can break the install, while an unapproved skill only means an agent does not receive it. One strictness setting across capabilities, or one per capability.
 - **Long pending lists.** Whether the section truncates, and at what point, given that today's single line simply wraps.
 - **Whether `dangerouslyAllowAllBuilds` generalises** to a per-capability escape hatch, or stays specific to builds.
 - **Capability naming.** `build` and `skills` are nouns describing the artifact; `runScripts` and `provideSkills` would be verbs describing the act.
