@@ -10,7 +10,7 @@ This RFC proposes that `pnpm install` discover skills shipped by direct dependen
 
 ```
 Ignored skills: drizzle-kit, @supabase/supabase-js
-Run "pnpm approve-skills" to pick which ones your agents can load.
+Run "pnpm approve" to pick which ones your agents can load.
 ```
 
 No new `package.json` field is introduced. pnpm never reads the contents of a skill.
@@ -75,7 +75,9 @@ drizzle-orm resolves to 2 versions; linked skills from 0.44.2 (apps/web is on 0.
 
 Packages shipping skills that have not been approved are recorded in `node_modules/.modules.yaml`, the same way ignored build scripts already are, and reported as a single line naming the packages.
 
-`pnpm approve-skills` mirrors `pnpm approve-builds`:
+Skills are granted through `pnpm approve`, the single approval command defined by the per-package permissions RFC. This RFC deliberately does not add a per-capability command: `pnpm approve-builds` exists for backward compatibility, not because one command per capability is a good shape, and one install should produce one prompt covering everything a package is asking for.
+
+The flow is the existing one:
 
 - With no arguments, it presents the pending packages in a checkbox prompt.
 - It accepts `<pkg>` to approve and `!<pkg>` to deny, for non-interactive use.
@@ -91,7 +93,7 @@ Packages shipping skills that have not been approved are recorded in `node_modul
 - Decided entries are cleared from `.modules.yaml`.
 - Newly approved skills are linked immediately.
 
-`pnpm install` links everything already approved, so a fresh clone or a CI run materialises skills without any prompt. `approve-skills` handles only the newly approved delta. This split matches `install` running approved build scripts while `approve-builds` rebuilds only what was pending.
+`pnpm install` links everything already approved, so a fresh clone or a CI run materialises skills without any prompt. `pnpm approve` handles only the newly approved delta, linking for a `skills` grant the way it schedules a rebuild for a `build` grant. This split matches what `install` and `approve-builds` already do between them.
 
 An approval covers a package, not an individual skill, and persists across upgrades. As with build scripts, this is trust in a publisher rather than review of a specific text: a later release may change a skill or add one.
 
@@ -182,8 +184,7 @@ New development targets pnpm v12 only, per the repository's version policy. Ther
 The machinery this needs largely exists:
 
 - **Recording pending packages** reuses the `ignoredBuilds` mechanism in `.modules.yaml` and the `pnpm_modules_yaml` crate.
-- **`pnpm approve-skills`** is structurally a copy of `approve_builds.rs`: the same checkbox prompt, the same `<pkg>` / `!<pkg>` parsing, the same write through `pnpm_workspace_manifest_writer`, the same clearing of decided entries. It is simpler, since there is no rebuild to schedule afterwards.
-- **`pnpm ignored-skills`** parallels `ignored_builds.rs` for non-interactive listing.
+- **No new commands.** `pnpm approve` and `pnpm permissions` come from the permissions RFC; this RFC adds `skills` as a capability they already handle. The post-approval action dispatches per capability: linking here, a rebuild for `build`.
 - **Linking** must use the existing symlink helpers rather than a direct `symlink_dir`, so that unprivileged Windows falls back to junctions or copies as it does elsewhere in the store.
 - **Pruning** runs with the rest of `node_modules` reconciliation; dangling links must never be left behind, since a broken symlink in a repository can fail unrelated tooling.
 
@@ -207,7 +208,7 @@ A changeset targets `pacquet`.
 - **One level deep is verified for one agent.** Claude Code's discovery is documented as non-recursive. Whether every target directory behaves the same way has not been confirmed, and a nested layout would be tidier if they do.
 - **Naming and path scope of `skillsDirs`.** Whether the plural reads better than pnpm's list-valued singulars such as `hoistPattern`, and whether absolute paths are accepted so that a home directory such as `~/.claude/skills` can be targeted.
 - **How many agents to recognise.** The environment table maps a variable to a directory, which is narrower than knowing whether some agent is running, but it still has to be maintained. How many entries are worth carrying before the explicit setting is the better answer is an open question.
-- **Reporting the cold-start case.** When skills are approved and no directory is detected, identified or configured, `approve-skills` should say so and name the setting rather than succeed silently.
+- **Reporting the cold-start case.** When skills are approved and no directory is detected, identified or configured, `pnpm approve` should say so and name the setting rather than succeed silently.
 - **Global and `dlx` installs.** Whether globally installed packages should link into `~/.claude/skills/`, and whether `pnpm dlx` should participate at all.
-- **Naming.** `approve-skills` and `ignored-skills` mirror the build commands; `Ignored skills:` reuses the `Ignored build scripts:` phrasing.
+- **Naming.** `Ignored skills:` reuses the `Ignored build scripts:` phrasing, which reads oddly for something that was never going to run. `Skills awaiting approval:` may be better for both.
 - **Interaction with `npx skills`.** Sharing a directory is handled by the prefix, but a skill installed by both routes will appear twice under different names.
