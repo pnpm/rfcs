@@ -164,22 +164,17 @@ The package segment is escaped the way pnpm already escapes one for the virtual 
 
 Escaping removes the scoped case but not every one: two unscoped packages can still collide across the package-skill boundary. pnpm therefore also detects a collision before writing and fails, rather than letting one approved skill silently replace another.
 
-The package segment is the **dependency key as declared** — what the project wrote in `package.json` — not the resolved package name and not the pkgId.
+The package segment comes from whichever part of the source's identity is actually unique.
 
-The pkgId is unusable as a label: `pnpm-foo@https+++codeload.github.com+user+repo+abc123-migrations` is a directory name nobody can read. The resolved name is unusable as a discriminator, because a repository without a manifest is named after itself, and the standalone skill collections are near-uniformly called `agent-skills` or `skills`. Taking the resolved name would flatten `vercel-labs/agent-skills` and `supabase/agent-skills` onto one link and fail the collision check, which is precisely the case a user combining two vendors' skills will hit first.
+- **A registry package** uses its package name. npm guarantees these are unique, so nothing further is needed.
+- **A git-hosted package** uses its owner and repository, `vercel-labs-agent-skills`, not the repository name alone. A repository name is unique only to its owner, and the standalone skill collections are near-uniformly called `agent-skills` or `skills`, so the repository name alone would flatten `vercel-labs/agent-skills` and `supabase/agent-skills` onto one link. This is a certainty for anyone combining two vendors' skills, not an edge case.
+- **Anything else** — a tarball URL, a `file:` dependency — uses the dependency key the project declared, since these have no short unique identity to derive one from.
 
-The declared key avoids this without any new mechanism. Depending on both requires aliasing them anyway, since `package.json` cannot hold two dependencies under one key, and those aliases are the names the project chose and recognises:
+The pkgId is never used: `pnpm-foo@https+++codeload.github.com+user+repo+abc123-migrations` is a directory name nobody can read, and the link is a label rather than an identity. The collision check above remains as a backstop for whatever this scheme still fails to separate.
 
-```json
-{
-  "devDependencies": {
-    "vercel-skills": "github:vercel-labs/agent-skills",
-    "supabase-skills": "github:supabase/agent-skills"
-  }
-}
-```
+Two properties are worth the extra rule. The names are **stable** — adding a second vendor never renames the first vendor's links, which a disambiguate-only-on-collision scheme could not promise, and an agent's skill directory changing underneath it is worse than a long name. And they are **traceable**: `pnpm-vercel-labs-agent-skills-composition-patterns` says where the skill came from, which a bare `agent-skills` does not.
 
-These link as `pnpm-vercel-skills-<skill>` and `pnpm-supabase-skills-<skill>`. For the ordinary case, where the key and the package name are the same string, nothing changes.
+Deriving from the declared key everywhere was considered and rejected. A key is unique within one `package.json`, so it separates two vendors inside a single project, but it says nothing across a workspace: two projects may each declare `agent-skills` for different repositories, and the collision would return. Keying on names that merely *look* like skill collections — matching `skills` as a substring — was also rejected: it would catch `my-skills-helper` and miss `agent-kit`, and it makes the naming rule depend on what a repository happens to be called.
 
 That leaves one case the version rule cannot arbitrate. Two sources can supply the same package name — a fork pinned by git in one project and the registry copy in another — and their versions are not comparable, since two git refs can each declare `1.0.0`. "Highest version wins" has no meaning across them, so neither is preferred and both materialise.
 
