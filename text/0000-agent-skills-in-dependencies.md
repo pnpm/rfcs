@@ -72,9 +72,9 @@ Nothing in the above requires a package to ship code. A package whose entire con
 
 Such a package is normally a `devDependency`, which is the correct scope: a `--prod` install has no agent to serve and links nothing.
 
-A **git repository** of skills works on one condition: it needs a `package.json` with a name and a version. Git resolution derives the package's name from the repository's manifest, so a repository without one cannot be named as a dependency at all, and this RFC does not propose a manifest-less carve-out for the resolver. The existing skill repositories are bare, because that is what `npx skills` consumes, so adopting this route asks their authors for one small file.
+A **git repository** of skills works with no manifest at all. `pnpm add github:owner/repo` installs a repository that has no `package.json`, synthesising one named after the repository at version `0.0.0`, so the skill repositories that exist today are installable as they are, unchanged.
 
-Once it has one, the repository behaves like any other git dependency. It is keyed in `permissions` by pkgId rather than by name, so moving the pinned commit asks for approval again — which for a repository whose whole payload is agent instructions is the behaviour worth having, and happens only on a deliberate `pnpm update`.
+The repository is keyed in `permissions` by pkgId rather than by name, so moving the pinned commit asks for approval again — which for a dependency whose whole payload is agent instructions is the behaviour worth having, and happens only on a deliberate `pnpm update`.
 
 ### Version selection
 
@@ -160,7 +160,22 @@ The package segment is escaped the way pnpm already escapes one for the virtual 
 
 Escaping removes the scoped case but not every one: two unscoped packages can still collide across the package-skill boundary. pnpm therefore also detects a collision before writing and fails, rather than letting one approved skill silently replace another.
 
-The package segment is the package's own name from its manifest, whatever the source. A git-hosted, tarball or `file:` dependency links as `pnpm-foo-<skill>` like any other, and an aliased dependency uses the real name rather than the alias, since an alias renames the dependency locally without changing whose skill it is. The pkgId that keys the permission is deliberately not used here: a directory called `pnpm-foo@https+++codeload.github.com+user+repo+abc123-migrations` is a label no one can read, and the link is a label rather than an identity.
+The package segment is the **dependency key as declared** — what the project wrote in `package.json` — not the resolved package name and not the pkgId.
+
+The pkgId is unusable as a label: `pnpm-foo@https+++codeload.github.com+user+repo+abc123-migrations` is a directory name nobody can read. The resolved name is unusable as a discriminator, because a repository without a manifest is named after itself, and the standalone skill collections are near-uniformly called `agent-skills` or `skills`. Taking the resolved name would flatten `vercel-labs/agent-skills` and `supabase/agent-skills` onto one link and fail the collision check, which is precisely the case a user combining two vendors' skills will hit first.
+
+The declared key avoids this without any new mechanism. Depending on both requires aliasing them anyway, since `package.json` cannot hold two dependencies under one key, and those aliases are the names the project chose and recognises:
+
+```json
+{
+  "devDependencies": {
+    "vercel-skills": "github:vercel-labs/agent-skills",
+    "supabase-skills": "github:supabase/agent-skills"
+  }
+}
+```
+
+These link as `pnpm-vercel-skills-<skill>` and `pnpm-supabase-skills-<skill>`. For the ordinary case, where the key and the package name are the same string, nothing changes.
 
 That leaves one case the version rule cannot arbitrate. Two sources can supply the same package name — a fork pinned by git in one project and the registry copy in another — and their versions are not comparable, since two git refs can each declare `1.0.0`. "Highest version wins" has no meaning across them, so neither is preferred and both materialise.
 
