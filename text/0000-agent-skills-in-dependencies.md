@@ -207,7 +207,7 @@ This keeps pnpm out of the root `.gitignore`, and the `pnpm-` prefix serves thre
 
 ### Two git-dependency changes this depends on
 
-Neither is specific to skills, but skill collections make both certain to be hit, because they are near-uniformly named `agent-skills` or `skills`.
+Neither is specific to skills, but skill collections make both certain to be hit, because they are near-uniformly named `agent-skills` or `skills`. Both are filed separately: [pnpm/pnpm#14870](https://github.com/pnpm/pnpm/issues/14870) and [pnpm/pnpm#14869](https://github.com/pnpm/pnpm/issues/14869).
 
 **A repository without a manifest is named `@owner/repo`.** pnpm synthesises such a name from the repository name alone today, so `anthropics/skills` and `vercel-labs/skills` both become `skills`, and the two cannot coexist in one `package.json`. Scoping by owner makes the name unique and says where the code came from, and it is the shape a repository author picks unprompted: `vercel-labs/agent-skills` declares `@vercel-labs/agent-skills` by hand. The synthesised name was never a published contract, so nothing breaks that was promised, but every existing manifest-less git dependency is renamed and its lockfile entry rewritten. Hosts that do not expose an owner segment keep the bare repository name, and the result is lowercased and sanitised to be a valid package name.
 
