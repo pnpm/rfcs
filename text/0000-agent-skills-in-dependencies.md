@@ -64,6 +64,10 @@ During installation, for each **direct** dependency of each workspace project, p
 
 This is the convention that all existing prior art already agrees on. No new manifest field is introduced, and none is read.
 
+It holds for the standalone collections too, which matters because they are installed straight from their repositories rather than repackaged. Across `anthropics/skills`, `vercel-labs/agent-skills`, `vercel-labs/skills`, `matthewp/tideway` and `supabase/agent-skills`, 35 of 36 `SKILL.md` files sit at `skills/<name>/SKILL.md`.
+
+The one exception argues for this glob rather than against it: `anthropics/skills` keeps a `template/SKILL.md` for authoring a new skill. A recursive `**/SKILL.md` search would install that scaffold as a real skill. Matching one level under `skills/` skips it, and skips the `references/` and `rules/` subdirectories these skills carry, which are supporting files rather than skills of their own.
+
 Transitive dependencies are never considered. A package that wants its skills seen must be depended on directly.
 
 ### Packages that are nothing but skills
