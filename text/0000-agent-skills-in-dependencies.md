@@ -66,6 +66,16 @@ This is the convention that all existing prior art already agrees on. No new man
 
 Transitive dependencies are never considered. A package that wants its skills seen must be depended on directly.
 
+### Packages that are nothing but skills
+
+Nothing in the above requires a package to ship code. A package whose entire content is `skills/*/SKILL.md` is discovered, approved and linked like any other, and this is arguably the more important case rather than a degenerate one: it gives the standalone skill collections that exist today — `vercel-labs/agent-skills`, `supabase/agent-skills` and their kind — a distribution channel with a lockfile pin, a version, an approval gate and an uninstall, none of which a `git clone` into a config directory provides.
+
+Such a package is normally a `devDependency`, which is the correct scope: a `--prod` install has no agent to serve and links nothing.
+
+A **git repository** of skills works on one condition: it needs a `package.json` with a name and a version. Git resolution derives the package's name from the repository's manifest, so a repository without one cannot be named as a dependency at all, and this RFC does not propose a manifest-less carve-out for the resolver. The existing skill repositories are bare, because that is what `npx skills` consumes, so adopting this route asks their authors for one small file.
+
+Once it has one, the repository behaves like any other git dependency. It is keyed in `permissions` by pkgId rather than by name, so moving the pinned commit asks for approval again — which for a repository whose whole payload is agent instructions is the behaviour worth having, and happens only on a deliberate `pnpm update`.
+
 ### Version selection
 
 Within a workspace a package may resolve to more than one version. Comparable here has the same meaning it already has for build permissions: every resolution parses as `name@version` with a valid semver version, which is exactly the test that makes `allow_build_key_from_ignored_build` key the package by its bare name. When that holds, the **highest resolved version decides**, including when that version ships no skills at all — in which case nothing is linked and nothing is reported. A `skills/` directory removed in a later release is a deliberate act by the author, and falling back to an older version's copy would resurrect content that was withdrawn, from a version nobody is running.
@@ -162,7 +172,7 @@ The prefix marks intent, but it cannot establish ownership on its own, because a
 
 Links point at the skill **directory**, never at `SKILL.md`, because a skill's supporting files are referenced relatively.
 
-Recorded entries are pruned when the dependency is removed, the approval is revoked, the resolved version no longer ships that skill, or the capability is turned off by emptying `skills.dirs`. Disabling removes what was materialised rather than stranding it: a revoked or disabled skill that stays on disk keeps being loaded, which is the failure the approval gate exists to prevent.
+Every install reconciles the recorded entries against the directories currently being targeted, so an entry is pruned when the dependency is removed, the approval is revoked, the resolved version no longer ships that skill, or the directory holding it is no longer a target — whether because `skills.dirs` now names a different directory or because it is empty. Disabling removes what was materialised rather than stranding it: a revoked or disabled skill that stays on disk keeps being loaded, which is the failure the approval gate exists to prevent.
 
 ### Git
 
