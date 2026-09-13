@@ -167,7 +167,7 @@ Escaping removes the scoped case but not every one: two unscoped packages can st
 The package segment comes from whichever part of the source's identity is actually unique.
 
 - **A registry package** uses its package name. npm guarantees these are unique, so nothing further is needed.
-- **A git-hosted package** uses its owner and repository, `vercel-labs-agent-skills`, not the repository name alone. A repository name is unique only to its owner, and the standalone skill collections are near-uniformly called `agent-skills` or `skills`, so the repository name alone would flatten `vercel-labs/agent-skills` and `supabase/agent-skills` onto one link. This is a certainty for anyone combining two vendors' skills, not an edge case.
+- **A git-hosted package** uses its package name, which for a repository shipping a manifest is whatever that manifest declares. For a repository without one, see the naming conflict recorded under unresolved questions below: the name pnpm synthesises is not unique, and the problem needs solving before the link segment, not in it.
 - **Anything else** — a tarball URL, a `file:` dependency — uses the dependency key the project declared, since these have no short unique identity to derive one from.
 
 The pkgId is never used: `pnpm-foo@https+++codeload.github.com+user+repo+abc123-migrations` is a directory name nobody can read, and the link is a label rather than an identity. The collision check above remains as a backstop for whatever this scheme still fails to separate.
@@ -258,6 +258,12 @@ A changeset targets `pacquet`.
 - **pnpm's own `allowBuilds`** — the existing precedent for gating untrusted package-supplied behaviour behind explicit approval, with the interactive flow this RFC reuses. It becomes the `build` capability under the per-package permissions RFC.
 
 ## Unresolved Questions and Bikeshedding
+
+- **Manifest-less git repositories collide on the dependency key, before any of this applies.** pnpm synthesises the name of a repository without a `package.json` from the repository name alone, so `anthropics/skills` and `vercel-labs/skills` both become `skills`. `pnpm add` on the second silently replaces the first in `package.json` — the dependency is gone with no warning. Skill collections are near-uniformly named `agent-skills` or `skills`, so anyone combining two vendors hits this immediately, and no link-naming rule can help, because the two dependencies cannot coexist in the manifest at all. Repositories that ship a manifest are unaffected: `vercel-labs/agent-skills` declares `@vercel-labs/agent-skills` and is unique by construction. Three ways out, none of them settled:
+
+  1. Synthesise `@owner/repo` rather than `repo` for a manifest-less git dependency. Unique, traceable, and the shape a real repository author already chose by hand. It changes the name of every existing manifest-less git dependency, so it is a behaviour change well beyond this RFC.
+  2. Have `pnpm add` refuse, or at least warn, when it would replace a dependency whose bare specifier resolves to a different source. Narrower, useful regardless of skills, and it turns silent data loss into a prompt to alias.
+  3. Document that combining such repositories requires aliasing them by hand, which works today: `"vercel-skills": "github:vercel-labs/agent-skills"` installs and links correctly.
 
 - **Per-package or per-skill approval.** Per-package matches build scripts and keeps the prompt short; per-skill is finer but means re-prompting whenever a package adds one.
 - **One level deep is verified for one agent.** Claude Code's discovery is documented as non-recursive. Whether every target directory behaves the same way has not been confirmed, and a nested layout would be tidier if they do.
