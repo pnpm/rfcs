@@ -79,6 +79,13 @@ Reusing `packages` entries rather than describing the tools inline is what makes
 
 Build dependencies are not dependencies: they are never linked into the git dependency's `node_modules`, never contribute to its runtime or the consumer's hoisting, and do not appear in `pnpm list` or `pnpm why` except when asked for build tools explicitly. That is why they need a field of their own instead of being written into the snapshot's `dependencies`, which is where an `engines.runtime` entry goes today, and with the opposite meaning (see Rationale and Alternatives).
 
+A `packages` entry is not installed because it exists: an install materializes only what is reachable from the importers through `dependencies` and `optionalDependencies` edges. A `buildDependencies` edge is a second kind of edge with two rules:
+
+- **It retains, but does not materialize.** Lockfile pruning and the current-lockfile filter keep every entry a `buildDependencies` edge reaches, so the record survives every rewrite. The materialization walk does not follow it, so a build tool gets no virtual-store slot, is never hoisted, and has no bins linked into the project. A tool that is also a real dependency of the project (`node@runtime:24.6.0` pinned by the project's own `devEngines.runtime`, say) shares the `packages` entry and is installed through that edge, not this one.
+- **It is fetched only when a build runs.** The tools are fetched into the content-addressable store when the git dependency actually has to be prepared — the built artifact is missing from the store and from the side-effects cache — and run from there, the way `pnpm dlx` runs a package manager today. A warm install downloads nothing for them.
+
+The tools are self-contained — npm, Yarn and pnpm bundle their own dependencies, and runtimes and archive-shipped package managers are single archives — so they carry `packages` entries only, with no `snapshots` entries and no edges of their own.
+
 `buildDependencies` names only what pnpm itself downloads and executes to prepare the dependency. The dependency's own `devDependencies`, installed by that package manager inside the checkout, are governed by the lockfile the dependency ships at that commit and are out of scope.
 
 ### 2. Resolution and reuse rules for the package manager
@@ -146,7 +153,7 @@ pnpm v12 only, per the version policy: the TypeScript v11 CLI receives no change
 - `crates/resolving-git-resolver` / `crates/resolving-deps-resolver` — the first-resolution path resolves the package manager and the `devEngines.runtime` pin through the existing package-manager and runtime resolvers (`engine-pm-yarn-resolver`, `engine-runtime-node-resolver`, `engine-runtime-bun-resolver`, `engine-runtime-deno-resolver`), so the record exists before the build runs.
 - `crates/lockfile` and `crates/lockfile-verification` — the `buildDependencies` field, the `lockfileVersion` major bump, and frozen-install validation that every build-requiring git snapshot carries the record and that every reference resolves to a `packages` entry.
 - `crates/store-dir` — `git_hosted_store_index_key` covers the recorded build dependencies.
-- Listing and pruning — `pnpm list`/`pnpm why` and lockfile pruning treat `buildDependencies` as edges that keep `packages` entries alive without making them installed dependencies.
+- `crates/lockfile` (`filter_by_importers`, pruning) and `crates/deps-restorer` (`materialization_closure`) — reachability distinguishes retaining edges from materializing ones: `buildDependencies` keeps `packages` entries in the wanted and current lockfiles without adding them to the virtual store. `pnpm list`/`pnpm why` show them only when asked for build tools.
 
 **Effects and risks:**
 
