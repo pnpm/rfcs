@@ -30,7 +30,7 @@ Each provisioned tool has its own resolver crate today:
 | Deno | the `deno` npm package's versions | one zip per `(os, cpu)` | per-asset `.sha256sum` files |
 | Yarn 6 | the `yarnpkg/zpm` GitHub releases API | one zip per Rust target triple | digests reported by the releases API |
 
-They differ in where each answer comes from, not in what the questions are: list the versions, select one, map each platform to an artifact, and find each artifact's integrity. The result is always the same lockfile shape — a `variations` resolution with one integrity-pinned variant per platform. That is the shape tools like aqua and proto give a *tool definition*, and it is the shape this RFC names.
+They differ in where each answer comes from, not in what the questions are: list the versions, select one, map each platform to an artifact, and find each artifact's integrity. For these four, which all ship as platform archives, the result is the same lockfile shape: a `variations` resolution with one integrity-pinned variant per platform. That is the shape tools like aqua and proto give a *tool definition*, and it is the shape this RFC names.
 
 Meanwhile, Yarn's other lines are npm packages under different names — Yarn Classic is `yarn`, Yarn 2–5 is `@yarnpkg/cli-dist` — so "Yarn at version X" is today three different specifiers depending on X. A tool definition can own that mapping too.
 
@@ -79,10 +79,21 @@ packages:
 
 Every name `tool:` accepts has a tool definition built into pnpm. A definition answers four questions, and may answer them differently for different version ranges:
 
-1. **Versions.** Where the list of released versions comes from, and which aliases and channels a spec may use (`lts`, `nightly`, LTS codenames for Node).
-2. **Selection.** How a spec picks a version. `minimumReleaseAge` and the trust policy apply to every tool through this step, as they already do for Bun and Deno by way of the npm registry.
+1. **Versions.** Where the list of released versions comes from, which aliases and channels a spec may use (`lts`, `nightly`, LTS codenames for Node), and, for every version, its **publish time** and its **trust evidence** (below).
+2. **Selection.** How a spec picks a version.
 3. **Artifacts.** Which artifact each platform gets — including libc variants, archive formats, and fallbacks such as Yarn 6's static musl build serving glibc hosts.
-4. **Integrity.** Where each artifact's integrity comes from, and what verifies that source (Node's signed `SHASUMS256.txt`, npm's registry signatures, a release API's digests).
+4. **Integrity.** Where each artifact's integrity comes from. An archive is pinned by an integrity recorded in the lockfile; a tool line published to npm is pinned by its tarball integrity, like any npm package.
+
+#### Release age and trust apply to every tool
+
+Today the policies that guard npm resolution reach provisioned tools unevenly. Bun and Deno select versions through their npm packages, so `minimumReleaseAge` and `trustPolicy` apply to the version list. The Node.js and Yarn 6 resolvers report no publish time, so `minimumReleaseAge` doesn't apply to them at all, and no tool outside npm has trust evidence that `trustPolicy` could compare. Making every definition answer the same questions closes that gap:
+
+- **Publish time is required.** Every definition reports when each version was published — the Node.js release index carries a date per release, and the GitHub releases API carries `published_at` — so `minimumReleaseAge` and `minimumReleaseAgeExclude` apply to every tool exactly as they do to npm packages.
+- **Trust evidence is declared per version.** A definition reports which evidence a version has, ordered from weakest to strongest: none; a checksum file served from the same release as the archive; a checksum file signed by the project's release keys (Node.js `SHASUMS256.txt`); a verifiable build attestation, such as a GitHub artifact attestation. A version distributed through npm reports npm's own levels (provenance, trusted publisher).
+- **`trustPolicy: no-downgrade` compares those levels** the way it compares npm trust levels: by publish date, ignoring prereleases for a stable install. A version with weaker evidence than an earlier release of the same tool fails resolution, unless `trustPolicyExclude` names it (`node@tool:24.6.0`, `yarn@tool`). Evidence that cannot be verified counts as missing.
+- **A definition may require a minimum level.** Node.js release-channel versions require a valid signature on `SHASUMS256.txt`, as the resolver already does; a version without it fails resolution regardless of `trustPolicy`, since an unsigned release there is evidence of tampering rather than a policy question.
+
+**Trust and integrity are different checks.** Trust evidence is evaluated once, at resolution, and says who published a version. Integrity is recorded in the lockfile and says that later downloads are the bytes resolution saw. A checksum served from the same place as the archive — Bun's and Deno's GitHub releases, the digests the GitHub releases API reports for Yarn 6 — establishes integrity for every later install, but says nothing about the publisher; that is why it ranks just above no evidence.
 
 The initial set, all of which pnpm already resolves today:
 
@@ -152,6 +163,7 @@ pnpm v12 only, per the version policy.
 
 - A `tool-resolver` crate with the tool-definition interface; `engine-runtime-node-resolver`, `engine-runtime-bun-resolver`, `engine-runtime-deno-resolver`, and `engine-pm-yarn-resolver` become its definitions, and `yarn` gains the npm-line mappings now spread across `package-manager` and `cli/dlx`.
 - `resolving-default-resolver` claims `tool:` and `runtime:` specifiers through that crate.
+- The definition interface carries a publish time and a trust-evidence level per version, wired into the existing `minimumReleaseAge` and `trustPolicy` checks. The Node.js and Yarn 6 definitions start reporting publish times, from the release index's dates and the releases API's `published_at`.
 - `lockfile` — `tool:` keys, `@runtime:` keys accepted on read, the `lockfileVersion` major bump.
 - `deps-path` (`try_get_package_id`) — treats `tool:` as it treats `runtime:` today.
 - `package-manifest` (`runtime.rs`) — `engines.runtime` / `devEngines.runtime` round-trip writes `tool:` and reads both.
