@@ -6,6 +6,8 @@ When pnpm installs a git-hosted dependency that has to be built, it recreates th
 
 The lockfile change is additive. The breaking part is behavioral: a frozen install of a build-requiring git dependency with no record fails instead of resolving its tools live, so the change ships in a pnpm major.
 
+**Prerequisite: [the `tool:` protocol](https://github.com/pnpm/rfcs/pull/37).** Build tools are recorded with `tool:` keys (`node@tool:24.6.0`, `yarn@tool:4.9.2`), which name a tool independently of its role and of where a given version is distributed. Without that RFC, this one would write `yarn@runtime:` into committed lockfiles. Both are major changes and land in the same major, so lockfile keys change once. If the `tool:` protocol slips, this RFC can ship without support for tools that are not npm packages — Yarn 6 and Bun as package managers — failing to record them with a clear error that names `gitBuildTools: host` as the way out, and add them when `tool:` lands.
+
 ## Motivation
 
 ### The package manager used for the build is pinned per machine, not per project
@@ -43,14 +45,10 @@ Build tools are a dependency group of the same kind, with one difference: no ins
 ```yaml
 packages:
 
-  '@yarnpkg/cli-dist@4.9.2':
-    resolution: {integrity: sha512-…}
-    hasBin: true
-
   example@git+https://github.com/org/example.git#5c8f9a…:
     resolution: {type: git, repo: …, commit: 5c8f9a…}
 
-  node@runtime:24.6.0:
+  node@tool:24.6.0:
     resolution:
       type: variations
       variants:
@@ -66,30 +64,35 @@ packages:
               os: darwin
         # … one variant per platform
 
-snapshots:
+  yarn@tool:4.9.2:
+    resolution:
+      tarball: https://registry.npmjs.org/@yarnpkg/cli-dist/-/cli-dist-4.9.2.tgz
+      integrity: sha512-…
 
-  '@yarnpkg/cli-dist@4.9.2': {}
+snapshots:
 
   example@git+https://github.com/org/example.git#5c8f9a…:
     dependencies: …
     buildDependencies:
-      node: runtime:24.6.0
-      yarn: '@yarnpkg/cli-dist@4.9.2'
+      node: tool:24.6.0
+      yarn: tool:4.9.2
 
-  node@runtime:24.6.0: {}
+  node@tool:24.6.0: {}
+
+  yarn@tool:4.9.2: {}
 ```
 
-- **The group is never materialized.** Every walk that decides what goes into `node_modules` — materialization, hoisting, bin linking, the current lockfile, the install-time prefetch — skips `buildDependencies` edges the way `--prod` skips `devDependencies`. A build tool never gets a virtual-store slot and never has bins linked into the project. A package reached both through `buildDependencies` and through an installed group (the project's own `node@runtime:24.6.0`, say) is installed through the installed group, and the two share one entry.
+- **The group is never materialized.** Every walk that decides what goes into `node_modules` — materialization, hoisting, bin linking, the current lockfile, the install-time prefetch — skips `buildDependencies` edges the way `--prod` skips `devDependencies`. A build tool never gets a virtual-store slot and never has bins linked into the project. A package reached both through `buildDependencies` and through an installed group (the project's own `node@tool:24.6.0`, say) is installed through the installed group, and the two share one entry.
 - **The group is always retained.** Pruning the wanted lockfile follows every group, so the tools stay as long as a git-hosted package references them, and go when nothing does.
 - **The group is fetched only when a build runs.** The tools are fetched into the content-addressable store when the git dependency actually has to be prepared — its built artifact is missing from the store and from the side-effects cache — and run from there, the way `pnpm dlx` runs a package manager today. A warm install downloads nothing for them. `pnpm fetch`, which fills the store with every group, fetches them too, so a later offline build has them.
-- **Tools are ordinary entries.** Most have no edges — npm bundles its dependencies, `@yarnpkg/cli-dist` is a single bundle, and runtimes and archive-shipped package managers are single archives — so their snapshot is `{}`, as `node@runtime:<version>: {}` already is. A tool that does have dependencies uses ordinary edges: a downloaded pnpm is `@pnpm/exe`, whose binary comes through platform-specific `optionalDependencies`. Build tools take no part in peer resolution.
+- **Tools are ordinary entries.** Most have no edges — npm bundles its dependencies, `@yarnpkg/cli-dist` is a single bundle, and runtimes and archive-shipped package managers are single archives — so their snapshot is `{}`, as a runtime's already is. A tool that does have dependencies uses ordinary edges: a downloaded pnpm is `@pnpm/exe`, whose binary comes through platform-specific `optionalDependencies`. Build tools take no part in peer resolution.
 
 Reusing ordinary entries is what makes the record cheap:
 
 - **Integrity comes for free.** A package manager published to npm is locked by its tarball integrity, exactly as a regular dependency is. The record doesn't trust the registry to serve the same bytes for the same version any more than pnpm does for a leaf dependency.
 - **Platform binaries are covered.** A runtime, and a package manager that ships as a platform archive (Bun, Yarn 6), is locked by the existing `variations` resolution, which pins every platform's archive by integrity. A single integrity on a wrapper package would pin only the wrapper and leave the binary that actually runs unpinned. Because every platform is recorded at resolution time, the record is the same no matter which machine wrote it.
 - **One entry per artifact.** Ten git dependencies prepared with Yarn 4.9.2 share one entry and one store copy.
-- **The alias form is the existing one.** Yarn Berry is published as `@yarnpkg/cli-dist`, so it is recorded as `yarn: '@yarnpkg/cli-dist@4.9.2'`, the way any npm alias is.
+- **One spelling per tool.** The `tool:` protocol gives every tool one name regardless of how a version is distributed: Yarn 1 (npm `yarn`), Yarn 4 (npm `@yarnpkg/cli-dist`), and Yarn 6 (`yarnpkg/zpm` release archives) are all `yarn@tool:<version>`, and the resolution records where each came from.
 
 **What is new** is a dependency group on a package snapshot. Groups have so far existed only on importers, so group selection is decided where the walk starts. With `buildDependencies`, the walks that install also have to skip a group on every snapshot edge they follow. That rule lives in one place — the reachability walk that already takes the group selection — rather than in each consumer.
 
@@ -123,7 +126,7 @@ The setting changes only which executable runs, never what is recorded: the lock
 
 The dependency's manifest gets a say in which runtime runs its build:
 
-1. **`devEngines.runtime` names a runtime pnpm can provision** → pnpm resolves it, records it in `buildDependencies` as a `<name>@runtime:<version>` package, and runs the inner install and the `prepare` scripts on it. This is symmetric with `devEngines.packageManager`: the field describes the dependency's development environment, which the prepare recreates.
+1. **`devEngines.runtime` names a runtime pnpm can provision** → pnpm resolves it, records it in `buildDependencies` as a `<name>@tool:<version>` package, and runs the inner install and the `prepare` scripts on it. This is symmetric with `devEngines.packageManager`: the field describes the dependency's development environment, which the prepare recreates.
 2. **Otherwise** → the host runtime is used, and nothing is recorded.
 
 Only an explicit dev pin selects the runtime, so the record depends on the dependency's manifest at the locked commit and never on the host. A dependency whose `engines.node` the host fails is not provisioned for: provisioning only on hosts that fail the range would record a runtime on some machines and not others, and two contributors would produce different lockfiles for the same dependency. Such a build fails as it does today, with a hint naming the range. `engines.node` is a consumer-facing compatibility range (typically `>=18`); treating it as a build pin on every host would mean "always latest Node," which nobody intends.
@@ -140,7 +143,7 @@ Everything in `buildDependencies` was demanded either by the dependency or by th
 
 ### 6. Compatibility and migration
 
-The lockfile change is additive: a new field on snapshots, plus `packages` and `snapshots` entries of shapes the lockfile already has. It ships with a minor `lockfileVersion` bump, not a major one. The breaking part is behavioral, and provisioning git-dependency build tools is not marked experimental, so the change ships in a pnpm major:
+The lockfile change is additive: a new field on snapshots, plus `packages` and `snapshots` entries of shapes the lockfile already has. On its own it would need only a minor `lockfileVersion` bump; it ships together with the `tool:` protocol, whose key change carries a major one. The breaking part is behavioral, and provisioning git-dependency build tools is not marked experimental, so the change ships in a pnpm major:
 
 - **Frozen installs of an upgraded project fail until the lockfile is rewritten.** Every existing lockfile lacks the record, so a frozen install of a project with a build-requiring git dependency fails with the staleness error from section 2. Run `pnpm install` once and commit the result. Lockfiles without build-requiring git dependencies are unaffected.
 - **An older pnpm drops the record loudly, not silently.** An older pnpm ignores `buildDependencies` when reading and drops it when it rewrites the lockfile, then prunes the tool entries nothing else reaches. The deletion shows up in the lockfile diff, and the next frozen install with a current pnpm fails with the staleness error. Nothing is lost that a regular install doesn't restore.
@@ -204,7 +207,6 @@ pnpm v12 only, per the version policy: the TypeScript v11 CLI receives no change
 
 ## Unresolved Questions and Bikeshedding
 
-- **Names.** `buildDependencies` vs `prepareDependencies` for the group; `gitBuildTools` and its values for the setting. "Build" matches `allowBuilds` and the store's built/not-built split, while "prepare" names the lifecycle step exactly.
-- **Yarn 6 key format.** Yarn 6 ships as platform archives rather than an npm package. It fits the `variations` resolution, but needs a `packages` key, presumably mirroring `runtime:` (e.g. `yarn@pm:6.0.0`), that the lockfile doesn't define yet.
+- **Setting name.** `gitBuildTools` and its values (`locked`, `host-exact`, `host`).
 - **`engines.node` fallback provisioning.** Excluded from this iteration because it makes the record host-dependent. A later iteration could provision a deterministic choice (e.g. the newest LTS satisfying the range, resolved once and recorded on every host) if failing on incompatible hosts proves to be a real pain point.
 - **Bun/Deno runtimes.** `devEngines.runtime` can name `bun` or `deno`; the same mechanism applies through their resolvers, but whether the first iteration supports them or errors is open.
