@@ -127,16 +127,25 @@ The setting changes only which executable runs, never what is recorded: the lock
 
 ### 3. Runtime selection
 
-The dependency's manifest gets a say in which runtime runs its build, through `devEngines.runtime`, on the terms its `onFail` sets:
+The dependency's manifest gets a say in which runtime runs its build, through `devEngines.runtime`. Two things are decided separately: what is **recorded**, which depends only on the dependency's manifest at the locked commit, and what **runs**, which local configuration may change.
 
-| The dependency's `onFail` | Runtime for the build | Recorded |
+**What is recorded** follows the dependency's `onFail`:
+
+| The dependency's `onFail` | Recorded | Runtime for the build, with no local override |
 |---|---|---|
-| `download` | the pinned runtime, provisioned | yes, as a `<name>@tool:<version>` build dependency |
-| `error` | the host's runtime, which must satisfy the pinned version, or the prepare fails | no |
-| `warn` | the host's runtime, with a warning when it doesn't satisfy the pinned version | no |
-| `ignore`, or no `onFail` | the host's runtime | no |
+| `download` | the pinned runtime, as a `<name>@tool:<version>` build dependency | the recorded runtime, provisioned |
+| `error` | nothing | the host's runtime, which must satisfy the pinned version, or the prepare fails |
+| `warn` | nothing | the host's runtime, with a warning when it doesn't satisfy the pinned version |
+| `ignore`, or no `onFail` | nothing | the host's runtime |
 
-This is what pnpm already does for a project's own `devEngines.runtime`, which provisions only entries that ask for `download`; the build follows the dependency's stated policy rather than overriding it. The global `runtimeOnFail` setting overrides the dependency's `onFail` here exactly as it overrides a project's.
+This is what pnpm already does for a project's own `devEngines.runtime`, which provisions only entries that ask for `download`; the build follows the dependency's stated policy rather than overriding it.
+
+**What runs** may differ through the global `runtimeOnFail` setting, which overrides `onFail` for a project's own runtime today. For builds, it may only move toward the host:
+
+- **Overriding `download` with `error`, `warn`, or `ignore`** runs the build on the host's runtime, with that policy's check. The record is unchanged, and the build is classified as a host build (section 4).
+- **Overriding `error`, `warn`, or `ignore` with `download`** is not applied to builds, and pnpm prints a notice. The lockfile names no runtime for that dependency, so provisioning one would mean resolving it live, which is what the record exists to prevent.
+
+The override never changes the lockfile, and freshness ignores it: a frozen install compares the record with the dependency's manifest alone, so two machines with different `runtimeOnFail` settings accept the same lockfile.
 
 `devEngines.runtime` may be an array. The entry that applies is the one for the runtime the chosen package manager runs on — `node` for npm, Yarn, and pnpm; `bun` for Bun — and the first such entry wins. Other entries are ignored for the build.
 
@@ -149,20 +158,21 @@ A provisioned runtime applies to the *inner* workflow inside the git checkout: t
 That boundary is not enough when the prepare itself compiles a native addon. Today such a prepare runs on the host's Node, which is usually the Node the project runs on, so the addon loads. If the dependency pins Node 24 and the project runs on Node 20, provisioning Node 24 for the prepare would build an addon the project cannot load — a regression this RFC would introduce. So:
 
 - **A dependency that builds native code prepares on the project's runtime.** When the package directory contains a `binding.gyp` — the same check pnpm makes to decide on the implicit `node-gyp rebuild` — its `devEngines.runtime` is not used for the prepare, and pnpm prints a notice saying so. The prepare runs on the project's runtime: the project's pinned `devEngines.runtime` when it has one, otherwise the host's. Neither is recorded as a build dependency; a pinned project runtime is already recorded by the project's own entry.
-- **A check after the prepare catches the rest.** Native code can be built without a `binding.gyp` (`cmake-js`, `node-pre-gyp` fallbacks, hand-written scripts). When a prepare ran on a provisioned runtime and produced `.node` files whose Node ABI (`NODE_MODULE_VERSION`) differs from the project's runtime, the install fails, naming the dependency and both runtimes, rather than installing an addon that cannot load.
-- **Native output is keyed by ABI.** When a prepare produced `.node` files, the built artifact's cache key includes the ABI of the runtime they were built for (section 4), so a project on another Node version never reuses them.
+- **Other native builds get a warning, not a check.** Native code can be built without a `binding.gyp` (`cmake-js`, `node-pre-gyp` fallbacks, hand-written scripts), and a `.node` file does not reliably say which Node it targets: classic addons record their module version in registration data rather than in a uniform header, Node-API addons are compatible across Node versions by design, and a script may cross-compile or copy a prebuilt binary. So pnpm does not inspect them. When a prepare ran on a provisioned runtime that differs from the project's runtime and produced new `.node` files, pnpm warns that they may not load in the project, naming the dependency and both runtimes.
+
+The `binding.gyp` rule is a heuristic, not a guarantee. What bounds the exposure is section 3's recording rule: a runtime is provisioned for a prepare only when the dependency's author asked for it with `onFail: download`. A prepare that then compiles native code against that runtime does what its author declared, the same packaging choice as publishing a prebuilt binary for one Node version. Caching does not depend on any of this: every cache key carries the full identity of the runtime the build ran on (section 4), so an artifact built on one Node version is never reused by a project on another.
 
 ### 4. Store and cache keying
 
-The store-index key of a built git-hosted dependency, today derived from the package ID and whether it was built, also covers **how it was built**:
+The store-index key of a built git-hosted dependency, today derived from the package ID and whether it was built, also covers **how it was built**: every tool that ran the prepare — the package manager and the runtime — with its provenance.
 
-- **A verified build** — `buildTools: locked`, every tool provisioned and verified against the lockfile — is keyed by its `buildDependencies` (the recorded tools and their integrity) and marked verified.
-- **A host build** — `buildTools: host` or `host-exact`, where at least one tool was the host's copy — is keyed by the tools that actually ran: each host tool's name and the version it reported, marked as a host copy. A host build never satisfies a lookup for a verified build, so a project that installs with the default `locked` cannot reuse an artifact built by a Yarn 4.10 the lockfile never named, or by a host copy pnpm never verified, even when they share a store.
-- **Native output** additionally carries the Node ABI it was built for (section 3).
+- **Each tool is provisioned or host.** A *provisioned* tool is exactly what a lockfile entry names, fetched and verified against its integrity: a build dependency, or the project's own pinned runtime when a native prepare runs on it. A *host* tool is a copy found on the machine, identified by its name and the version it reports. The classification depends on what actually ran, not on the `buildTools` setting: with the default `locked`, a build whose package manager is provisioned still ran on a host runtime when the dependency pins none.
+- **The key names every tool.** A provisioned tool contributes its lockfile key and integrity; a host tool contributes its name, its reported version, and a host marker. The runtime is always part of the key, with its full identity rather than only its ABI, because build output can depend on the Node version in ways the ABI doesn't capture.
+- **A build is verified only when every tool was provisioned.** A host build never satisfies a lookup for a verified build, so a project that installs with every tool provisioned cannot reuse an artifact built by a Yarn 4.10 the lockfile never named, or on a runtime pnpm never verified, even when they share a store.
 
 `pnpm update` can keep the commit and move the recorded package manager; because the record is in the key, the artifact built by the old environment is not reused, and the lockfile never describes a build that never happened.
 
-The same applies to the input key of the shared side-effects cache ([RFC 0007](./0007-shared-side-effects-cache.md)): an artifact built with Yarn 4.9.2 is not the artifact built with Yarn 4.10.0. In addition, **only verified builds are uploaded to a shared cache.** A host build stays on the machine that produced it: other machines cannot check what ran, so it must not reach them as if they could.
+The same applies to the input key of the shared side-effects cache ([RFC 0007](./0007-shared-side-effects-cache.md)): an artifact built with Yarn 4.9.2 is not the artifact built with Yarn 4.10.0. In addition, **only verified builds are uploaded to a shared cache.** A host build stays on the machine that produced it: other machines cannot check what ran, so it must not reach them as if they could. A git dependency built on an unpinned host runtime is therefore never shared; pinning a runtime — in the project, or in the dependency with `onFail: download` — is how a team makes such builds shareable.
 
 ### 5. Failure behavior
 
@@ -187,7 +197,7 @@ The setting is project-level, not per machine, because everyone who shares the l
 
 **Build tools use `tool:` keys from stage 1.** The `tool:` protocol RFC moves lockfile keys to `tool:` in the next major so that an older pnpm never has to install from entries it cannot read — which matters for entries an install uses, such as a project's own `node@runtime:` entry. Build tools are different: they are reachable only through `buildDependencies`, which an older pnpm ignores, so it never installs, fetches, or resolves them. pnpm versions that have the setting, all of which postdate the `tool:` protocol's first step, read and write `tool:` keys for them. So every build tool, Yarn 6 included, is recorded under its final key from the start, and stage 2 never rewrites a build record.
 
-An older v12 parses a key it doesn't know, such as `yarn@tool:6.0.0`, as a version from a registry named `tool`. That is harmless as long as no code path iterating the whole `packages` map tries to fetch it; the whole-lockfile store fetch behind `pnpm fetch` is the one to verify with a test.
+An older v12 parses a key it doesn't know, such as `yarn@tool:6.0.0`, as a version from a registry named `tool`. That is harmless as long as no code path iterating the whole `packages` map tries to fetch it. This is a requirement, not an expectation: stage 1 does not ship until the compatibility tests listed under Implementation pass.
 
 Until the major moves a project's own runtime to `tool:` too, a project that pins Node 24.6.0 and has a git dependency building on Node 24.6.0 has two entries for one archive, `node@runtime:24.6.0` and `node@tool:24.6.0`. The store holds the bytes once, and the major merges the entries.
 
@@ -260,10 +270,17 @@ pnpm v12 only, per the version policy: the TypeScript v11 CLI receives no change
 - `crates/resolving-git-resolver` / `crates/resolving-deps-resolver` — the first-resolution path resolves the package manager and the `devEngines.runtime` pin through the existing package-manager and runtime resolvers (`engine-pm-yarn-resolver`, `engine-runtime-node-resolver`, `engine-runtime-bun-resolver`, `engine-runtime-deno-resolver`), so the record exists before the build runs.
 - `crates/lockfile` and `crates/lockfile-verification` — a `tool:` prefix beside `runtime:` in lockfile keys (`PkgVerPeer`), the `buildDependencies` snapshot field, the minor `lockfileVersion` bump, and frozen-install validation that every build-requiring git snapshot carries the field and that every edge resolves.
 - `crates/deps-restorer` (`current_lockfile/reachability.rs`: `GroupSelection`, `collect_reachable`) and `crates/lockfile` (`filter_by_importers`) — group selection applies on snapshot edges, not only at importers: the install walks never follow `buildDependencies`, and wanted-lockfile pruning always does. Consumers that already receive a group-filtered lockfile — the install-time prefetch, the package map, the current lockfile — need no change of their own.
-- `crates/store-dir` — `git_hosted_store_index_key` covers how the package was built: the recorded build dependencies and a verified marker, or the host tools that ran; and the Node ABI when the prepare produced `.node` files. The side-effects cache uploads verified builds only.
-- `crates/git-fetcher` — the `binding.gyp` check that keeps native builds on the project's runtime, and the post-prepare ABI check of new `.node` files.
+- `crates/store-dir` — `git_hosted_store_index_key` covers how the package was built: every tool that ran, provisioned (lockfile key and integrity) or host (name, reported version, host marker), the runtime always included. The side-effects cache uploads verified builds only.
+- `crates/git-fetcher` — the `binding.gyp` rule that keeps native builds on the project's runtime, and the warning for new `.node` files after a prepare on a different provisioned runtime.
+- `crates/config` / `crates/git-fetcher` — `runtimeOnFail` applies to builds only toward the host runtime, and never changes the record.
 - `crates/config` — the `lockBuildTools` and `buildTools` settings.
 - `crates/deps-inspection` — `pnpm list`/`pnpm why` show build dependencies only when asked for them.
+
+**Compatibility tests that gate stage 1.** Stage 1 writes `tool:` keys that older v12 releases have never seen. Before it ships, tests run older v12 releases — at least one from before pnpm/pnpm#16838 and one after — against a lockfile carrying `tool:` build entries, and check that each:
+
+- installs, with and without `--frozen-lockfile`, without fetching or failing on those entries;
+- runs `pnpm fetch` without fetching or failing on them;
+- rewrites the lockfile by dropping `buildDependencies` and pruning the unreachable entries, leaving a lockfile a current pnpm reports as stale rather than corrupt.
 
 **Effects and risks:**
 
