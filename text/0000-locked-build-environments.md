@@ -33,7 +33,7 @@ The consequences:
 
 The prepare currently runs with the host's Node, unconditionally. If the dependency's authors develop and test on Node 24 and the host runs Node 20, the build can fail outright (build tooling with `engines` floors is common) or quietly produce different output. pnpm already knows how to resolve, download, and verify any Node version, and already records one in a lockfile as a `node@runtime:<version>` package with per-platform integrity — it just doesn't apply that in the one place where pnpm runs *someone else's* development workflow.
 
-The expected outcome of this RFC: preparing a git-hosted dependency uses the same package manager and runtime on every machine that shares the lockfile, those tools are integrity-verified downloads named by the lockfile, a frozen install performs no live resolution of executables, and a git dependency that pins its dev runtime builds with that runtime instead of failing on hosts that don't have it.
+The expected outcome of this RFC: preparing a git-hosted dependency uses the same package manager on every machine that shares the lockfile, and the same runtime when the dependency pins one with `onFail: download`; those tools are integrity-verified downloads named by the lockfile, a frozen install performs no live resolution of executables, and a git dependency that pins its dev runtime builds with that runtime instead of failing on hosts that don't have it. A dependency that pins no runtime still builds on the host's, as today; that runtime is not verified, but it is part of the build's cache key (section 4).
 
 ## Detailed Explanation
 
@@ -117,11 +117,13 @@ The group is on the snapshot because that is where edges live. It depends only o
 
 **Choosing a different tradeoff.** Some environments cannot provision: an air-gapped registry that doesn't mirror the package managers, or a sandbox that forbids downloading executables. A setting (drafted as `buildTools`) makes the tradeoff explicit:
 
-| Value | Package manager and runtime used for the build | Verified | Deterministic |
+| Value | Recorded tools used for the build | Recorded tools verified | Recorded tools deterministic |
 |---|---|---|---|
 | `locked` (default) | the recorded version, provisioned | yes | yes |
 | `host-exact` | the host's copy when it reports exactly the recorded version, otherwise the recorded version, provisioned | host copy: no | yes |
 | `host` | the host's copy when it satisfies the dependency's spec, otherwise the recorded version, provisioned | host copy: no | no |
+
+The table covers recorded tools only. A runtime the dependency doesn't pin with `onFail: download` is not recorded and comes from the host under every value, so such a build is a host build (section 4) even with `locked`.
 
 The setting changes only which executable runs, never what is recorded: the lockfile is the same whichever value wrote it, so a team can mix values across machines without lockfile churn.
 
@@ -160,7 +162,9 @@ That boundary is not enough when the prepare itself compiles a native addon. Tod
 - **A dependency that builds native code prepares on the project's runtime.** When the package directory contains a `binding.gyp` — the same check pnpm makes to decide on the implicit `node-gyp rebuild` — its `devEngines.runtime` is not used for the prepare, and pnpm prints a notice saying so. The prepare runs on the project's runtime: the project's pinned `devEngines.runtime` when it has one, otherwise the host's. Neither is recorded as a build dependency; a pinned project runtime is already recorded by the project's own entry.
 - **Other native builds get a warning, not a check.** Native code can be built without a `binding.gyp` (`cmake-js`, `node-pre-gyp` fallbacks, hand-written scripts), and a `.node` file does not reliably say which Node it targets: classic addons record their module version in registration data rather than in a uniform header, Node-API addons are compatible across Node versions by design, and a script may cross-compile or copy a prebuilt binary. So pnpm does not inspect them. When a prepare ran on a provisioned runtime that differs from the project's runtime and produced new `.node` files, pnpm warns that they may not load in the project, naming the dependency and both runtimes.
 
-The `binding.gyp` rule is a heuristic, not a guarantee. What bounds the exposure is section 3's recording rule: a runtime is provisioned for a prepare only when the dependency's author asked for it with `onFail: download`. A prepare that then compiles native code against that runtime does what its author declared, the same packaging choice as publishing a prebuilt binary for one Node version. Caching does not depend on any of this: every cache key carries the full identity of the runtime the build ran on (section 4), so an artifact built on one Node version is never reused by a project on another.
+  The warning cannot rely on the prepare running, because a cached build skips it: a project on Node 20 reuses an artifact that a Node 24 project built on the same recorded runtime, since the build was the same. So the store records with the built artifact that its prepare produced new `.node` files, and the identity of the runtime it ran on. Every install that uses the artifact, from the store, the side-effects cache, or a fresh prepare, compares that runtime with the project's and warns on a difference. A project consuming an artifact built elsewhere gets the same warning as the project that built it.
+
+The `binding.gyp` rule is a heuristic, not a guarantee. What bounds the exposure is section 3's recording rule: a runtime is provisioned for a prepare only when the dependency's author asked for it with `onFail: download`. A prepare that then compiles native code against that runtime does what its author declared, the same packaging choice as publishing a prebuilt binary for one Node version. Caching does not depend on any of this: every cache key carries the full identity of the runtime the build ran on (section 4), so an artifact is never reused for a *build* on another runtime. Projects that *consume* it may run on another runtime — the build was the same — and the native-output marker above is what tells them.
 
 ### 4. Store and cache keying
 
@@ -271,7 +275,7 @@ pnpm v12 only, per the version policy: the TypeScript v11 CLI receives no change
 - `crates/lockfile` and `crates/lockfile-verification` — a `tool:` prefix beside `runtime:` in lockfile keys (`PkgVerPeer`), the `buildDependencies` snapshot field, the minor `lockfileVersion` bump, and frozen-install validation that every build-requiring git snapshot carries the field and that every edge resolves.
 - `crates/deps-restorer` (`current_lockfile/reachability.rs`: `GroupSelection`, `collect_reachable`) and `crates/lockfile` (`filter_by_importers`) — group selection applies on snapshot edges, not only at importers: the install walks never follow `buildDependencies`, and wanted-lockfile pruning always does. Consumers that already receive a group-filtered lockfile — the install-time prefetch, the package map, the current lockfile — need no change of their own.
 - `crates/store-dir` — `git_hosted_store_index_key` covers how the package was built: every tool that ran, provisioned (lockfile key and integrity) or host (name, reported version, host marker), the runtime always included. The side-effects cache uploads verified builds only.
-- `crates/git-fetcher` — the `binding.gyp` rule that keeps native builds on the project's runtime, and the warning for new `.node` files after a prepare on a different provisioned runtime.
+- `crates/git-fetcher` and `crates/store-dir` — the `binding.gyp` rule that keeps native builds on the project's runtime; a native-output marker stored with the built artifact (new `.node` files, and the runtime the prepare ran on), carried through the side-effects cache; and the warning, checked on every install that uses the artifact, when that runtime differs from the project's.
 - `crates/config` / `crates/git-fetcher` — `runtimeOnFail` applies to builds only toward the host runtime, and never changes the record.
 - `crates/config` — the `lockBuildTools` and `buildTools` settings.
 - `crates/deps-inspection` — `pnpm list`/`pnpm why` show build dependencies only when asked for them.
