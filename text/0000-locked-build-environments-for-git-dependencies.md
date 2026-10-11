@@ -4,9 +4,12 @@
 
 When pnpm installs a git-hosted dependency that has to be built, it recreates the dependency's own development workflow: it installs the dependency's `devDependencies` with the package manager the dependency asks for (npm, Yarn, Bun, or pnpm itself) and runs its `prepare` scripts. Which version of that package manager runs is decided per machine — often from a floating spec sniffed from the dependency's lockfile — and the build always runs on whatever Node.js the host has. This RFC proposes to (1) resolve the build tools of a git-hosted dependency at install time like any other dependency and record them in the consuming project's lockfile as ordinary `packages`/`snapshots` entries, reached from the git-hosted package's snapshot through a new `buildDependencies` group that no install ever materializes — the way `pnpm install --prod` leaves `devDependencies` in the lockfile but out of `node_modules` — and make that record authoritative, provisioning exactly the recorded, integrity-verified tools on subsequent installs; and (2) provision the Node.js runtime a dependency pins via `devEngines.runtime`, the same way the package manager is already provisioned from `devEngines.packageManager` / `packageManager`.
 
-The lockfile change is additive. The breaking part is behavioral: a frozen install of a build-requiring git dependency with no record fails instead of resolving its tools live, so the change ships in a pnpm major.
+**Rollout.** The change ships in two stages (section 6):
 
-**Prerequisite: [the `tool:` protocol](https://github.com/pnpm/rfcs/pull/37).** Build tools are recorded with `tool:` keys (`node@tool:24.6.0`, `yarn@tool:4.9.2`), which name a tool independently of its role and of where a given version is distributed. Without that RFC, this one would write `yarn@runtime:` into committed lockfiles. Both are major changes and land in the same major, so lockfile keys change once. If the `tool:` protocol slips, this RFC can ship without support for tools that are not npm packages — Yarn 6 and Bun as package managers — failing to record them with a clear error that names `gitBuildTools: host` as the way out, and add them when `tool:` lands.
+- **pnpm v12: opt-in and experimental**, behind `lockGitBuildTools: true` in `pnpm-workspace.yaml`. A project that doesn't opt in behaves exactly as today. Tools are recorded with lockfile keys v12 already writes — npm package keys for package managers published to npm, `runtime:` keys for runtimes — so the lockfile change is additive.
+- **The next major: on by default**, with tools recorded under the `tool:` keys of [the `tool:` protocol](./0000-tool-protocol.md) (`node@tool:24.6.0`, `yarn@tool:4.9.2`), which that RFC schedules for the same major. The default is the breaking part: a frozen install of a build-requiring git dependency with no record fails instead of resolving its tools live.
+
+The examples below use the `tool:` keys of the default stage.
 
 ## Motivation
 
@@ -35,6 +38,8 @@ The prepare currently runs with the host's Node, unconditionally. If the depende
 The expected outcome of this RFC: preparing a git-hosted dependency uses the same package manager and runtime on every machine that shares the lockfile, those tools are integrity-verified downloads named by the lockfile, a frozen install performs no live resolution of executables, and a git dependency that pins its dev runtime builds with that runtime instead of failing on hosts that don't have it.
 
 ## Detailed Explanation
+
+Everything below describes pnpm with locking on — through `lockGitBuildTools: true` in pnpm v12, or by default from the next major (section 6).
 
 ### 1. A `buildDependencies` group on git-hosted snapshots
 
@@ -141,13 +146,43 @@ The store-index key of a built git-hosted dependency, today derived from the pac
 
 Everything in `buildDependencies` was demanded either by the dependency or by the lockfile, so failing to provide it fails the install with an actionable error, as a pinned package manager does today. Nothing falls back to the host silently; the error names `gitBuildTools` for environments that have to use the host's tools. Offline installs succeed whenever the recorded tools are already in the store — after `pnpm fetch`, for instance.
 
-### 6. Compatibility and migration
+### 6. Rollout and compatibility
 
-The lockfile change is additive: a new field on snapshots, plus `packages` and `snapshots` entries of shapes the lockfile already has. On its own it would need only a minor `lockfileVersion` bump; it ships together with the `tool:` protocol, whose key change carries a major one. The breaking part is behavioral, and provisioning git-dependency build tools is not marked experimental, so the change ships in a pnpm major:
+The lockfile change is additive: a new field on snapshots, plus `packages` and `snapshots` entries of shapes the lockfile already has. It needs a minor `lockfileVersion` bump. What would break existing projects is turning it on — a frozen install that used to resolve tools live now fails without a record — so it is opt-in until a major makes it the default.
 
-- **Frozen installs of an upgraded project fail until the lockfile is rewritten.** Every existing lockfile lacks the record, so a frozen install of a project with a build-requiring git dependency fails with the staleness error from section 2. Run `pnpm install` once and commit the result. Lockfiles without build-requiring git dependencies are unaffected.
-- **An older pnpm drops the record loudly, not silently.** An older pnpm ignores `buildDependencies` when reading and drops it when it rewrites the lockfile, then prunes the tool entries nothing else reaches. The deletion shows up in the lockfile diff, and the next frozen install with a current pnpm fails with the staleness error. Nothing is lost that a regular install doesn't restore.
-- **Hosts that used to prepare with their own package manager now download one.** This is the point of the RFC, and it goes in the release notes, together with `gitBuildTools` for environments that cannot download.
+#### Stage 1: pnpm v12, opt-in and experimental
+
+A project opts in with a setting in `pnpm-workspace.yaml`:
+
+```yaml
+lockGitBuildTools: true
+```
+
+The setting is project-level, not per machine, because everyone who shares the lockfile has to write the same record. It is marked experimental, so the shape of the record may change before the next major — it will, when keys move to `tool:`.
+
+- **On:** everything in this RFC applies. Build tools are recorded in `buildDependencies`, the recorded tools are provisioned and verified, `gitBuildTools` chooses the tradeoff, and a frozen install fails when a build-requiring git dependency has no record.
+- **Off:** today's behavior, unchanged. Nothing is recorded, and existing records are left alone but not enforced.
+
+Until `tool:` keys exist, the record uses keys pnpm v12 already writes:
+
+| Tool | Stage 1 key | Stage 2 key |
+|---|---|---|
+| npm, pnpm, Yarn 1 | the npm package: `yarn: 1.22.22` | `yarn: tool:1.22.22` |
+| Yarn 2–5 | an npm alias: `yarn: '@yarnpkg/cli-dist@4.9.2'` | `yarn: tool:4.9.2` |
+| Node.js, Deno, Bun (as runtime or package manager) | `node: runtime:24.6.0` | `node: tool:24.6.0` |
+| Yarn 6 | not recorded | `yarn: tool:6.0.0` |
+
+Yarn 6 ships only as release archives, so recording it in stage 1 would need `yarn@runtime:6.0.0` — the misnomer the `tool:` protocol exists to keep out of committed lockfiles. With the setting on, a git dependency that needs Yarn 6 fails to record with an error that names `gitBuildTools: host` as the way to build it unlocked. Yarn 6 is still in release candidates, so little is lost.
+
+An older v12 that rewrites the lockfile drops `buildDependencies` and prunes the tool entries nothing else reaches. The deletion shows up in the lockfile diff, and the next frozen install with a pnpm that has the setting on fails with the staleness error from section 2, so the loss is loud rather than silent.
+
+#### Stage 2: the next major, on by default
+
+- **The setting becomes the default** and is kept only as a way to opt out.
+- **Keys move to `tool:`** together with every other `runtime:` key, as the `tool:` protocol RFC specifies. A project that opted in during stage 1 has its records rewritten once, including the npm-alias entries for Yarn 1–5, which become `yarn@tool:<version>`.
+- **Yarn 6 is recorded.**
+- **Frozen installs of an upgraded project fail until the lockfile is rewritten**, when the project has a build-requiring git dependency and didn't opt in during stage 1. Run `pnpm install` once and commit the result.
+- **Hosts that used to prepare with their own package manager now download one.** This goes in the release notes, together with `gitBuildTools` for environments that cannot download.
 
 ### 7. Consolidation point
 
@@ -189,7 +224,7 @@ pnpm v12 only, per the version policy: the TypeScript v11 CLI receives no change
 - `crates/lockfile` and `crates/lockfile-verification` — the `buildDependencies` snapshot field, the minor `lockfileVersion` bump, and frozen-install validation that every build-requiring git snapshot carries the field and that every edge resolves.
 - `crates/deps-restorer` (`current_lockfile/reachability.rs`: `GroupSelection`, `collect_reachable`) and `crates/lockfile` (`filter_by_importers`) — group selection applies on snapshot edges, not only at importers: the install walks never follow `buildDependencies`, and wanted-lockfile pruning always does. Consumers that already receive a group-filtered lockfile — the install-time prefetch, the package map, the current lockfile — need no change of their own.
 - `crates/store-dir` — `git_hosted_store_index_key` covers the recorded build dependencies.
-- `crates/config` — the `gitBuildTools` setting.
+- `crates/config` — the `lockGitBuildTools` and `gitBuildTools` settings.
 - `crates/deps-inspection` — `pnpm list`/`pnpm why` show build dependencies only when asked for them.
 
 **Effects and risks:**
@@ -207,6 +242,6 @@ pnpm v12 only, per the version policy: the TypeScript v11 CLI receives no change
 
 ## Unresolved Questions and Bikeshedding
 
-- **Setting name.** `gitBuildTools` and its values (`locked`, `host-exact`, `host`).
+- **Setting names.** `lockGitBuildTools` for the opt-in; `gitBuildTools` and its values (`locked`, `host-exact`, `host`) for the host tradeoff.
 - **`engines.node` fallback provisioning.** Excluded from this iteration because it makes the record host-dependent. A later iteration could provision a deterministic choice (e.g. the newest LTS satisfying the range, resolved once and recorded on every host) if failing on incompatible hosts proves to be a real pain point.
 - **Bun/Deno runtimes.** `devEngines.runtime` can name `bun` or `deno`; the same mechanism applies through their resolvers, but whether the first iteration supports them or errors is open.
