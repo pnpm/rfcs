@@ -21,6 +21,8 @@ Every `*.yaml` file in `.pnpm/config/` is loaded. Nothing has to list it. The ru
 
 Together, these make "who may change this setting" a question about file paths. Agent harnesses, OS sandboxes and `CODEOWNERS` already answer questions about file paths.
 
+A config dependency can also ship fragments in a `pnpm-config/` directory, so an organisation can publish one policy for all its repositories that no repository can override. See [Fragments from config dependencies](#fragments-from-config-dependencies).
+
 Proposed in [pnpm/pnpm#16128](https://github.com/orgs/pnpm/discussions/16128).
 
 ## Motivation
@@ -166,6 +168,57 @@ Files are merged first, and then pnpmfile `updateConfig` hooks run and can rewri
 
 pnpm already treats the automatically loaded root pnpmfile as untrusted in one place: `self-update` skips it, because its `updateConfig` hook could rewrite the release-age policy. Claiming `pnpmfile` applies the same reasoning to every command.
 
+### Fragments from config dependencies
+
+An organisation usually wants one supply-chain policy across all its repositories, not a copy of `security.yaml` in each. Today the only way a package can contribute settings is a plugin's `updateConfig` hook. That is code, and it can change anything. This RFC lets a config dependency ship fragments instead. A fragment is data, and it follows the same one-file-per-setting rule as local fragments.
+
+```yaml
+# .pnpm/config/security.yaml
+configDependencies:
+  '@acme/pnpm-policy': 3.1.0
+pnpmfile: []
+```
+
+```text
+@acme/pnpm-policy/
+  package.json
+  pnpm-config/
+    security.yaml      # minimumReleaseAge, trustPolicy, overrides, ...
+    catalogs.yaml      # catalogs shared across the org
+```
+
+**Discovery.** Every `*.yaml` file directly inside a config dependency's `pnpm-config/` directory is a fragment. The `.pnpm/config/` discovery rules apply. A config dependency without that directory contributes nothing, so existing plugins are unaffected. Package fragments from different config dependencies are read in the lexicographic order of the dependency names.
+
+**Merging.** Package fragments join the merge alongside `pnpm-workspace.yaml` and the local fragments, under the same duplicate rule. If `@acme/pnpm-policy` defines `minimumReleaseAge`, defining it in any repository file is an error, and so is defining it in another config dependency. Named catalogs merge as usual, so an org-wide catalog and a repository-local catalog can sit side by side under different names. A `null` claim means the built-in default, as it does locally.
+
+**What a package fragment may not define:**
+
+- `configDependencies` and `pnpmfile`, which decide what code runs during config loading. Config dependencies are installed once, from the repository's own declaration. They do not pull in further config dependencies.
+- `packages` and settings whose values are paths (`patchedDependencies`, `storeDir`, `virtualStoreDir`, and the like). These describe a particular repository, and a path inside a package has no meaning relative to the workspace root.
+
+A package fragment that defines any of these fails config loading, naming the package and the setting.
+
+**Timing.** Config dependencies are installed after the repository's files are read, because the list of config dependencies comes from those files. Package fragments are merged as a second step: after config dependencies are installed and before any pnpmfile is loaded, so `updateConfig` hooks see the merged result. The duplicate check runs again over the full set of files.
+
+**Failing closed.** A policy that silently fails to load is worse than none. Commands that install or resolve dependencies already fail when a config dependency cannot be installed. Only `pnpm config` commands tolerate that today, so that auth can be set up before the first install. They keep tolerating it, and `pnpm config list` and `pnpm config get` mark their output as incomplete when a config dependency was not installed.
+
+**Writes.** pnpm never writes into a config dependency. A command that needs to change a setting owned by a package fragment fails with a pointer to the owner:
+
+```text
+ERR_PNPM_SETTING_OWNED_BY_CONFIG_DEPENDENCY  "allowBuilds" is defined by @acme/pnpm-policy@3.1.0 (pnpm-config/security.yaml).
+Change it in that package and update the config dependency.
+```
+
+So a package fragment should own only the settings meant to be changed centrally. A setting that each repository should manage, such as `allowBuilds` in most organisations, belongs in the repository's own files.
+
+**Changing the policy.** A policy change is a new version of the package. It reaches a repository as an edit to `configDependencies` in the protected local fragment, and that edit goes through the same review as any other policy change. The resolution recorded in `pnpm-lock.yaml` is checked against that declaration and the registry, as described above.
+
+`pnpm config get minimumReleaseAge --verbose` shows the package source:
+
+```text
+1440  (@acme/pnpm-policy@3.1.0: pnpm-config/security.yaml)
+```
+
 ### Writes
 
 pnpm commands that write project settings send each change to the file that currently defines the setting:
@@ -249,6 +302,7 @@ pnpm could have a setting that marks keys as read-only, or require a flag to cha
 - **`workspace/workspace-manifest-writer`:** `updateWorkspaceManifest` currently writes to one file. It becomes source-aware: it groups the updated fields by owning file, patches each file with the existing `patchDocument` path, and keeps emptied maps. Its callers (`approveBuilds`, `updatePatchedDependencies`, the audit fix/ignore commands, `policyHandlers`, `handleIgnoredBuilds`, `configSet`, the catalog writers in `add`/`update`) pass changes through unchanged and need no per-command logic.
 - **`config/writer` and `config/commands`:** route `--location project` writes the same way; add the source to `config get`/`list`.
 - Add the fragment paths to the inputs of the workspace state and optimistic-repeat-install checks.
+- **`pnpm/src/getConfig.ts`** (`installConfigDepsAndLoadHooks`): after `installConfigDeps` and before `loadPnpmfileHooks`, read `pnpm-config/*.yaml` from each installed config dependency in `node_modules/.pnpm-config`, reject the settings package fragments may not define, re-run the merge with the duplicate rule, and apply the result. Writers refuse to change a setting owned by a package fragment.
 
 ### Rust CLI (`pnpm/crates/`)
 
@@ -257,8 +311,9 @@ Parity is required: if one CLI ignores fragments, a protected setting is not app
 - **`config`** (`loading.rs`, `layout.rs`): the same discovery, merge and duplicate rule. A claim with `null` must use pnpm's built-in default, not a value from the global `config.yaml`.
 - **`workspace-manifest-writer`:** the same source-aware writes.
 - **`workspace-state`:** the same cache inputs.
+- **`env-installer` / config loading:** the same second merge pass over package fragments after config dependencies are installed.
 
-Shared fixtures in both test suites cover: a duplicate across files; the `catalogs` merge and a duplicate catalog name; a write routed to a fragment; an emptied map that stays in its file; a `*.yml` error; and `.pnpm/config/` present without `pnpm-workspace.yaml`.
+Shared fixtures in both test suites cover: a duplicate across files; the `catalogs` merge and a duplicate catalog name; a write routed to a fragment; an emptied map that stays in its file; a `*.yml` error; `.pnpm/config/` present without `pnpm-workspace.yaml`; a package fragment that conflicts with a local fragment; a package fragment that defines a forbidden setting; and a write refused because a package fragment owns the setting.
 
 ### Docs
 
@@ -279,6 +334,8 @@ None of these treats a duplicate definition as an error. They are configuration 
 
 - **Directory name.** `.pnpm/config/` matches the larger layout sketched in the discussion. Alternatives: `pnpm-workspace.d/` (the `conf.d` convention, next to the file it extends) or `pnpm-workspace.*.yaml` siblings (no new directory; a glob rule that harnesses already support). Siblings are the easiest to find, but they mix fragments into the repo root.
 - **Is `null` already meaningful for any setting?** Before ratification, audit the settings in both CLIs for any where `null` is documented or relied on, for example as a way to turn something off. Each one either moves to an explicit value or is listed as an exception.
+- **How a config dependency declares its fragments.** A `pnpm-config/` directory is proposed. Alternatives are a `package.json` field listing the files, or a name convention like the one for plugins (`pnpm-config-*`). A directory needs no extra metadata. A field makes the contribution visible in the package's manifest.
+- **Path-valued settings from packages.** Sharing `patchedDependencies` across an org would be useful, but it needs a rule for resolving paths inside the package. Forbidden for now.
 - **Should any map other than `catalogs` merge?** Candidates are `packageExtensions` and `publishConfig`-style maps that carry no policy. Merging only `catalogs` is the conservative start.
 - **Should pnpm warn about unclaimed neighbours?** For example, a fragment defines `minimumReleaseAge` but not `minimumReleaseAgeExclude`. It would be helpful, but it means maintaining a list of related settings.
 - **Local overrides.** Is "a local fragment cannot override a committed value" too strict for settings such as `storeDir`, or is the global `config.yaml` enough?
