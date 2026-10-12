@@ -214,7 +214,7 @@ So a package fragment should own only the settings meant to be changed centrally
 
 **Settings for the boot phase: `bootConfig`.** Config dependencies are resolved and verified before their fragments are loaded, so a package fragment's settings cannot apply to installing that package. Today this phase uses `minimumReleaseAge` and `minimumReleaseAgeExclude` (`createConfigDepResolvers`). This stops working once a policy package owns `minimumReleaseAge`. The value the package ships is not loaded yet when the package is resolved, and the repository cannot define the key without a duplicate error. Config dependencies would be stuck on the built-in default, and an org could not get a new policy version into a repository on the day it is published.
 
-The same question comes up for the other thing pnpm installs before running a command: the pnpm version requested by `packageManager`. Both are recorded in the env lockfile (the first document of `pnpm-lock.yaml`, with its `configDependencies` and `packageManagerDependencies`). Both are resolved under the same release-age settings (`createConfigDepResolvers`, `self-updater/resolvePnpmVersion.ts`). This RFC calls that phase **boot** and gives it its own block of settings:
+The same question comes up for the other thing pnpm installs before running a command: the pnpm version requested by `packageManager`. Both are recorded in the first document of `pnpm-lock.yaml`, under `configDependencies` and `packageManagerDependencies`. The docs currently call it the env document. Both are resolved under the same release-age settings (`createConfigDepResolvers`, `self-updater/resolvePnpmVersion.ts`). This RFC calls that phase **boot**, renames the env document to the **boot document** to match, and gives the phase its own block of settings:
 
 ```yaml
 # .pnpm/config/security.yaml
@@ -224,7 +224,7 @@ bootConfig:
   minimumReleaseAge: 0
 ```
 
-- **Scope.** `bootConfig` applies to resolving and verifying everything in the env lockfile: config dependencies and the package-manager dependency. Regular dependencies never read it.
+- **Scope.** `bootConfig` applies to resolving and verifying everything in the boot document: config dependencies and the package-manager dependency. Regular dependencies never read it.
 - **Allowed keys.** Only settings that govern how these packages are resolved: `minimumReleaseAge`, `minimumReleaseAgeExclude`, `minimumReleaseAgeStrict` and `minimumReleaseAgeIgnoreMissingTime`, and `trustPolicy` and its related settings if they are ever applied to this phase. Any other key is an error. In particular, registries are not accepted. The package-manager bootstrap takes registries only from non-project `.npmrc` files, and the error says so.
 - **Fallback, per key.** pnpm uses the value in `bootConfig` if it is set. Otherwise it uses the top-level setting of the same name, if the repository's own files define it, and otherwise the built-in default. This keeps today's behavior for repositories without policy packages: a repository with `minimumReleaseAge: 10080` keeps that cutoff for its config dependencies and its pnpm version. A top-level value that comes from a package fragment never applies to this phase. `bootConfig: ~` claims the block, with every key falling back.
 - **Repository files only.** A package fragment may not define `bootConfig`, since that would let a package set the policy for its own installation.
@@ -275,7 +275,7 @@ A gitignored fragment, for example `.pnpm/config/local.yaml`, is loaded like any
 ### Interaction with the rest of pnpm
 
 - **Lockfile:** the settings recorded in `pnpm-lock.yaml` (overrides, `packageExtensionsChecksum`, catalogs, and so on) are computed from the merged result. Moving a setting between files without changing it does not change the lockfile.
-- **Cache keys and up-to-date checks:** anything that keys on the contents or modification time of `pnpm-workspace.yaml` (workspace state, `optimisticRepeatInstall`, the config-dependency env lockfile check) must also key on the fragments. Adding or removing a fragment counts as a change.
+- **Cache keys and up-to-date checks:** anything that keys on the contents or modification time of `pnpm-workspace.yaml` (workspace state, `optimisticRepeatInstall`, the boot document check for config dependencies) must also key on the fragments. Adding or removing a fragment counts as a change.
 - **`pnpm-workspace.yaml` stays required.** It is still the root marker that every tool in the ecosystem looks for. A workspace with everything in fragments has an empty or near-empty `pnpm-workspace.yaml`, which is allowed.
 
 ## Rationale and Alternatives
@@ -341,6 +341,9 @@ Shared fixtures in both test suites cover: a duplicate across files; the `catalo
 
 - A page on splitting settings, including the recommended `security.yaml` and the threat model above stated plainly.
 - Example rules for `CODEOWNERS` and for at least one agent sandbox.
+- Rename the env lockfile / env document to the **boot document** in `lockfile.md`, `config-dependencies.md` and anywhere else it appears. Keep the old anchors, so existing links to "env document" still resolve. The lockfile format does not change, since the first document has no `env` key.
+
+The code still uses the old name (`EnvLockfile`, `readEnvLockfile` and `env_lockfile` in both CLIs, and the published `@pnpm/installing.env-installer` package). Renaming it is a mechanical follow-up and is not required to ratify this RFC. New user-facing messages use "boot document" from the start.
 
 ## Prior Art
 
@@ -359,7 +362,7 @@ None of these treats a duplicate definition as an error. They are configuration 
 - **How a config dependency declares its fragments.** A `pnpm-config/` directory is proposed. Alternatives are a `package.json` field listing the files, or a name convention like the one for plugins (`pnpm-config-*`). A directory needs no extra metadata. A field makes the contribution visible in the package's manifest.
 - **Name of `bootConfig`.** "Boot" means loading what is needed before the main run, and pnpm's code already calls the pnpm download the package-manager bootstrap. Alternatives considered:
   - `preflightConfig`: has no existing meaning in pnpm, but suggests checks more than installs.
-  - `envConfig`: matches the internal name "env lockfile", but users read "env" as environment variables.
+  - `envConfig`: matches the "env document" term already in the docs and needs no rename. It was rejected because in many tools "env config" means settings for a deployment environment (development, staging, production). `envConfig: { minimumReleaseAge: 0 }` reads as the value for some environment, and that misreading is likely here, since this RFC is partly about settings that differ between local and deployed environments. "Env" is also read as environment variables.
   - `bootstrapConfig`: inside pnpm, "bootstrap" already means the trusted package-manager download specifically, and `lerna bootstrap` means installing a monorepo's dependencies.
   - A suffixed setting such as `minimumReleaseAgeForConfigDeps`: needs one more top-level setting for each setting this phase overrides.
 
