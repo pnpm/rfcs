@@ -139,7 +139,7 @@ allowBuilds:
   esbuild: true
 overrides: ~
 configDependencies: ~
-pnpmfile: ~
+pnpmfile: []                  # not ~: the default auto-loads .pnpmfile.mjs
 ```
 
 With this file in place, adding `minimumReleaseAgeExclude` or `overrides` to `pnpm-workspace.yaml` fails the install. It does not quietly weaken the policy.
@@ -155,7 +155,16 @@ This defines what `null` means for every top-level setting in `pnpm-workspace.ya
 
 When pnpm writes to a setting claimed with `null` (for example, `pnpm approve-builds` with `allowBuilds: ~`), it replaces the `null` in the same file.
 
-The docs will include a recommended `security.yaml` that claims the full set of supply-chain settings. It must include the settings that decide **which code runs while pnpm loads its config**: `configDependencies` and `pnpmfile`. A pnpmfile's `updateConfig` hook can rewrite any setting after files are merged. So the pnpmfile (and any config dependency that provides one) has to be protected by path just like the fragment. Otherwise it bypasses everything above.
+The docs will include a recommended `security.yaml` that claims the full set of supply-chain settings.
+
+### Code that runs while config loads
+
+Files are merged first, and then pnpmfile `updateConfig` hooks run and can rewrite any setting. A policy in a fragment therefore holds only if no untrusted code gets a chance to run after the merge. Two settings decide which code that is, and the protected file must claim both:
+
+- **`configDependencies`:** a config dependency named `pnpm-plugin-*` (or `@pnpm/plugin-*`, `@scope/pnpm-plugin-*`) has its `pnpmfile` loaded automatically. If the protected file claims `configDependencies`, the editable file cannot add a plugin. Its resolutions live in `pnpm-lock.yaml`, which the agent can edit, but pnpm already checks config-dependency lockfile entries against their declarations and the registry (`createConfigDepsVerifier`). An edited lockfile cannot swap the package behind a protected declaration.
+- **`pnpmfile`:** when this setting is unset, pnpm loads `.pnpmfile.mjs` (or `.pnpmfile.cjs`) from the root if the file exists. Claiming it with `null` keeps that default, so an agent that creates `.pnpmfile.mjs` gets its hooks loaded. A workspace without a pnpmfile claims it with `pnpmfile: []`, which turns off the automatic loading. A workspace with a pnpmfile names it explicitly and protects its path along with the fragment.
+
+pnpm already treats the automatically loaded root pnpmfile as untrusted in one place: `self-update` skips it, because its `updateConfig` hook could rewrite the release-age policy. Claiming `pnpmfile` applies the same reasoning to every command.
 
 ### Writes
 
