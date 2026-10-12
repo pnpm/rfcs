@@ -125,24 +125,37 @@ Because no key can be defined twice, the result does not depend on file order. O
 
 ### Claiming a setting
 
-A file claims a setting by defining it, even if the value it gives is the default. This is how a protected file stops the editable file from defining a related key:
+A file claims a setting by defining it. This is how a protected file stops the editable file from defining a related key.
+
+To claim a setting without choosing its value, the file sets it to `null`. **A top-level `null` means "defined in this file, with pnpm's built-in default"**:
 
 ```yaml
 # .pnpm/config/security.yaml
-minimumReleaseAge: 1440
-minimumReleaseAgeExclude: []
-trustPolicy: no-downgrade
-trustPolicyExclude: []
+minimumReleaseAge: ~          # owned here, follows pnpm's default
+minimumReleaseAgeExclude: ~
+trustPolicy: no-downgrade     # owned here, with an explicit value
+trustPolicyExclude: ~
 allowBuilds:
   esbuild: true
-overrides: {}
-configDependencies: {}
-pnpmfile: .pnpmfile.mjs
+overrides: ~
+configDependencies: ~
+pnpmfile: ~
 ```
 
 With this file in place, adding `minimumReleaseAgeExclude` or `overrides` to `pnpm-workspace.yaml` fails the install. It does not quietly weaken the policy.
 
-The docs will include a recommended `security.yaml` that claims the full set of supply-chain settings. It must include the settings that decide **which code runs while pnpm loads its config**: `configDependencies` and `pnpmfile`. A pnpmfile's `updateConfig` hook can rewrite any setting after files are merged. So the pnpmfile (and any config dependency that provides one) has to be protected by path just like the fragment. Otherwise it bypasses everything above. An empty `{}` claim for `configDependencies` has no effect on installs.
+Why `null` rather than writing the default out:
+
+- **Writing the default out pins it.** `minimumReleaseAge: 1440` keeps a workspace at today's default. If a later pnpm raises the default, the workspaces that protected their policy would be the ones left behind.
+- **The built-in default, not the next layer.** `null` skips the global `config.yaml`. That file lives in the user's home directory, outside the repository, and an agent can often write to it. If a claimed setting fell through to it, an agent could undo the policy without touching the repository.
+- **No string can serve as the marker.** Settings such as `storeDir`, `cacheDir` and `pnpmfile` accept any string, so `storeDir: default` already means a directory named `default`. A `null` cannot collide with a real value.
+- **A forgotten value is safe.** `minimumReleaseAge:` with nothing after it is also `null`. It means owned here, with the default.
+
+This defines what `null` means for every top-level setting in `pnpm-workspace.yaml` as well, not only in fragments. It is a behavior change for the TypeScript CLI. Today it copies a top-level `null` straight onto the config, so `minimumReleaseAge: ~` appears to turn the release-age check off instead of keeping the default. The Rust CLI already reads `null` as unset. The new rule makes both CLIs keep the default.
+
+When pnpm writes to a setting claimed with `null` (for example, `pnpm approve-builds` with `allowBuilds: ~`), it replaces the `null` in the same file.
+
+The docs will include a recommended `security.yaml` that claims the full set of supply-chain settings. It must include the settings that decide **which code runs while pnpm loads its config**: `configDependencies` and `pnpmfile`. A pnpmfile's `updateConfig` hook can rewrite any setting after files are merged. So the pnpmfile (and any config dependency that provides one) has to be protected by path just like the fragment. Otherwise it bypasses everything above.
 
 ### Writes
 
@@ -205,6 +218,14 @@ The discussion also sketches `.pnpm/` as a home for all of pnpm's project files:
 
 The discussion considers a hook that assembles `pnpm-workspace.yaml` from several files. The generated file would need to be protected (otherwise editing it directly bypasses the parts), pnpm's own writes would go to the generated file, and the parts and the output could drift apart. This is the same feature with more ways to go wrong.
 
+### Other ways to claim a setting without a value
+
+- **A string marker** (`minimumReleaseAge: default` or `inherit`): this conflicts with settings that accept any string. `storeDir: default` is a valid directory today.
+- **A YAML tag** (`minimumReleaseAge: !default`): this cannot collide with a real value, but generic YAML readers reject unknown tags (js-yaml throws). Tools that read pnpm config, such as Renovate reading catalogs, would fail on any file that uses one. Both CLIs' YAML writers would also need to keep the tag intact when they rewrite the file.
+- **A reserved key** (`claim: [minimumReleaseAge, trustPolicy]`): this works with any YAML reader. But it separates the claim from the setting, which makes the protected file harder to review, and it reserves a name that no future setting can use.
+
+`null` has none of these costs. Its one cost is the behavior change described in [Claiming a setting](#claiming-a-setting).
+
 ### Per-key permissions inside pnpm
 
 pnpm could have a setting that marks keys as read-only, or require a flag to change them. That setting would live in a file the agent can edit, and the flag can be passed by the agent. Enforcement has to happen outside the process being restricted. pnpm's job is to make the policy something that can be restricted from outside.
@@ -215,7 +236,7 @@ pnpm could have a setting that marks keys as read-only, or require a flag to cha
 
 - **`workspace/workspace-manifest-reader`:** add a reader that returns the merged manifest together with a key → source file map. It enforces the duplicate rule and the `catalogs` exception, and validates each fragment with `validateWorkspaceManifest`.
 - **`workspace/root-finder`:** treat `.pnpm/config/` without `pnpm-workspace.yaml` as an error at that directory.
-- **`config/reader`** (`getConfig/localSettings.ts`, `getConfig/workspaceManifestSettings.ts`): consume the merged manifest; keep the source map on the config for `pnpm config` output and for writers.
+- **`config/reader`** (`getConfig/localSettings.ts`, `getConfig/workspaceManifestSettings.ts`): consume the merged manifest; keep the source map on the config for `pnpm config` output and for writers. In `addSettingsFromWorkspaceManifestToConfig`, a top-level `null` resets the setting to its value from `defaultOptions`. It is not assigned as-is, and it is not skipped either, since skipping would leave a value from the global `config.yaml` in place.
 - **`workspace/workspace-manifest-writer`:** `updateWorkspaceManifest` currently writes to one file. It becomes source-aware: it groups the updated fields by owning file, patches each file with the existing `patchDocument` path, and keeps emptied maps. Its callers (`approveBuilds`, `updatePatchedDependencies`, the audit fix/ignore commands, `policyHandlers`, `handleIgnoredBuilds`, `configSet`, the catalog writers in `add`/`update`) pass changes through unchanged and need no per-command logic.
 - **`config/writer` and `config/commands`:** route `--location project` writes the same way; add the source to `config get`/`list`.
 - Add the fragment paths to the inputs of the workspace state and optimistic-repeat-install checks.
@@ -224,7 +245,7 @@ pnpm could have a setting that marks keys as read-only, or require a flag to cha
 
 Parity is required: if one CLI ignores fragments, a protected setting is not applied when that CLI is used.
 
-- **`config`** (`loading.rs`, `layout.rs`): the same discovery, merge and duplicate rule.
+- **`config`** (`loading.rs`, `layout.rs`): the same discovery, merge and duplicate rule. A claim with `null` must use pnpm's built-in default, not a value from the global `config.yaml`.
 - **`workspace-manifest-writer`:** the same source-aware writes.
 - **`workspace-state`:** the same cache inputs.
 
@@ -248,6 +269,7 @@ None of these treats a duplicate definition as an error. They are configuration 
 ## Unresolved Questions and Bikeshedding
 
 - **Directory name.** `.pnpm/config/` matches the larger layout sketched in the discussion. Alternatives: `pnpm-workspace.d/` (the `conf.d` convention, next to the file it extends) or `pnpm-workspace.*.yaml` siblings (no new directory; a glob rule that harnesses already support). Siblings are the easiest to find, but they mix fragments into the repo root.
+- **Is `null` already meaningful for any setting?** Before ratification, audit the settings in both CLIs for any where `null` is documented or relied on, for example as a way to turn something off. Each one either moves to an explicit value or is listed as an exception.
 - **Should any map other than `catalogs` merge?** Candidates are `packageExtensions` and `publishConfig`-style maps that carry no policy. Merging only `catalogs` is the conservative start.
 - **Should pnpm warn about unclaimed neighbours?** For example, a fragment defines `minimumReleaseAge` but not `minimumReleaseAgeExclude`. It would be helpful, but it means maintaining a list of related settings.
 - **Local overrides.** Is "a local fragment cannot override a committed value" too strict for settings such as `storeDir`, or is the global `config.yaml` enough?
