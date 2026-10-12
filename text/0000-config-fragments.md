@@ -194,6 +194,7 @@ pnpmfile: []
 **What a package fragment may not define:**
 
 - `configDependencies` and `pnpmfile`, which decide what code runs during config loading. Config dependencies are installed once, from the repository's own declaration. They do not pull in further config dependencies.
+- `minimumReleaseAgeConfigDep`, which governs installing the package itself (see below).
 - `packages` and settings whose values are paths (`patchedDependencies`, `storeDir`, `virtualStoreDir`, and the like). These describe a particular repository, and a path inside a package has no meaning relative to the workspace root.
 
 A package fragment that defines any of these fails config loading, naming the package and the setting.
@@ -210,6 +211,23 @@ Change it in that package and update the config dependency.
 ```
 
 So a package fragment should own only the settings meant to be changed centrally. A setting that each repository should manage, such as `allowBuilds` in most organisations, belongs in the repository's own files.
+
+**Resolving the config dependencies themselves.** Config dependencies are resolved and verified before their fragments are loaded, so a package fragment's settings cannot apply to installing that package. That phase reads settings only from the repository's own files. Today it uses `minimumReleaseAge` and `minimumReleaseAgeExclude` (`createConfigDepResolvers`). This stops working once a policy package owns `minimumReleaseAge`. The value the package ships is not loaded yet when the package is resolved, and the repository cannot define the key without a duplicate error. Config dependencies would be stuck on the built-in default, and an org could not get a new policy version into a repository on the day it is published.
+
+A dedicated setting gives this phase its own key:
+
+```yaml
+# .pnpm/config/security.yaml
+configDependencies:
+  '@acme/pnpm-policy': 3.1.1
+minimumReleaseAgeConfigDep: 0
+```
+
+- `minimumReleaseAgeConfigDep` applies only to resolving and verifying config dependencies. Regular dependencies never read it, and the config-dependency phase never reads `minimumReleaseAge`.
+- When it is unset or claimed with `null`, the phase uses the built-in default of `minimumReleaseAge`. It does not use the value of `minimumReleaseAge` from any file. Two settings that depend on each other across files would bring back the order dependence the duplicate rule removes.
+- It is read only from the repository's own files. A package fragment may not define it, since that would let a package set the policy for its own installation.
+- It belongs in the protected file next to `configDependencies`. Each config dependency is a reviewed, exact entry in that file, so a shorter delay here costs less than a shorter delay for the whole dependency graph.
+- `minimumReleaseAgeExclude` keeps applying to the config-dependency phase. If a package fragment owns the exclude list, the phase sees an empty list.
 
 **Changing the policy.** A policy change is a new version of the package. It reaches a repository as an edit to `configDependencies` in the protected local fragment, and that edit goes through the same review as any other policy change. The resolution recorded in `pnpm-lock.yaml` is checked against that declaration and the registry, as described above.
 
@@ -303,6 +321,7 @@ pnpm could have a setting that marks keys as read-only, or require a flag to cha
 - **`config/writer` and `config/commands`:** route `--location project` writes the same way; add the source to `config get`/`list`.
 - Add the fragment paths to the inputs of the workspace state and optimistic-repeat-install checks.
 - **`pnpm/src/getConfig.ts`** (`installConfigDepsAndLoadHooks`): after `installConfigDeps` and before `loadPnpmfileHooks`, read `pnpm-config/*.yaml` from each installed config dependency in `node_modules/.pnpm-config`, reject the settings package fragments may not define, re-run the merge with the duplicate rule, and apply the result. Writers refuse to change a setting owned by a package fragment.
+- **`installing/env-installer`** (`createConfigDepResolvers`, `createConfigDepsVerifier`): take the cutoff from `minimumReleaseAgeConfigDep`, falling back to the built-in default, instead of from `minimumReleaseAge`. The resolver and the verifier must keep using the same cutoff.
 
 ### Rust CLI (`pnpm/crates/`)
 
@@ -311,7 +330,7 @@ Parity is required: if one CLI ignores fragments, a protected setting is not app
 - **`config`** (`loading.rs`, `layout.rs`): the same discovery, merge and duplicate rule. A claim with `null` must use pnpm's built-in default, not a value from the global `config.yaml`.
 - **`workspace-manifest-writer`:** the same source-aware writes.
 - **`workspace-state`:** the same cache inputs.
-- **`env-installer` / config loading:** the same second merge pass over package fragments after config dependencies are installed.
+- **`env-installer` / config loading:** the same second merge pass over package fragments after config dependencies are installed, and `minimumReleaseAgeConfigDep` for the config-dependency phase.
 
 Shared fixtures in both test suites cover: a duplicate across files; the `catalogs` merge and a duplicate catalog name; a write routed to a fragment; an emptied map that stays in its file; a `*.yml` error; `.pnpm/config/` present without `pnpm-workspace.yaml`; a package fragment that conflicts with a local fragment; a package fragment that defines a forbidden setting; and a write refused because a package fragment owns the setting.
 
@@ -335,6 +354,7 @@ None of these treats a duplicate definition as an error. They are configuration 
 - **Directory name.** `.pnpm/config/` matches the larger layout sketched in the discussion. Alternatives: `pnpm-workspace.d/` (the `conf.d` convention, next to the file it extends) or `pnpm-workspace.*.yaml` siblings (no new directory; a glob rule that harnesses already support). Siblings are the easiest to find, but they mix fragments into the repo root.
 - **Is `null` already meaningful for any setting?** Before ratification, audit the settings in both CLIs for any where `null` is documented or relied on, for example as a way to turn something off. Each one either moves to an explicit value or is listed as an exception.
 - **How a config dependency declares its fragments.** A `pnpm-config/` directory is proposed. Alternatives are a `package.json` field listing the files, or a name convention like the one for plugins (`pnpm-config-*`). A directory needs no extra metadata. A field makes the contribution visible in the package's manifest.
+- **Name of `minimumReleaseAgeConfigDep`.** Alternatives include `configDependencyMinimumReleaseAge` and `minimumReleaseAgeForConfigDependencies`. Keeping the `minimumReleaseAge` prefix groups it with `minimumReleaseAgeExclude` and `minimumReleaseAgeStrict`. A related question is whether `trustPolicy` needs the same split, if it is ever applied to config dependencies.
 - **Path-valued settings from packages.** Sharing `patchedDependencies` across an org would be useful, but it needs a rule for resolving paths inside the package. Forbidden for now.
 - **Should any map other than `catalogs` merge?** Candidates are `packageExtensions` and `publishConfig`-style maps that carry no policy. Merging only `catalogs` is the conservative start.
 - **Should pnpm warn about unclaimed neighbours?** For example, a fragment defines `minimumReleaseAge` but not `minimumReleaseAgeExclude`. It would be helpful, but it means maintaining a list of related settings.
