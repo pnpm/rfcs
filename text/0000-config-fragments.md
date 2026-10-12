@@ -223,8 +223,8 @@ configDependencies:
 minimumReleaseAgeConfigDep: 0
 ```
 
-- `minimumReleaseAgeConfigDep` applies only to resolving and verifying config dependencies. Regular dependencies never read it, and the config-dependency phase never reads `minimumReleaseAge`.
-- When it is unset or claimed with `null`, the phase uses the built-in default of `minimumReleaseAge`. It does not use the value of `minimumReleaseAge` from any file. Two settings that depend on each other across files would bring back the order dependence the duplicate rule removes.
+- `minimumReleaseAgeConfigDep` applies only to resolving and verifying config dependencies. Regular dependencies never read it.
+- When it is unset or claimed with `null`, the phase uses `minimumReleaseAge` if the repository's own files define it, and the built-in default otherwise. This keeps today's behavior for repositories without policy packages: a repository with `minimumReleaseAge: 10080` keeps that cutoff for its config dependencies. A value of `minimumReleaseAge` that comes from a package fragment never applies to this phase.
 - It is read only from the repository's own files. A package fragment may not define it, since that would let a package set the policy for its own installation.
 - It belongs in the protected file next to `configDependencies`. Each config dependency is a reviewed, exact entry in that file, so a shorter delay here costs less than a shorter delay for the whole dependency graph.
 - `minimumReleaseAgeExclude` keeps applying to the config-dependency phase. If a package fragment owns the exclude list, the phase sees an empty list.
@@ -321,7 +321,7 @@ pnpm could have a setting that marks keys as read-only, or require a flag to cha
 - **`config/writer` and `config/commands`:** route `--location project` writes the same way; add the source to `config get`/`list`.
 - Add the fragment paths to the inputs of the workspace state and optimistic-repeat-install checks.
 - **`pnpm/src/getConfig.ts`** (`installConfigDepsAndLoadHooks`): after `installConfigDeps` and before `loadPnpmfileHooks`, read `pnpm-config/*.yaml` from each installed config dependency in `node_modules/.pnpm-config`, reject the settings package fragments may not define, re-run the merge with the duplicate rule, and apply the result. Writers refuse to change a setting owned by a package fragment.
-- **`installing/env-installer`** (`createConfigDepResolvers`, `createConfigDepsVerifier`): take the cutoff from `minimumReleaseAgeConfigDep`, falling back to the built-in default, instead of from `minimumReleaseAge`. The resolver and the verifier must keep using the same cutoff.
+- **`installing/env-installer`** (`createConfigDepResolvers`, `createConfigDepsVerifier`): take the cutoff from `minimumReleaseAgeConfigDep`. If that is unset, fall back to `minimumReleaseAge` from the repository's files, then to the built-in default. The resolver and the verifier must keep using the same cutoff.
 
 ### Rust CLI (`pnpm/crates/`)
 
