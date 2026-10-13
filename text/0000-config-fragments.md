@@ -108,7 +108,7 @@ Each setting can be defined in one file only.
 
 Aliases count as the same key. For example, `catalog` and `catalogs.default` are already treated as the same thing, and a legacy spelling counts the same as its current one.
 
-**There is one exception: `catalogs`.** Named catalogs merge across files, and the duplicate rule applies one level down: a catalog name may be defined in only one file. This is the use case behind #12606:
+**There is one exception: `catalogs`.** Named catalogs merge across files, and the duplicate rule applies one level down: a catalog name may be defined in only one file. This is the use case behind [#12606](https://github.com/pnpm/pnpm/issues/12606):
 
 ```yaml
 # pnpm-workspace.yaml
