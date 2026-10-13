@@ -69,6 +69,8 @@ It is worth being exact about what this does and does not protect, because a fea
 
 **Out of scope:** command-line flags and `pnpm_config_*` environment variables. An agent that runs `pnpm install --minimum-release-age=0` gets an install with that setting. That changes nothing in the repository, and CI does not use those flags. This RFC is about committed configuration.
 
+Global `config.yaml` keeps its current precedence and is outside this repository boundary too. A placeholder claims a setting's project file without fixing its effective value. A team that needs a fixed policy supplies an explicit value in the protected file; a placeholder may still inherit a value from global configuration.
+
 These are the design constraints that follow:
 
 - **The editable file must not control the protected files.** If `pnpm-workspace.yaml` listed its fragments in an `include:` field, removing one line would drop the whole security policy. Fragments are found by location, not by reference.
@@ -152,11 +154,11 @@ Because no key can be defined twice, the result does not depend on file order. O
 
 A file claims a setting by defining it. This is how a protected file stops the editable file from defining a related key.
 
-To claim a setting without choosing its value, the file sets it to `null`. **A top-level `null` means "defined in this file, with pnpm's built-in default"**:
+For a setting that treats `null` as unset, a file can claim it without choosing its value by writing `null`. **The key's presence establishes ownership; its value follows the setting's existing semantics.** A null placeholder contributes no override at this layer, so lower-precedence configuration still applies:
 
 ```yaml
 # .pnpm/config/security.yaml
-minimumReleaseAge: ~          # owned here, follows pnpm's default
+minimumReleaseAge: ~          # owned here, inherits the value from lower layers
 minimumReleaseAgeExclude: ~
 trustPolicy: no-downgrade     # owned here, with an explicit value
 trustPolicyExclude: ~
@@ -164,19 +166,20 @@ allowBuilds:
   esbuild: true
 overrides: ~
 configDependencies: ~
-pnpmfile: []                  # not ~: the default auto-loads .pnpmfile.mjs
+pnpmfile: []                  # explicit: disables automatic pnpmfile loading
 ```
 
 With this file in place, adding `minimumReleaseAgeExclude` or `overrides` to `pnpm-workspace.yaml` fails the install. It does not quietly weaken the policy.
 
-Why `null` rather than writing the default out:
+For example, pnpm v12 with global `minimumReleaseAge: 0` and project `minimumReleaseAge: null` keeps `0`. If no lower layer supplies a value, the built-in default applies. The claim prevents another project file from defining `minimumReleaseAge`; it does not reset the value or bypass global configuration.
 
-- **Writing the default out pins it.** `minimumReleaseAge: 1440` keeps a workspace at today's default. If a later pnpm raises the default, the workspaces that protected their policy would be the ones left behind.
-- **The built-in default, not the next layer.** `null` skips the global `config.yaml`. That file lives in the user's home directory, outside the repository, and an agent can often write to it. If a claimed setting fell through to it, an agent could undo the policy without touching the repository.
-- **No string can serve as the marker.** Settings such as `storeDir`, `cacheDir` and `pnpmfile` accept any string, so `storeDir: default` already means a directory named `default`. A `null` cannot collide with a real value.
-- **A forgotten value is safe.** `minimumReleaseAge:` with nothing after it is also `null`. It means owned here, with the default.
+Why use a null placeholder rather than write a value out:
 
-This defines what `null` means for every top-level setting in `pnpm-workspace.yaml` as well, not only in fragments. It is a behavior change for the TypeScript CLI. Today it copies a top-level `null` straight onto the config, so `minimumReleaseAge: ~` appears to turn the release-age check off instead of keeping the default. The Rust CLI already reads `null` as unset. The new rule makes both CLIs keep the default.
+- **Writing a value out pins it.** `minimumReleaseAge: 1440` supplies that value. A null placeholder inherits instead, so it follows the built-in default when no lower layer supplies a value.
+- **No new marker is needed.** `null`, `~` and an empty YAML value already express an unset value for these settings. A string such as `inherit` could be a real value: `storeDir: inherit` names a directory today.
+- **An empty value still claims the key.** `minimumReleaseAge:` is also `null`. Its presence blocks a definition in another project file even though it contributes no override.
+
+This RFC changes ownership, not the meaning of `null` for existing settings. Some settings already use an explicit null to clear or disable a value. For example, pnpm v12's `hoistPattern: null` disables private hoisting, and `scriptShell: null` clears an inherited shell. Those meanings stay intact when the setting moves to a fragment. Both CLIs retain their existing setting-specific value handling; neither receives a universal null-to-default conversion.
 
 When pnpm writes to a setting claimed with `null` (for example, `pnpm approve-builds` with `allowBuilds: ~`), it replaces the `null` in the same file.
 
@@ -187,7 +190,7 @@ The docs will include a recommended `security.yaml` that claims the full set of 
 Files are merged first, and then pnpmfile `updateConfig` hooks run and can rewrite any setting. A policy in a fragment therefore holds only if no untrusted code gets a chance to run after the merge. Two settings decide which code that is, and the protected file must claim both:
 
 - **`configDependencies`:** a config dependency named `pnpm-plugin-*` (or `@pnpm/plugin-*`, `@scope/pnpm-plugin-*`) has its `pnpmfile` loaded automatically. If the protected file claims `configDependencies`, the editable file cannot add a plugin. Its resolutions live in `pnpm-lock.yaml`, which the agent can edit, but pnpm already checks config-dependency lockfile entries against their declarations and the registry (`createConfigDepsVerifier`). An edited lockfile cannot swap the package behind a protected declaration.
-- **`pnpmfile`:** when this setting is unset, pnpm loads `.pnpmfile.mjs` (or `.pnpmfile.cjs`) from the root if the file exists. Claiming it with `null` keeps that default, so an agent that creates `.pnpmfile.mjs` gets its hooks loaded. A workspace without a pnpmfile claims it with `pnpmfile: []`, which turns off the automatic loading. A workspace with a pnpmfile names it explicitly and protects its path along with the fragment.
+- **`pnpmfile`:** with no configured value, pnpm loads `.pnpmfile.mjs` (or `.pnpmfile.cjs`) from the root if the file exists. A null placeholder does not disable loading: an inherited value may apply, and otherwise creating `.pnpmfile.mjs` gets its hooks loaded. A workspace without a pnpmfile claims it with `pnpmfile: []`, which turns off the automatic loading. A workspace with a pnpmfile names it explicitly and protects its path along with the fragment.
 
 pnpm already treats the automatically loaded root pnpmfile as untrusted in one place: `self-update` skips it, because its `updateConfig` hook could rewrite the release-age policy. Claiming `pnpmfile` applies the same reasoning to every command.
 
@@ -212,7 +215,7 @@ pnpmfile: []
 
 **Discovery.** Every `*.yaml` file directly inside a config dependency's `pnpm-config/` directory is a fragment. The `.pnpm/config/` discovery rules apply. A config dependency without that directory contributes nothing, so existing plugins are unaffected. Package fragments from different config dependencies are read in the lexicographic order of the dependency names.
 
-**Merging.** Package fragments join the merge alongside `pnpm-workspace.yaml` and the local fragments, under the same duplicate rule. If `@acme/pnpm-policy` defines `minimumReleaseAge`, defining it in any repository file is an error, and so is defining it in another config dependency. Named catalogs merge as usual, so an org-wide catalog and a repository-local catalog can sit side by side under different names. A `null` claim means the built-in default, as it does locally.
+**Merging.** Package fragments join the merge alongside `pnpm-workspace.yaml` and the local fragments, under the same duplicate rule. If `@acme/pnpm-policy` defines `minimumReleaseAge`, defining it in any repository file is an error, and so is defining it in another config dependency. Named catalogs merge as usual, so an org-wide catalog and a repository-local catalog can sit side by side under different names. Null values follow [Claiming a setting](#claiming-a-setting), as they do in local fragments.
 
 **What a package fragment may not define:**
 
@@ -237,7 +240,7 @@ Change it in that package and update the config dependency.
 
 So a package fragment should own only the settings meant to be changed centrally. A setting that each repository should manage, such as `allowBuilds` in most organisations, belongs in the repository's own files.
 
-**Settings for the boot phase: `bootConfig`.** Config dependencies are resolved and verified before their fragments are loaded, so a package fragment's settings cannot apply to installing that package. Today this phase uses `minimumReleaseAge` and `minimumReleaseAgeExclude` (`createConfigDepResolvers`). This stops working once a policy package owns `minimumReleaseAge`. The value the package ships is not loaded yet when the package is resolved, and the repository cannot define the key without a duplicate error. Config dependencies would be stuck on the built-in default, and an org could not get a new policy version into a repository on the day it is published.
+**Settings for the boot phase: `bootConfig`.** Config dependencies are resolved and verified before their fragments are loaded, so a package fragment's settings cannot apply to installing that package. Today this phase uses `minimumReleaseAge` and `minimumReleaseAgeExclude` (`createConfigDepResolvers`). Once a policy package owns `minimumReleaseAge`, its value is not loaded yet when the package is resolved, and the repository cannot define the key without a duplicate error. The boot phase would use an inherited value or the built-in default, without a separate repository-level setting for getting a new policy version on the day it is published.
 
 The same question comes up for the other thing pnpm installs before running a command: the pnpm version requested by `packageManager`. Both are recorded in the first document of `pnpm-lock.yaml`, under `configDependencies` and `packageManagerDependencies`. The docs currently call it the env document. Both are resolved under the same release-age settings (`createConfigDepResolvers`, `self-updater/resolvePnpmVersion.ts`). This RFC calls that phase **boot**, renames the env document to the **boot document** to match, and gives the phase its own block of settings:
 
@@ -251,7 +254,7 @@ bootConfig:
 
 - **Scope.** `bootConfig` applies to resolving and verifying everything in the boot document: config dependencies and the package-manager dependency. Regular dependencies never read it.
 - **Allowed keys.** Only settings that govern how these packages are resolved: `minimumReleaseAge`, `minimumReleaseAgeExclude`, `minimumReleaseAgeStrict` and `minimumReleaseAgeIgnoreMissingTime`, and `trustPolicy` and its related settings if they are ever applied to this phase. Any other key is an error. In particular, registries are not accepted. The package-manager bootstrap takes registries only from non-project `.npmrc` files, and the error says so.
-- **Fallback, per key.** pnpm uses the value in `bootConfig` if it is set. Otherwise it uses the top-level setting of the same name, if the repository's own files define it, and otherwise the built-in default. This keeps today's behavior for repositories without policy packages: a repository with `minimumReleaseAge: 10080` keeps that cutoff for its config dependencies and its pnpm version. A top-level value that comes from a package fragment never applies to this phase. `bootConfig: ~` claims the block, with every key falling back.
+- **Fallback, per key.** pnpm uses a non-null value in `bootConfig` if it is set. Otherwise it uses the setting of the same name from the configuration loaded before package fragments, with its normal precedence: a repository value, an inherited global value, or the built-in default. A null placeholder does not stop that fallback. This keeps today's behavior for repositories without policy packages: a repository with `minimumReleaseAge: 10080` keeps that cutoff for its config dependencies and its pnpm version. A value that comes from a package fragment never applies to this phase. `bootConfig: ~` claims the block, with every key falling back.
 - **Repository files only.** A package fragment may not define `bootConfig`, since that would let a package set the policy for its own installation.
 - **One file owns the whole block.** Its keys cannot be split across files. It belongs in the protected file next to `configDependencies`. Each entry in this phase is a reviewed, exact entry in that file, so a shorter delay here costs less than a shorter delay for the whole dependency graph.
 - **No new trust.** `bootConfig` sets only what the top-level release-age settings already set for this phase today. It lets a repository set these values separately; it does not let project config reach anything that it cannot reach today.
@@ -280,17 +283,17 @@ pnpm commands that write project settings send each change to the file that curr
 - If the setting is defined in a fragment, the fragment is edited and `pnpm-workspace.yaml` is left alone.
 - If it is not defined anywhere, it is added to `pnpm-workspace.yaml`, as today.
 - A new named catalog is added to `pnpm-workspace.yaml`. A new entry in an existing catalog goes to the file that defines that catalog.
-- Removing the last entry of a map keeps the key with an empty value, so the claim stays where it is. (Today, an emptied list or map is removed from the file.)
+- Removing the last entry keeps the key with an empty map (`{}`) or list (`[]`), so the claim stays where it is and the explicit empty value is preserved. (Today, an emptied list or map is removed from the file.)
 
 pnpm never moves a setting between files and never deletes a fragment. A write that fails because of permissions reports the file that could not be written and stops. It does not fall back to `pnpm-workspace.yaml`.
 
 ### Inspecting the result
 
-`pnpm config list` and `pnpm config get <key>` show the source file of each project setting:
+`pnpm config list` and `pnpm config get <key>` show the source file of each project setting. When a placeholder inherits its value, verbose output distinguishes the value's source from the file that owns the project key:
 
 ```text
 $ pnpm config get minimumReleaseAge --verbose
-1440  (.pnpm/config/security.yaml)
+0  (global config.yaml; project owner: .pnpm/config/security.yaml)
 ```
 
 ### Local fragments
@@ -328,10 +331,10 @@ The discussion considers a hook that assembles `pnpm-workspace.yaml` from severa
 ### Other ways to claim a setting without a value
 
 - **A string marker** (`minimumReleaseAge: default` or `inherit`): this conflicts with settings that accept any string. `storeDir: default` is a valid directory today.
-- **A YAML tag** (`minimumReleaseAge: !default`): this cannot collide with a real value, but generic YAML readers reject unknown tags (js-yaml throws). Tools that read pnpm config, such as Renovate reading catalogs, would fail on any file that uses one. Both CLIs' YAML writers would also need to keep the tag intact when they rewrite the file.
-- **A reserved key** (`claim: [minimumReleaseAge, trustPolicy]`): this works with any YAML reader. But it separates the claim from the setting, which makes the protected file harder to review, and it reserves a name that no future setting can use.
+- **A YAML tag** (`minimumReleaseAge: !inherit`): this could express a placeholder, but reader behavior varies. `js-yaml` rejects unknown tags; the `yaml` library used by Renovate accepts them with warnings. pnpm's readers would need to recognize the tag and its writers would need to preserve it. `!default` would describe a reset to the built-in default, which this RFC does not introduce.
+- **A reserved key** (`claim: [minimumReleaseAge, trustPolicy]`): this works with any YAML reader. But it separates the claim from the setting and requires moving a setting between the list and a value when its declaration changes. An inline null placeholder keeps the key in one place.
 
-`null` has none of these costs. Its one cost is the behavior change described in [Claiming a setting](#claiming-a-setting).
+Null placeholders use ordinary YAML and existing value semantics. Their new effect is the ownership described in [Claiming a setting](#claiming-a-setting).
 
 ### Per-key permissions inside pnpm
 
@@ -343,7 +346,7 @@ pnpm could have a setting that marks keys as read-only, or require a flag to cha
 
 - **`workspace/workspace-manifest-reader`:** add a reader that returns the merged manifest together with a key → source file map. It enforces the duplicate rule and the `catalogs` exception, and validates each fragment with `validateWorkspaceManifest`.
 - **`workspace/root-finder`:** treat `.pnpm/config/` without `pnpm-workspace.yaml` as an error at that directory.
-- **`config/reader`** (`getConfig/localSettings.ts`, `getConfig/workspaceManifestSettings.ts`): consume the merged manifest; keep the source map on the config for `pnpm config` output and for writers. In `addSettingsFromWorkspaceManifestToConfig`, a top-level `null` resets the setting to its value from `defaultOptions`. It is not assigned as-is, and it is not skipped either, since skipping would leave a value from the global `config.yaml` in place.
+- **`config/reader`** (`getConfig/localSettings.ts`, `getConfig/workspaceManifestSettings.ts`): consume the merged manifest; keep the source map on the config for `pnpm config` output and for writers. Record ownership from key presence before value handling, including keys whose null value contributes no override. Keep existing setting-specific value handling in `addSettingsFromWorkspaceManifestToConfig`; do not reset null values to `defaultOptions`.
 - **`workspace/workspace-manifest-writer`:** `updateWorkspaceManifest` currently writes to one file. It becomes source-aware: it groups the updated fields by owning file, patches each file with the existing `patchDocument` path, and keeps emptied maps. Its callers (`approveBuilds`, `updatePatchedDependencies`, the audit fix/ignore commands, `policyHandlers`, `handleIgnoredBuilds`, `configSet`, the catalog writers in `add`/`update`) pass changes through unchanged and need no per-command logic.
 - **`config/writer` and `config/commands`:** route `--location project` writes the same way; add the source to `config get`/`list`.
 - Add the fragment paths to the inputs of the workspace state and optimistic-repeat-install checks.
@@ -355,12 +358,14 @@ pnpm could have a setting that marks keys as read-only, or require a flag to cha
 
 Parity is required: if one CLI ignores fragments, a protected setting is not applied when that CLI is used.
 
-- **`config`** (`loading.rs`, `layout.rs`): the same discovery, merge and duplicate rule. A claim with `null` must use pnpm's built-in default, not a value from the global `config.yaml`.
+- **`config`** (`loading.rs`, `layout.rs`): the same discovery, merge and duplicate rule. Capture ownership before deserializing settings into optional fields, which can collapse absent keys and null placeholders. Preserve the current overlays and explicit null behaviors; a placeholder must leave an inherited global value intact.
 - **`workspace-manifest-writer`:** the same source-aware writes.
 - **`workspace-state`:** the same cache inputs.
 - **`env-installer` / config loading:** the same second merge pass over package fragments after config dependencies are installed, and `bootConfig` for config dependencies and the package-manager dependency.
 
 Shared fixtures in both test suites cover: a duplicate across files; the `catalogs` merge and a duplicate catalog name; a write routed to a fragment; an emptied map that stays in its file; a `*.yml` error; `.pnpm/config/` present without `pnpm-workspace.yaml`; a package fragment that conflicts with a local fragment; a package fragment that defines a forbidden setting; and a write refused because a package fragment owns the setting.
+
+Null fixtures cover ownership independently of value handling: a placeholder rejects a duplicate and routes a later write to its owner; a package fragment's placeholder still owns the key; and `bootConfig` placeholders fall through. Value tests preserve each CLI's current behavior before and after moving a setting to a fragment. In v12, global `minimumReleaseAge: 0` survives a project null placeholder, `hoistPattern: null` disables private hoisting, and `scriptShell: null` clears an inherited shell.
 
 ### Docs
 
@@ -383,7 +388,7 @@ None of these treats a duplicate definition as an error. They are configuration 
 ## Unresolved Questions and Bikeshedding
 
 - **Directory name.** `.pnpm/config/` matches the larger layout sketched in the discussion. Alternatives: `pnpm-workspace.d/` (the `conf.d` convention, next to the file it extends) or `pnpm-workspace.*.yaml` siblings (no new directory; a glob rule that harnesses already support). Siblings are the easiest to find, but they mix fragments into the repo root.
-- **Is `null` already meaningful for any setting?** Before ratification, audit the settings in both CLIs for any where `null` is documented or relied on, for example as a way to turn something off. Each one either moves to an explicit value or is listed as an exception.
+- **Existing null semantics.** Before implementation, inventory the setting-specific null behaviors in both CLIs and cover them with fixtures. Moving a setting into a fragment must preserve its value semantics; it must not require replacing an existing null with another value.
 - **How a config dependency declares its fragments.** A `pnpm-config/` directory is proposed. Alternatives are a `package.json` field listing the files, or a name convention like the one for plugins (`pnpm-config-*`). A directory needs no extra metadata. A field makes the contribution visible in the package's manifest.
 - **Name of `bootConfig`.** "Boot" means loading what is needed before the main run, and pnpm's code already calls the pnpm download the package-manager bootstrap. Alternatives considered:
   - `preflightConfig`: has no existing meaning in pnpm, but suggests checks more than installs.
