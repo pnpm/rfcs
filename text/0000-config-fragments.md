@@ -108,7 +108,7 @@ Each setting can be defined in one file only.
 
 Aliases count as the same key. For example, `catalog` and `catalogs.default` are already treated as the same thing, and a legacy spelling counts the same as its current one.
 
-**There is one exception: `catalogs`.** Named catalogs merge across files, and the duplicate rule applies one level down: a catalog name may be defined in only one file. This is the use case behind [#12606](https://github.com/pnpm/pnpm/issues/12606):
+**There is one exception: `catalogs`.** Different named catalogs can be defined in different files. Each catalog belongs wholly to one file: its name may be defined in only one file, and its entries are never merged across files. This is the use case behind [#12606](https://github.com/pnpm/pnpm/issues/12606):
 
 ```yaml
 # pnpm-workspace.yaml
@@ -120,6 +120,29 @@ catalogs:
   react18:
     react: ^18.3.1
 ```
+
+Defining the same catalog in more than one file is an error, even when the entries do not overlap:
+
+```yaml
+# pnpm-workspace.yaml
+catalogs:
+  foo:
+    a: '0'
+
+# .pnpm/config/catalogs-b.yaml
+catalogs:
+  foo:
+    b: '1'
+```
+
+```text
+ERR_PNPM_DUPLICATE_SETTING  Catalog "foo" is defined in more than one config file:
+  .pnpm/config/catalogs-b.yaml
+  pnpm-workspace.yaml
+Each catalog can be defined in one file only.
+```
+
+The rule stops at the catalog name because of writes. When `pnpm add` saves a new entry to catalog `foo`, the entry must go to exactly one file. If `foo`'s entries were spread across several files, nothing would say which one. A team that wants a catalog in its own file moves the whole catalog there.
 
 No other key merges. In particular, `overrides`, `allowBuilds`, `packageExtensions` and `patchedDependencies` do not merge. Allowing `pnpm-workspace.yaml` to add entries to `overrides` while a protected file defines other entries would let the editable file override a protected package. These maps belong wholly to one file.
 
