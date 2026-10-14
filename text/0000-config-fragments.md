@@ -69,7 +69,7 @@ It is worth being exact about what this does and does not protect, because a fea
 
 **Out of scope:** command-line flags and `pnpm_config_*` environment variables. An agent that runs `pnpm install --minimum-release-age=0` gets an install with that setting. That changes nothing in the repository, and CI does not use those flags. This RFC is about committed configuration.
 
-Global `config.yaml` keeps its current precedence and is outside this repository boundary too. A placeholder claims a setting's project file without fixing its effective value. A team that needs a fixed policy supplies an explicit value in the protected file; a placeholder may still inherit a value from global configuration.
+Global `config.yaml` keeps its current precedence and is outside this repository boundary too. A placeholder claims a setting's project file without fixing its effective value. A team that needs a fixed policy supplies an explicit value in the protected file; a placeholder may still inherit a value from global configuration. A configured `globalPnpmfile` must be trusted: its hooks can rewrite settings after the fragment merge, including explicit protected values. This RFC does not re-enforce fragment settings after hooks run.
 
 These are the design constraints that follow:
 
@@ -167,6 +167,7 @@ allowBuilds:
 overrides: ~
 configDependencies: ~
 pnpmfile: []                  # explicit: disables automatic pnpmfile loading
+globalPnpmfile: ~             # owns the selector; a trusted global value may apply
 ```
 
 With this file in place, adding `minimumReleaseAgeExclude` or `overrides` to `pnpm-workspace.yaml` fails the install. It does not quietly weaken the policy.
@@ -187,10 +188,13 @@ The docs will include a recommended `security.yaml` that claims the full set of 
 
 ### Code that runs while config loads
 
-Files are merged first, and then pnpmfile `updateConfig` hooks run and can rewrite any setting. A policy in a fragment therefore holds only if no untrusted code gets a chance to run after the merge. Two settings decide which code that is, and the protected file must claim both:
+Files are merged first, and then pnpmfile `updateConfig` hooks run and can rewrite settings. A policy in a fragment therefore holds only if no untrusted code gets a chance to run after the merge. The protected file must claim the settings that can select hooks from project configuration:
 
 - **`configDependencies`:** a config dependency named `pnpm-plugin-*` (or `@pnpm/plugin-*`, `@scope/pnpm-plugin-*`) has its `pnpmfile` loaded automatically. If the protected file claims `configDependencies`, the editable file cannot add a plugin. Its resolutions live in `pnpm-lock.yaml`, which the agent can edit, but pnpm already checks config-dependency lockfile entries against their declarations and the registry (`createConfigDepsVerifier`). An edited lockfile cannot swap the package behind a protected declaration.
-- **`pnpmfile`:** with no configured value, pnpm loads `.pnpmfile.mjs` (or `.pnpmfile.cjs`) from the root if the file exists. A null placeholder does not disable loading: an inherited value may apply, and otherwise creating `.pnpmfile.mjs` gets its hooks loaded. A workspace without a pnpmfile claims it with `pnpmfile: []`, which turns off the automatic loading. A workspace with a pnpmfile names it explicitly and protects its path along with the fragment.
+- **`pnpmfile`:** with no configured value, pnpm loads `.pnpmfile.mjs` (or `.pnpmfile.cjs`) from the root if the file exists. A null placeholder does not disable loading: an inherited value may apply, and otherwise creating `.pnpmfile.mjs` gets its hooks loaded. A workspace without a pnpmfile claims it with `pnpmfile: []`, which disables workspace pnpmfile loading. A workspace with a pnpmfile names it explicitly and protects its path along with the fragment.
+- **`globalPnpmfile`:** project configuration can name this file too. Claiming the key in the protected fragment prevents an editable project file from selecting another hook. A null placeholder retains a value inherited from global configuration; an explicit path must name a trusted file whose path is protected as well.
+
+`pnpmfile: []` does not disable a configured `globalPnpmfile`. Global hooks run after the fragment merge too, and their `updateConfig` results can change protected values. Global pnpmfiles and the non-project configuration that selects them must be trusted and protected separately; they are outside this RFC's repository-file guarantee. See [globalPnpmfile](https://pnpm.io/pnpmfile#globalpnpmfile).
 
 pnpm already treats the automatically loaded root pnpmfile as untrusted in one place: `self-update` skips it, because its `updateConfig` hook could rewrite the release-age policy. Claiming `pnpmfile` applies the same reasoning to every command.
 
@@ -219,7 +223,7 @@ pnpmfile: []
 
 **What a package fragment may not define:**
 
-- `configDependencies` and `pnpmfile`, which decide what code runs during config loading. Config dependencies are installed once, from the repository's own declaration. They do not pull in further config dependencies.
+- `configDependencies`, `pnpmfile` and `globalPnpmfile`, which decide what code runs during config loading. Config dependencies are installed once, from the repository's own declaration. They do not pull in further config dependencies.
 - `bootConfig`, which governs installing the package itself (see below).
 - `packages` and settings whose values are paths (`patchedDependencies`, `storeDir`, `virtualStoreDir`, and the like). These describe a particular repository, and a path inside a package has no meaning relative to the workspace root.
 
