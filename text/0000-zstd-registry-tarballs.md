@@ -6,14 +6,16 @@ A registry entry in the `registries` setting can declare that the registry serve
 
 ```yaml title="pnpm-workspace.yaml"
 registries:
-  https://pnpr.corp.example/:
+  https://pnpr.corp.example/~zstd/:
     scopes: ["@"]
     tarballCompression: zstd
 ```
 
 For packages resolved from that registry, pnpm downloads `.tar.zst` instead of `.tgz`, and the integrity recorded in `pnpm-lock.yaml` is the integrity of the `.tar.zst`. Registries that do not declare it keep today's behavior.
 
-pnpr can serve `.tgz`, `.tar.zst`, or both, configured per registry. It produces the `.tar.zst` from the `.tgz` at publish time for hosted packages, and on first request for upstream packages. Every `.tar.zst` it produces is stored write-once.
+A zstd registry is its own registry URL, with its own metadata. In that metadata, `dist.tarball` and `dist.integrity` describe the `.tar.zst`. A registry that offers both formats does so at two URLs, so every client reads ordinary npm metadata in the shape it expects.
+
+pnpr can serve `.tgz`, `.tar.zst`, or both, by exposing registries in either format over the same packages. It produces the `.tar.zst` from the `.tgz` at publish time for hosted packages, and on first request for upstream packages. Every `.tar.zst` it produces is stored write-once.
 
 ## Motivation
 
@@ -68,29 +70,33 @@ The declaration is per registry, not per package. A registry that declares `zstd
 
 pnpm reconstructs it the same way it reconstructs `.tgz` URLs today, with the same `serverType` layout rules. A lockfile then carries no host-specific URL for these packages.
 
-**Metadata.** A version's `dist` may carry the integrity of the `.tar.zst`:
+**Metadata.** A zstd registry serves its own metadata. In each version's `dist`, the standard fields describe the `.tar.zst`:
 
 ```jsonc
 {
   "dist": {
-    "tarball": "https://pnpr.corp.example/lodash/-/lodash-4.17.21.tgz",
-    "integrity": "sha512-<tgz digest>",
-    "zstd": {
-      "integrity": "sha512-<tar.zst digest>"
-    }
+    "tarball": "https://pnpr.corp.example/~zstd/lodash/-/lodash-4.17.21.tar.zst",
+    "integrity": "sha512-<tar.zst digest>",
+    "unpackedSize": 1412415
   }
 }
 ```
 
-npm-compatible clients ignore the unknown field. One metadata document serves every client, so there is no content negotiation on metadata and no `Vary` header.
+- **Unchanged fields:** fields that describe the unpacked package, such as `unpackedSize` and `fileCount`, stay as they are, because both formats hold the same tar.
+- **Removed fields:** fields that only hold for the publisher's `.tgz` are left out. `shasum` is the SHA-1 of the `.tgz`, and `signatures` sign `name@version:integrity` with the `.tgz` integrity, so neither describes the `.tar.zst`.
+- **`attestations`:** kept, because they describe the published package. Their subject is the `.tgz` digest, as described under [Trust](#trust).
 
-`dist.zstd` is optional even on a registry that declares `zstd`, because a registry that transcodes upstream packages lazily does not know the integrity of a `.tar.zst` it has not produced yet. When a resolved version has no `dist.zstd`:
+A registry that offers both formats serves them at two URLs, for example `https://pnpr.corp.example/` for `.tgz` and `https://pnpr.corp.example/~zstd/` for `.tar.zst`. Each URL has one document per package, so no response varies by request header, and a CDN caches each as it caches metadata today. The URL a project keys in `registries` decides which format it gets.
+
+`dist.integrity` may be missing from a zstd registry's metadata. A registry that transcodes upstream packages lazily does not know the integrity of a `.tar.zst` it has not produced yet. When a resolved version has no `dist.integrity`:
 
 - pnpm downloads the `.tar.zst` from the canonical URL. The registry produces it on that request.
 - pnpm hashes the received bytes and records that integrity in the lockfile.
 - The download is not wasted, because an install needs the tarball anyway. A `--lockfile-only` resolution pays for downloads it would otherwise skip, and only for versions the registry has not transcoded yet.
 
-When `dist.zstd.integrity` is present, pnpm verifies the downloaded bytes against it, as it verifies `dist.integrity` today.
+When `dist.integrity` is present, pnpm verifies the downloaded bytes against it, as it does today.
+
+The `tarballCompression` declaration is still needed. Metadata alone does not tell pnpm how to rebuild an omitted tarball URL, and the lockfile records the declaration (see [Lockfile](#lockfile)). Like `serverType`, the format is declared, never inferred from the metadata.
 
 **Immutability.** A registry must serve the same `.tar.zst` bytes for a version forever, once it has served them or advertised their integrity. Lockfiles pin those bytes. A registry that produced different bytes on a later request, for example after upgrading its zstd library or changing the compression level, would break every lockfile that pinned the old ones. Regenerating on demand is therefore not allowed. The first produced artifact is stored and served from then on.
 
@@ -114,7 +120,7 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
   tarballCompression:
-    https://pnpr.corp.example/: zstd
+    https://pnpr.corp.example/~zstd/: zstd
 ```
 
 Freshness checks treat a difference between this map and the configuration like any other changed setting:
@@ -134,33 +140,46 @@ The `.tgz` integrity is the publisher's. The `.tar.zst` integrity is the registr
 
 Two consequences:
 
-- **Registry signatures.** `pnpm audit signatures` verifies registry signatures, which cover `name@version:integrity` with the `.tgz` integrity. It can still check the metadata, but it cannot tie the signature to the `.tar.zst` bytes the lockfile pins.
+- **Registry signatures.** They sign `name@version:integrity` with the `.tgz` integrity, so a zstd registry leaves them out of its metadata, and `pnpm audit signatures` has nothing to verify against it. Signing the `.tar.zst` integrities is an open question.
 - **Provenance.** Sigstore provenance names the `.tgz` digest as its subject. The link from the attested `.tgz` to the installed `.tar.zst` is the registry's claim.
 
 pnpr, in turn, must verify an upstream `.tgz` against its upstream integrity before it transcodes it.
 
 ### pnpr
 
-Each hosted and upstream registry in the pnpr configuration gets a `tarballs` field listing the formats it serves:
+Any pnpr registry can serve its packages as zstd with a `tarballs` field. The value is `tgz` (the default) or `zstd`. Formats are exposed as registries, so a deployment offers zstd next to `.tgz` by adding a router over the same sources:
 
 ```yaml title="pnpr.yaml"
 registries:
   local:
     type: hosted
-    tarballs: [tgz, zstd]
+    packages:
+      '@acme/*':
+        publish: $authenticated
   npmjs:
     type: upstream
     url: https://registry.npmjs.org/
-    tarballs: [tgz, zstd]
+    public: true
+  main:
+    type: router
+    sources: [local, npmjs]
+  zstd:
+    type: router
+    sources: [local, npmjs]
+    tarballs: zstd
+
+defaultRegistry: main
 ```
 
-| `tarballs` | served |
-|---|---|
-| `[tgz]` (default) | Today's behavior. |
-| `[tgz, zstd]` | Both artifacts. `dist.zstd` appears for versions already transcoded. npm, Yarn, and pnpm without the declaration keep using `.tgz`. |
-| `[zstd]` | Only `.tar.zst`. Only pnpm with the declaration can install from it. For hosted registries this halves tarball storage. The `.tgz` request returns 404, and `dist.tarball` keeps naming it, so other clients fail clearly instead of downloading something they cannot read. |
+Here `https://pnpr.corp.example/` serves `.tgz` and `https://pnpr.corp.example/~zstd/` serves `.tar.zst`. The deployment shapes:
 
-A router serves the formats that all of its sources serve. It advertises `dist.zstd` only for versions whose source registry serves zstd.
+| deployment | exposed registries |
+|---|---|
+| `.tgz` only | Today's configuration. |
+| both | A `.tgz` registry and a zstd registry over the same sources, as above. npm, Yarn, and projects without the declaration use the first. Projects that declare `zstd` use the second. |
+| zstd only | Only zstd registries, for example `defaultRegistry: zstd`. Only pnpm with the declaration can install from it. |
+
+A `.tar.zst` belongs to the hosted or upstream registry that holds the package, not to the router that serves it. Two zstd registries over the same source serve the same bytes. Publishing still accepts a `.tgz`, and pnpr keeps it, because the `.tgz` is what the publisher's integrity and attestations cover.
 
 **When pnpr transcodes:**
 
@@ -172,11 +191,15 @@ pnpr compresses at level 19. Transcoding happens once per version, so a high lev
 
 ## Rationale and Alternatives
 
+**One metadata document with both artifacts**, for example a `dist.zstd` object next to the `.tgz` fields. One document would serve every client. But every version would then describe two artifacts, the standard `dist` fields would describe the one a declaring client ignores, and every later format would add another sibling field.
+
+**Negotiating metadata by request header**, for example a parameter on `Accept`. This keeps one URL, but every metadata response would vary on that header, and caches would have to store a variant per format. A separate registry URL gives the same documents without negotiation and fits how `registries` is already keyed.
+
 **`Content-Encoding: zstd` on the `.tgz` URL.** This needs no lockfile change, but saves nothing, because gzip output does not compress further. Serving `zstd(tar)` under `Content-Encoding` instead would violate HTTP semantics, since the decoded body would no longer be the `.tgz` the URL names.
 
 **A per-entry marker in the lockfile** (`resolution.compression: zstd`). This would let one registry serve both formats per version and survive configuration changes. It adds a field to every entry, and the per-registry declaration already carries the information, because a `zstd` registry serves zstd for every version. The `settings` record gives frozen installs the same protection at one line per registry.
 
-**Publisher-produced `.tar.zst`.** `pnpm publish` would upload both artifacts and provenance would cover both. That moves the trust back to the publisher, but it needs registry support for a second artifact per version. It only helps packages published after adoption, which leaves out almost every package an install fetches today. Registry transcoding works for the whole graph. Publisher-produced artifacts can be added later under the same `dist.zstd` field.
+**Publisher-produced `.tar.zst`.** `pnpm publish` would upload both artifacts and provenance would cover both. That moves the trust back to the publisher, but it needs registry support for a second artifact per version. It only helps packages published after adoption, which leaves out almost every package an install fetches today. Registry transcoding works for the whole graph. Publisher-produced artifacts can later replace the transcoded ones in the same zstd registry.
 
 **Integrity-addressed URLs** (`-/tarballs/sha512/<digest>`, from `0000-integrity-addressed-registry-tarballs.md`). They make a `.tar.zst` immutable by construction and CDN-friendly. They cannot address an artifact before its digest exists, so they cannot carry lazy upstream transcoding, which needs a name-and-version URL. A registry implementing both RFCs can advertise the digest route for transcoded versions.
 
@@ -189,13 +212,13 @@ pnpm v12 only. pnpm v11 is maintenance-only and is not changed.
 **pnpm:**
 
 - `config`: the `tarballCompression` field on npm registry entries, with validation and the workspace-only rule.
-- `resolving-npm-resolver`, `registry`: parse `dist.zstd`. Choose the integrity and tarball URL by the registry's declaration.
+- `resolving-npm-resolver`, `registry`: accept a missing `dist.integrity` from a `zstd` registry. Rebuild omitted tarball URLs with the `.tar.zst` extension.
 - `lockfile`: the `settings.tarballCompression` record and its freshness check.
 - `tarball`:
   - Decode zstd at every site that decodes gzip today: the eager decode, the buffered streaming decode, and the decode fed from the download channel.
   - Accept the zstd magic where the download path rejects bodies that do not start with the gzip magic.
   - Enforce the 8 MiB window limit.
-  - When the metadata carries no `dist.zstd`, record the integrity computed from the received bytes.
+  - When the metadata carries no `dist.integrity`, record the integrity computed from the received bytes.
 - Store index and global virtual store: confirm that entries keyed by a `.tar.zst` integrity reuse file content and that slot hashes stay correct.
 - Docs: `pnpm/docs/registries.md`.
 
@@ -203,11 +226,11 @@ The prototype behind the measurements covers the decoding sites in `pnpm/crates/
 
 **pnpr:**
 
-- Config: `tarballs` per registry, and the router rule.
+- Config: `tarballs` on every registry type.
 - Publish path: transcode and store the `.tar.zst`.
 - Upstream path: transcode on first request, with single-flight deduplication, and store the result write-once in durable storage.
-- Metadata: inject `dist.zstd` for transcoded versions.
-- Routes: serve `.tar.zst`. Return 404 for `.tgz` under `[zstd]`.
+- Metadata: in zstd registries, rewrite `dist.tarball` and `dist.integrity` to the `.tar.zst`. Drop `shasum` and `signatures`. Leave `dist.integrity` out for versions not transcoded yet.
+- Routes: serve `.tar.zst` under zstd registries.
 - Docs: `pnpr/docs`.
 
 ## Prior Art
@@ -218,8 +241,8 @@ The prototype behind the measurements covers the decoding sites in `pnpm/crates/
 
 ## Unresolved Questions and Bikeshedding
 
-- **Names:** `tarballCompression` and `gzip`/`zstd`, or `tarballFormat` with `tgz`/`tar.zst`. In pnpr: `tarballs`, and the `[tgz, zstd]` spelling.
-- **`dist.zstd` shape:** whether it also carries `unpackedSize` and an explicit `tarball` URL for registries with a non-canonical layout.
+- **Names:** `tarballCompression` and `gzip`/`zstd`, or `tarballFormat` with `tgz`/`tar.zst`. In pnpr: `tarballs`. The extension: `.tar.zst`, the common convention, or `.tzst`, the counterpart of `.tgz`.
+- **Registry signatures:** whether a zstd registry should sign `name@version:integrity` with its own key over the `.tar.zst` integrity, so `pnpm audit signatures` works against it.
 - **Level and parameters:** whether the RFC fixes level 19, or only the window limit and leaves the level to the registry.
 - **Dictionaries:** whether a zstd dictionary trained on npm tarballs is worth a later extension. It mainly helps small tarballs, which are most tarballs by count.
 - **Lockfile-only resolution:** whether pnpr should transcode the latest versions of a package eagerly when it caches its metadata, so `--lockfile-only` resolutions rarely download.
