@@ -4,276 +4,271 @@
 
 pnpm reads its project settings from a single file, `pnpm-workspace.yaml`. Everything that can touch that file can change every setting in it: the workspace layout and the catalogs, and also `minimumReleaseAge`, `trustPolicy`, `overrides` and `allowBuilds`.
 
-This RFC lets a workspace split its settings across files in a fixed directory next to `pnpm-workspace.yaml`:
+This RFC lets a workspace split its settings across explicitly included files and config dependencies:
 
-```text
-pnpm-workspace.yaml        # packages, catalogs, everyday settings
-.pnpm/
-  config/
-    security.yaml          # minimumReleaseAge, trustPolicy, allowBuilds, overrides, ...
-    deploy.yaml            # nodeLinker, injectWorkspacePackages, ...
+```yaml
+# pnpm-workspace.yaml (protected)
+configDependencies:
+  '@acme/pnpm-policy': 3.1.0
+pnpmfile: []
+include:
+  ./config/security.yaml: '*'
+  ./config/catalog.yaml: [catalog]
+  ./config/workspace.yaml: [packages]
+  '@acme/pnpm-policy': [minimumReleaseAge, trustPolicy]
 ```
 
-Every `*.yaml` file in `.pnpm/config/` is loaded. Nothing has to list it. The rules:
+- **The root manifest controls delegation and must be protected.** Everyday edits go to the included files whose paths can have separate permissions or `CODEOWNERS`.
+- **A local file can have a setting list or `'*'`.** A list permits and reserves exactly those settings, including settings the file omits. `'*'` lets a trusted file define any allowed setting without updating the root mapping every time it adds a key.
+- **A config dependency always has an explicit setting list.** A package update cannot introduce another setting without a reviewed change to the root mapping.
+- **Each setting has one owner.** Conflicting ownership or definitions are errors, not overrides. Writes go to the owning local file; package-owned settings are read-only.
 
-- **A top-level setting is defined in exactly one file.** Defining it in two files is an error, not an override.
-- **Writes go to the file that owns the setting.** `pnpm approve-builds` updates `allowBuilds` in `security.yaml` when that file defines it.
+There is no special fragment directory and no automatic discovery. A local path identifies a file; a config dependency name identifies a package whose manifest declares its config entry file. External tools can find explicitly delegated settings through the root index without scanning every fragment.
 
-Together, these make "who may change this setting" a question about file paths. Agent harnesses, OS sandboxes and `CODEOWNERS` already answer questions about file paths.
-
-A config dependency can also ship fragments in a `pnpm-config/` directory, so an organisation can publish one policy for all its repositories that no repository can override. See [Fragments from config dependencies](#fragments-from-config-dependencies).
-
-Proposed in [pnpm/pnpm#16128](https://github.com/orgs/pnpm/discussions/16128).
+Proposed in [pnpm/pnpm#16128](https://github.com/orgs/pnpm/discussions/16128). Explicit includes and setting delegation build on [gluxon's review](https://github.com/pnpm/rfcs/pull/38#pullrequestreview-5528843769).
 
 ## Motivation
 
 ### Path rules are the only rules most tools understand
 
-Coding agents run under rules written as path patterns: "may edit `pnpm-workspace.yaml`", "may not write `.github/**`". Claude Code, Codex, Cursor and similar harnesses have no way to say "may edit `pnpm-workspace.yaml`, except the `minimumReleaseAge` key". The same is true of `CODEOWNERS`. It can require security review for `pnpm-workspace.yaml`, but then every catalog bump needs that review too.
+Coding agents run under rules written as path patterns: "may edit catalogs", "may not write security policy". Agent harnesses, OS sandboxes and `CODEOWNERS` can enforce access to a whole file, but cannot generally distinguish individual YAML settings within it.
 
-So today a team has two options. It can protect the whole file, in which case agents and contributors cannot do routine work (add a catalog entry, add a workspace package) without approval. Or it can leave the file open, in which case anyone who can do that routine work can also do this:
+Today, protecting `pnpm-workspace.yaml` also gates every catalog bump and workspace package change. Leaving it open lets anyone doing that routine work also change `minimumReleaseAge: 1440` to `minimumReleaseAge: 0` or approve every pending build.
 
-```diff
--minimumReleaseAge: 1440
-+minimumReleaseAge: 0
-```
-
-or approve every pending build with `pnpm approve-builds --all`.
+Explicit includes let a team protect the root manifest as the ownership index and delegate everyday settings to other files. Catalog updates and changes to workspace package patterns then need no edit to the protected root. Adding a new delegation does need review.
 
 ### Agents change settings to make errors go away
 
-The scenario in the discussion is concrete. An install fails because a fresh version is younger than `minimumReleaseAge`, or because a publisher's trust evidence got weaker. The agent's job is to make the install pass, and the shortest path is to relax the setting that blocked it. The agent then checks that everything works locally and reports success. The change is only noticed in review, if it is noticed at all.
+An install fails because a fresh version is younger than `minimumReleaseAge`, or because a publisher's trust evidence got weaker. An agent whose job is to make the install pass can relax the setting, check locally and report success. A related failure is changing a setting that only matters in deployment, such as `nodeLinker` or `injectWorkspacePackages`.
 
-A related failure: an agent changes a setting that only matters in an environment it cannot see (`nodeLinker`, `injectWorkspacePackages`, `supportedArchitectures`). Everything works locally and breaks in deployment.
+A delegated file may define only its assigned settings. An agent allowed to update the catalog cannot add `minimumReleaseAgeExclude: ['*']` to that file, even when no policy file currently defines that neighbouring key.
 
-In both cases the fix is to put these settings somewhere that a path rule can protect, while routine settings stay where they are today.
+### Reducing churn and limiting package authority
+
+Requiring a list for every local file would repeat each new setting in the protected root. Trusted policy files can use `'*'` instead. Their existing definitions still own settings, and ordinary additions require only an edit to the policy file.
+
+Config dependencies receive explicit lists because their contents come from packages. The root declares what a package may control before pnpm installs it. A package update that adds an undelegated setting fails validation instead of silently acquiring authority over that setting.
 
 ### Secondary uses
 
-- **`CODEOWNERS`:** `.pnpm/config/security.yaml @org/security` gates the supply-chain policy without gating catalog bumps.
-- **Machine-local settings:** a gitignored `.pnpm/config/local.yaml` can hold settings a developer does not want to commit, as long as no committed file defines them (see [Local fragments](#local-fragments)).
-- **Large catalogs** ([pnpm/pnpm#12606](https://github.com/pnpm/pnpm/issues/12606)): named catalogs can live in their own files.
+- **`CODEOWNERS`:** protect `pnpm-workspace.yaml` and `config/security.yaml` with the security or infrastructure team, while `config/catalog.yaml` has broader ownership.
+- **Large catalogs** ([pnpm/pnpm#12606](https://github.com/pnpm/pnpm/issues/12606)): named catalogs can live in separately delegated files.
+- **Organisation policy:** one config dependency can supply shared values for its delegated settings across repositories.
+- **Tooling:** a tool interested in `catalog` can locate its explicitly assigned file through the root mapping. Unrestricted includes still require inspection when looking for settings not explicitly mapped.
 
 ## Threat model
 
-It is worth being exact about what this does and does not protect, because a feature motivated by security that only looks secure is worse than no feature.
+**What this RFC provides:** a protected root declares which sources are loaded and which settings less-trusted sources may control. The settings a team cares about can remain in files that routine work never needs to edit.
 
-**What this RFC provides:** the settings a team cares about can be placed in files that are never needed for routine work. A file can only be protected if it is never needed for routine work. If it is, people grant write access to it and the protection is gone.
+**What enforces the file boundary:** something outside pnpm that restricts writes by path:
 
-**What enforces the boundary:** something outside pnpm that restricts writes by path:
+1. **Review:** `CODEOWNERS` with required reviews protects what lands on the default branch and runs in CI.
+2. **Process write restrictions:** an OS-level sandbox, a read-only mount or file permissions restricts the agent's processes, including commands that ask pnpm to write configuration.
 
-1. **Review:** `CODEOWNERS` with required reviews. This is a real boundary for what lands on the default branch and runs in CI, whoever wrote the change.
-2. **Write restrictions on the agent's processes:** an OS-level sandbox (for example a Claude Code sandbox with `.pnpm/config/**` in the write deny list), a read-only mount, or file permissions.
+A harness rule that covers only an agent's file-editing tool is insufficient. A shell-capable agent can write through the shell or run `pnpm approve-builds`, which writes through pnpm. pnpm cannot distinguish an agent from a human.
 
-**What is not a boundary:** a harness rule that only applies to the agent's file-editing tool. An agent that can run shell commands can write the file through the shell. It can also run `pnpm approve-builds`, and pnpm itself will then write the protected file. pnpm cannot tell an agent from a human, and does not try to. Any "are you sure" mechanism inside pnpm would be a flag the agent can pass.
+These are the design constraints:
 
-**Out of scope:** command-line flags and `pnpm_config_*` environment variables. An agent that runs `pnpm install --minimum-release-age=0` gets an install with that setting. That changes nothing in the repository, and CI does not use those flags. This RFC is about committed configuration.
+- **Protect `pnpm-workspace.yaml`.** An actor who can edit the index can remove a policy include, change its delegation or configure hooks. This design deliberately requires root protection; routine settings move into delegated files.
+- **Use explicit lists for broadly editable files.** A file included with `'*'` is trusted to introduce settings, so it must be protected too. A setting list prevents neighbouring-key bypasses without needing to anticipate every security-sensitive key.
+- **Reject conflicting ownership and undelegated settings.** Ordering must never let one source override another.
+- **Protect referenced paths and their targets.** Included files, parent directories and any symlink targets need appropriate write restrictions. The choice of directory is not itself a security boundary.
 
-Global `config.yaml` keeps its current precedence and is outside this repository boundary too. A placeholder claims a setting's project file without fixing its effective value. A team that needs a fixed policy supplies an explicit value in the protected file; a placeholder may still inherit a value from global configuration. A configured `globalPnpmfile` must be trusted: its hooks can rewrite settings after the fragment merge, including explicit protected values. This RFC does not re-enforce fragment settings after hooks run.
+Command-line flags, `pnpm_config_*` environment variables and global `config.yaml` are outside the committed repository boundary and retain their existing precedence. Delegation without a value does not pin an effective value: lower layers and built-in defaults may still apply. A team that needs a fixed policy supplies explicit values.
 
-These are the design constraints that follow:
-
-- **The editable file must not control the protected files.** If `pnpm-workspace.yaml` listed its fragments in an `include:` field, removing one line would drop the whole security policy. Fragments are found by location, not by reference.
-- **The editable file must not be able to override a protected setting.** If later files won, an agent could redefine the key in the file it is allowed to edit. If earlier files won, the agent would only need to know the order. Both lose; a duplicate definition is an error.
-- **The editable file must not weaken a protected setting through a neighbouring key.** `minimumReleaseAge: 1440` in `security.yaml` means little if `pnpm-workspace.yaml` can add `minimumReleaseAgeExclude: ['*']`. See [Claiming a setting](#claiming-a-setting).
+pnpmfile `updateConfig` hooks run after configuration is merged and can rewrite even explicit protected values. Hook files and the settings selecting them must be trusted. This RFC limits declarative configuration; it does not sandbox executable hooks or re-enforce values after hooks run.
 
 ## Detailed Explanation
 
-### Discovery
+### Includes
 
-pnpm locates the workspace root as it does today, by finding `pnpm-workspace.yaml`. It then reads every regular file matching `*.yaml` directly inside `<root>/.pnpm/config/`, in lexicographic order of file name:
+pnpm locates the workspace root as it does today, using `pnpm-workspace.yaml`. Only that root file may define `include`. It is a mapping from a source to either a list of settings or the string `'*'`:
 
-- Subdirectories are not read.
-- Files whose names start with `.` are ignored.
-- A `*.yml` file is an error that suggests renaming it, so a typo does not silently disable a policy.
-
-A fragment uses the same schema as `pnpm-workspace.yaml`. Any setting allowed in `pnpm-workspace.yaml` is allowed in a fragment, including `packages`, `catalogs` and `configDependencies`. A fragment may be empty.
-
-Paths inside a fragment are resolved relative to the workspace root, not to the fragment's directory. So `patchedDependencies`, `pnpmfile`, `storeDir` and `packages` mean the same thing wherever they are written, and a setting can move between files without being rewritten.
-
-`.pnpm/config/` also counts as a workspace-root marker. If a directory contains `.pnpm/config/` but not `pnpm-workspace.yaml`, pnpm reports an error instead of searching parent directories. Otherwise, deleting `pnpm-workspace.yaml` would make pnpm skip the fragments entirely.
-
-Fragments are read only for the project workspace. The global package directory and the global `config.yaml` are unchanged.
-
-### Merging
-
-The effective project settings are the union of the top-level keys of `pnpm-workspace.yaml` and all fragments.
-
-**A top-level key may be defined in only one file.** If it is defined in two, pnpm fails before doing any work:
-
-```text
-ERR_PNPM_DUPLICATE_SETTING  "minimumReleaseAge" is defined in more than one config file:
-  .pnpm/config/security.yaml
-  pnpm-workspace.yaml
-Each setting can be defined in one file only.
+```yaml
+include:
+  ./config/security.yaml: '*'
+  ./config/catalog.yaml: [catalog]
+  ./config/frontend.yaml: [catalogs.frontend]
+  '@acme/pnpm-policy': [minimumReleaseAge, trustPolicy]
 ```
 
-Aliases count as the same key. For example, `catalog` and `catalogs.default` are already treated as the same thing, and a legacy spelling counts the same as its current one.
+**Local sources** start with `./` or `../` and are resolved relative to the workspace root. They name individual YAML files, with either `.yaml` or `.yml` extensions. Globs, directories, URLs and absolute paths are not accepted. An include outside the workspace is subject to the same trust requirements as any other include. Paths used inside a local fragment, such as `packages`, `patchedDependencies` and `pnpmfile`, are also resolved relative to the workspace root, so moving a setting between local files does not change its meaning.
 
-**There is one exception: `catalogs`.** Different named catalogs can be defined in different files. Each catalog belongs wholly to one file: its name may be defined in only one file, and its entries are never merged across files. This is the use case behind [#12606](https://github.com/pnpm/pnpm/issues/12606):
+**Package sources** are exact names of declared `configDependencies`, including scoped names. The version and integrity remain governed by the existing config-dependency declaration and lockfile verification. An include cannot fetch an undeclared package, select a different version, use a package subpath or fall back to a regular dependency or Node resolution. Package sources require a setting list; `'*'` is rejected.
+
+The `include` mapping itself is structural metadata, not a setting that can be delegated. Included files may not define `include`, so there are no nested includes. All local fragments are read before resolving package sources; a protected local fragment may own `configDependencies`.
+
+Every referenced local file must exist, be readable and contain valid workspace settings; an empty YAML document is allowed. Missing, invalid or unreadable files are errors. Duplicate YAML keys, repeated sources after path normalization or symlink resolution, and includes of the root manifest itself are errors. Files not referenced by `include` are never loaded, regardless of directory or filename.
+
+Workspaces without `include` keep today's behavior. The global package directory and global `config.yaml` are unchanged.
+
+### Delegation and ownership
+
+A setting list both **permits** and **reserves** its settings. Lists contain canonical setting names or supported aliases; unknown names and invalid selectors are errors. An empty list permits no settings. For example:
 
 ```yaml
 # pnpm-workspace.yaml
+include:
+  ./config/catalog.yaml: [catalog]
+  ./config/deploy.yaml: [nodeLinker, injectWorkspacePackages]
+```
+
+`catalog.yaml` may define only `catalog`. Defining `minimumReleaseAge` there is an error. `deploy.yaml` owns both listed settings even if the file is empty. Another file, including the root manifest, cannot define either setting. A later write to an omitted `nodeLinker` goes directly to `deploy.yaml`.
+
+An unrestricted local include (`'*'`) owns the settings it actually defines. It does not reserve omitted settings and does not get precedence over another source. A trusted security file can therefore add a setting without changing the root mapping, but cannot define a setting already delegated to another source.
+
+Settings defined directly in the root belong to the root. Settings with neither a delegation nor a definition have no project owner and retain today's inherited or built-in values. Aliases are canonicalized before checking permission and ownership; a legacy spelling cannot evade a delegation or create a separate owner.
+
+Each setting has one owner. Overlapping lists, a definition outside its source's list, and a definition that conflicts with another source's reservation are errors even if one owner supplies no value. Repeating a selector within a list is also an error. Validation names the setting, the source and the conflicting definition or delegation:
+
+```text
+ERR_PNPM_DUPLICATE_SETTING  "minimumReleaseAge" is delegated to @acme/pnpm-policy
+but is also defined in ./config/security.yaml.
+Each setting can have one owner only.
+```
+
+The result does not depend on include order. Includes are processed in root mapping order only for deterministic diagnostics. No ordinary map merges across owners: `overrides`, `allowBuilds`, `packageExtensions` and `patchedDependencies` each belong wholly to one source.
+
+### Catalogs
+
+Catalogs retain one owner per catalog name. Their entries are never split across sources. The default catalog can be written as `catalog` or `catalogs.default`; both names identify the same ownership slot.
+
+Setting lists support these selectors:
+
+- `catalog` (or `catalogs.default`) reserves the default catalog.
+- `catalogs.<name>` reserves one named catalog.
+- `catalogs` reserves all catalogs, including the default and names added later. This lets a delegated catalog file grow without editing the root for every new catalog.
+
+`catalogs.<name>` treats the entire suffix as the catalog name, not a general nested property path. Nested selectors for other settings are not supported. A whole-`catalogs` reservation conflicts with any reservation or definition of an individual catalog in another source. A file assigned only one named catalog cannot define another.
+
+```yaml
+# pnpm-workspace.yaml
+include:
+  ./config/catalog.yaml: [catalog]
+  ./config/catalogs-legacy.yaml: [catalogs.react18]
+
+# config/catalog.yaml
 catalog:
   react: ^19.0.0
 
-# .pnpm/config/catalogs-legacy.yaml
+# config/catalogs-legacy.yaml
 catalogs:
   react18:
     react: ^18.3.1
 ```
 
-Defining the same catalog in more than one file is an error, even when the entries do not overlap:
+For unrestricted local files and the root, ownership follows the names actually present. Defining catalog `foo` in two sources is an error even when its entries do not overlap. When `pnpm add` saves an entry to `foo`, there is exactly one destination.
 
-```yaml
-# pnpm-workspace.yaml
-catalogs:
-  foo:
-    a: '0'
+### Omitted values and null
 
-# .pnpm/config/catalogs-b.yaml
-catalogs:
-  foo:
-    b: '1'
-```
+An explicit delegation reserves ownership without requiring a placeholder in the included file. Omitting a delegated setting supplies no value at the project layer; normal inherited configuration and built-in defaults still apply. This does not force the built-in default or bypass global configuration.
 
-```text
-ERR_PNPM_DUPLICATE_SETTING  Catalog "foo" is defined in more than one config file:
-  .pnpm/config/catalogs-b.yaml
-  pnpm-workspace.yaml
-Each catalog can be defined in one file only.
-```
+For unrestricted files, key presence establishes ownership, including when the value is null. Existing null values keep their setting-specific semantics. Where null means unset, it contributes no override; where it already clears or disables a value, that behavior remains.
 
-The rule stops at the catalog name because of writes. When `pnpm add` saves a new entry to catalog `foo`, the entry must go to exactly one file. If `foo`'s entries were spread across several files, nothing would say which one. A team that wants a catalog in its own file moves the whole catalog there.
+For example, pnpm v12 with global `minimumReleaseAge: 0` and project `minimumReleaseAge: null` keeps `0`. `hoistPattern: null` disables private hoisting, and `scriptShell: null` clears an inherited shell. Moving these values into fragments does not change their meaning. No new YAML marker or universal null-to-default conversion is introduced.
 
-No other key merges. In particular, `overrides`, `allowBuilds`, `packageExtensions` and `patchedDependencies` do not merge. Allowing `pnpm-workspace.yaml` to add entries to `overrides` while a protected file defines other entries would let the editable file override a protected package. These maps belong wholly to one file.
-
-Because no key can be defined twice, the result does not depend on file order. Order only determines which file is named first in error messages.
-
-### Claiming a setting
-
-A file claims a setting by defining it. This is how a protected file stops the editable file from defining a related key.
-
-For a setting that treats `null` as unset, a file can claim it without choosing its value by writing `null`. **The key's presence establishes ownership; its value follows the setting's existing semantics.** A null placeholder contributes no override at this layer, so lower-precedence configuration still applies:
-
-```yaml
-# .pnpm/config/security.yaml
-minimumReleaseAge: ~          # owned here, inherits the value from lower layers
-minimumReleaseAgeExclude: ~
-trustPolicy: no-downgrade     # owned here, with an explicit value
-trustPolicyExclude: ~
-allowBuilds:
-  esbuild: true
-overrides: ~
-configDependencies: ~
-pnpmfile: []                  # explicit: disables automatic pnpmfile loading
-globalPnpmfile: ~             # owns the selector; a trusted global value may apply
-```
-
-With this file in place, adding `minimumReleaseAgeExclude` or `overrides` to `pnpm-workspace.yaml` fails the install. It does not quietly weaken the policy.
-
-For example, pnpm v12 with global `minimumReleaseAge: 0` and project `minimumReleaseAge: null` keeps `0`. If no lower layer supplies a value, the built-in default applies. The claim prevents another project file from defining `minimumReleaseAge`; it does not reset the value or bypass global configuration.
-
-Why use a null placeholder rather than write a value out:
-
-- **Writing a value out pins it.** `minimumReleaseAge: 1440` supplies that value. A null placeholder inherits instead, so it follows the built-in default when no lower layer supplies a value.
-- **No new marker is needed.** `null`, `~` and an empty YAML value already express an unset value for these settings. A string such as `inherit` could be a real value: `storeDir: inherit` names a directory today.
-- **An empty value still claims the key.** `minimumReleaseAge:` is also `null`. Its presence blocks a definition in another project file even though it contributes no override.
-
-This RFC changes ownership, not the meaning of `null` for existing settings. Some settings already use an explicit null to clear or disable a value. For example, pnpm v12's `hoistPattern: null` disables private hoisting, and `scriptShell: null` clears an inherited shell. Those meanings stay intact when the setting moves to a fragment. Both CLIs retain their existing setting-specific value handling; neither receives a universal null-to-default conversion.
-
-When pnpm writes to a setting claimed with `null` (for example, `pnpm approve-builds` with `allowBuilds: ~`), it replaces the `null` in the same file.
-
-The docs will include a recommended `security.yaml` that claims the full set of supply-chain settings.
+A null placeholder is no longer needed to reserve a setting with an explicit delegation. Switching between an omitted setting and a configured value edits only the included file; its root mapping stays the same.
 
 ### Code that runs while config loads
 
-Files are merged first, and then pnpmfile `updateConfig` hooks run and can rewrite settings. A policy in a fragment therefore holds only if no untrusted code gets a chance to run after the merge. The protected file must claim the settings that can select hooks from project configuration:
+Files are merged first, then pnpmfile `updateConfig` hooks run. In a workspace using delegation, broadly editable files must not be assigned hook-selection settings. Those settings belong in the protected root or another trusted local file:
 
-- **`configDependencies`:** a config dependency named `pnpm-plugin-*` (or `@pnpm/plugin-*`, `@scope/pnpm-plugin-*`) has its `pnpmfile` loaded automatically. If the protected file claims `configDependencies`, the editable file cannot add a plugin. Its resolutions live in `pnpm-lock.yaml`, which the agent can edit, but pnpm already checks config-dependency lockfile entries against their declarations and the registry (`createConfigDepsVerifier`). An edited lockfile cannot swap the package behind a protected declaration.
-- **`pnpmfile`:** with no configured value, pnpm loads `.pnpmfile.mjs` (or `.pnpmfile.cjs`) from the root if the file exists. A null placeholder does not disable loading: an inherited value may apply, and otherwise creating `.pnpmfile.mjs` gets its hooks loaded. A workspace without a pnpmfile claims it with `pnpmfile: []`, which disables workspace pnpmfile loading. A workspace with a pnpmfile names it explicitly and protects its path along with the fragment.
-- **`globalPnpmfile`:** project configuration can name this file too. Claiming the key in the protected fragment prevents an editable project file from selecting another hook. A null placeholder retains a value inherited from global configuration; an explicit path must name a trusted file whose path is protected as well.
+- **`configDependencies`:** existing plugin-named config dependencies can load hooks automatically. Their declaration must be protected. Config-dependency lockfile entries remain checked against declarations and the registry by the existing verifier.
+- **`pnpmfile`:** without an explicit value, pnpm may automatically load `.pnpmfile.mjs` or `.pnpmfile.cjs` from the root. A workspace without a pnpmfile uses `pnpmfile: []` to disable workspace pnpmfile loading. Otherwise, it names a trusted file and protects its path. Omission or a null placeholder is not an explicit disable.
+- **`globalPnpmfile`:** project configuration can select this hook too. Keep its selector in trusted configuration and protect any selected file. An omitted value may inherit a trusted global value.
 
-`pnpmfile: []` does not disable a configured `globalPnpmfile`. Global hooks run after the fragment merge too, and their `updateConfig` results can change protected values. Global pnpmfiles and the non-project configuration that selects them must be trusted and protected separately; they are outside this RFC's repository-file guarantee. See [globalPnpmfile](https://pnpm.io/pnpmfile#globalpnpmfile).
+`pnpmfile: []` does not disable a configured global pnpmfile. Global hooks can rewrite protected values after merging; the non-project configuration selecting them and the hook files themselves must be trusted separately. See [globalPnpmfile](https://pnpm.io/pnpmfile#globalpnpmfile).
 
-pnpm already treats the automatically loaded root pnpmfile as untrusted in one place: `self-update` skips it, because its `updateConfig` hook could rewrite the release-age policy. Claiming `pnpmfile` applies the same reasoning to every command.
+A package's declarative setting list does not constrain executable hooks supplied by that package. Including a config entry does not itself execute code, but any hooks loaded under existing plugin rules still require full code trust.
 
 ### Fragments from config dependencies
 
-An organisation usually wants one supply-chain policy across all its repositories, not a copy of `security.yaml` in each. Today the only way a package can contribute settings is a plugin's `updateConfig` hook. That is code, and it can change anything. This RFC lets a config dependency ship fragments instead. A fragment is data, and it follows the same one-file-per-setting rule as local fragments.
+An organisation can publish shared declarative policy as a config dependency:
 
 ```yaml
-# .pnpm/config/security.yaml
+# pnpm-workspace.yaml (protected)
 configDependencies:
   '@acme/pnpm-policy': 3.1.0
 pnpmfile: []
+include:
+  ./config/catalog.yaml: [catalog]
+  '@acme/pnpm-policy': [minimumReleaseAge, trustPolicy]
 ```
 
-```text
-@acme/pnpm-policy/
-  package.json
-  pnpm-config/
-    security.yaml      # minimumReleaseAge, trustPolicy, overrides, ...
-    catalogs.yaml      # catalogs shared across the org
+The package declares one YAML config entry in its `package.json`:
+
+```json
+{
+  "name": "@acme/pnpm-policy",
+  "version": "3.1.0",
+  "pnpm": {
+    "config": "./config.yaml"
+  }
+}
 ```
 
-**Discovery.** Every `*.yaml` file directly inside a config dependency's `pnpm-config/` directory is a fragment. The `.pnpm/config/` discovery rules apply. A config dependency without that directory contributes nothing, so existing plugins are unaffected. Package fragments from different config dependencies are read in the lexicographic order of the dependency names.
+```yaml
+# @acme/pnpm-policy/config.yaml
+minimumReleaseAge: 1440
+trustPolicy: no-downgrade
+```
 
-**Merging.** Package fragments join the merge alongside `pnpm-workspace.yaml` and the local fragments, under the same duplicate rule. If `@acme/pnpm-policy` defines `minimumReleaseAge`, defining it in any repository file is an error, and so is defining it in another config dependency. Named catalogs merge as usual, so an org-wide catalog and a repository-local catalog can sit side by side under different names. Null values follow [Claiming a setting](#claiming-a-setting), as they do in local fragments.
+`pnpm.config` is a package-relative path to a regular `.yaml` or `.yml` file. It must stay inside the installed package after path and symlink resolution. It cannot name a directory, glob, URL or executable entry point. Missing or invalid metadata, an escaping path or an unreadable entry is an error when the package is included. A config dependency not named in `include` contributes no declarative configuration, regardless of whether it has this field; existing plugin behavior is unchanged.
 
-**What a package fragment may not define:**
+**Authority.** The root setting list is authoritative. The package file may define only those settings; anything else fails loading. A package update cannot expand its own list. Omitted settings remain reserved for the package, even before it has been installed, and their values inherit normally when the package has loaded successfully. Another source cannot supply a value for a package-owned setting.
 
-- `configDependencies`, `pnpmfile` and `globalPnpmfile`, which decide what code runs during config loading. Config dependencies are installed once, from the repository's own declaration. They do not pull in further config dependencies.
-- `bootConfig`, which governs installing the package itself (see below).
-- `packages` and settings whose values are paths (`patchedDependencies`, `storeDir`, `virtualStoreDir`, and the like). These describe a particular repository, and a path inside a package has no meaning relative to the workspace root.
+**What a package may not define or be delegated:**
 
-A package fragment that defines any of these fails config loading, naming the package and the setting.
+- `include`, `configDependencies`, `pnpmfile` and `globalPnpmfile`, which control configuration loading or select code.
+- `bootConfig`, which governs installing the package itself.
+- `packages` and path-valued settings such as `patchedDependencies`, `storeDir` and `virtualStoreDir`. These describe a particular repository and need a separate path-resolution design before sharing them from packages.
 
-**Timing.** Config dependencies are installed after the repository's files are read, because the list of config dependencies comes from those files. Package fragments are merged as a second step: after config dependencies are installed and before any pnpmfile is loaded, so `updateConfig` hooks see the merged result. The duplicate check runs again over the full set of files.
+These restrictions apply even if a prohibited setting appears in the root delegation but the package omits it. Delegation is validated before package installation.
 
-**Failing closed.** A policy that silently fails to load is worse than none. Commands that install or resolve dependencies already fail when a config dependency cannot be installed. Only `pnpm config` commands tolerate that today, so that auth can be set up before the first install. They keep tolerating it, and `pnpm config list` and `pnpm config get` mark their output as incomplete when a config dependency was not installed.
+**Timing.** Read the root and all local fragments, validate their ownership and package delegations, then resolve and verify config dependencies using the repository's boot policy. Load the explicitly included package entries before any pnpmfile hooks run, validate their allowed settings, and apply their values to the merged configuration. There is no package directory scan or recursive config dependency installation.
 
-Writes need a stricter rule, because pnpm cannot tell which settings an uninstalled config dependency owns. Consider `pnpm config set --location project minimumReleaseAge 0` run while `@acme/pnpm-policy` is not installed. pnpm would see the setting as undefined and add it to `pnpm-workspace.yaml`, and every later config load would then fail with a duplicate error. So while any config dependency is not installed, `pnpm config set --location project` and `pnpm config delete --location project` refuse to run. The error names the config dependencies that are not installed and says to run `pnpm install` first. Writes to the global `config.yaml` (`--location global`) are unaffected, so that auth can still be configured. Every other command that writes project settings already requires config dependencies to be installed, so the same rule holds for them without extra work. The source-aware writers still assert that ownership is complete, so a future command that tolerates missing config dependencies cannot reintroduce this problem.
+**Failing closed.** Installation and resolution commands must fail when an included package or its entry cannot be loaded or validated. They must not continue using inherited defaults in place of a missing policy. `pnpm config` commands retain their existing allowance for unavailable config dependencies so credentials can be configured before the first install. Their `get` and `list` output marks configuration as incomplete; it must not present a package-owned value as final when its source is unavailable. Invalid delegation, malformed entries and undelegated settings are configuration errors, not an excuse to ignore the package.
 
-**Writes.** pnpm never writes into a config dependency. A command that needs to change a setting owned by a package fragment fails with a pointer to the owner:
+**Writes.** pnpm never writes into a config dependency. A command that needs to change a package-owned setting fails even if the package is not installed:
 
 ```text
-ERR_PNPM_SETTING_OWNED_BY_CONFIG_DEPENDENCY  "allowBuilds" is defined by @acme/pnpm-policy@3.1.0 (pnpm-config/security.yaml).
+ERR_PNPM_SETTING_OWNED_BY_CONFIG_DEPENDENCY  "minimumReleaseAge" is delegated to @acme/pnpm-policy.
 Change it in that package and update the config dependency.
 ```
 
-So a package fragment should own only the settings meant to be changed centrally. A setting that each repository should manage, such as `allowBuilds` in most organisations, belongs in the repository's own files.
+Ownership is known from the root mapping and local files before package installation. `pnpm config set --location project` and `delete` can therefore write unrelated local settings while a config dependency is unavailable, provided local configuration and delegations are valid. They cannot create a local definition of a package-owned setting. Global writes remain unaffected. Other commands keep their existing requirement to load config dependencies before proceeding.
 
-**Settings for the boot phase: `bootConfig`.** Config dependencies are resolved and verified before their fragments are loaded, so a package fragment's settings cannot apply to installing that package. Today this phase uses `minimumReleaseAge` and `minimumReleaseAgeExclude` (`createConfigDepResolvers`). Once a policy package owns `minimumReleaseAge`, its value is not loaded yet when the package is resolved, and the repository cannot define the key without a duplicate error. The boot phase would use an inherited value or the built-in default, without a separate repository-level setting for getting a new policy version on the day it is published.
+A package should own only settings meant to change centrally. Repository-managed settings, such as `allowBuilds` in many organisations, belong in local files instead.
 
-The same question comes up for the other thing pnpm installs before running a command: the pnpm version requested by `packageManager`. Both are recorded in the first document of `pnpm-lock.yaml`, under `configDependencies` and `packageManagerDependencies`. The docs currently call it the env document. Both are resolved under the same release-age settings (`createConfigDepResolvers`, `self-updater/resolvePnpmVersion.ts`). This RFC calls that phase **boot**, renames the env document to the **boot document** to match, and gives the phase its own block of settings:
+**Changing the policy.** A policy update is a new package version, applied through a reviewed edit to the protected `configDependencies` declaration. Assigning another setting also requires a change to `include`. Updating a package cannot silently acquire authority over an undelegated setting.
+
+### Settings for the boot phase: `bootConfig`
+
+Config dependencies must be resolved and verified before their config entries can be read. A package's policy therefore cannot govern installing that same package. The same question applies to the pnpm version requested by `packageManager`: both are resolved before the main command, using release-age settings, and both are recorded in the first document of `pnpm-lock.yaml`.
+
+This RFC calls that phase **boot**, renames the env document to the **boot document**, and gives the phase its own settings block:
 
 ```yaml
-# .pnpm/config/security.yaml
+# pnpm-workspace.yaml (protected)
 configDependencies:
   '@acme/pnpm-policy': 3.1.1
 bootConfig:
   minimumReleaseAge: 0
+include:
+  '@acme/pnpm-policy': [minimumReleaseAge, trustPolicy]
 ```
 
-- **Scope.** `bootConfig` applies to resolving and verifying everything in the boot document: config dependencies and the package-manager dependency. Regular dependencies never read it.
-- **Allowed keys.** Only settings that govern how these packages are resolved: `minimumReleaseAge`, `minimumReleaseAgeExclude`, `minimumReleaseAgeStrict` and `minimumReleaseAgeIgnoreMissingTime`, and `trustPolicy` and its related settings if they are ever applied to this phase. Any other key is an error. In particular, registries are not accepted. The package-manager bootstrap takes registries only from non-project `.npmrc` files, and the error says so.
-- **Fallback, per key.** pnpm uses a non-null value in `bootConfig` if it is set. Otherwise it uses the setting of the same name from the configuration loaded before package fragments, with its normal precedence: a repository value, an inherited global value, or the built-in default. A null placeholder does not stop that fallback. This keeps today's behavior for repositories without policy packages: a repository with `minimumReleaseAge: 10080` keeps that cutoff for its config dependencies and its pnpm version. A value that comes from a package fragment never applies to this phase. `bootConfig: ~` claims the block, with every key falling back.
-- **Repository files only.** A package fragment may not define `bootConfig`, since that would let a package set the policy for its own installation.
-- **One file owns the whole block.** Its keys cannot be split across files. It belongs in the protected file next to `configDependencies`. Each entry in this phase is a reviewed, exact entry in that file, so a shorter delay here costs less than a shorter delay for the whole dependency graph.
-- **No new trust.** `bootConfig` sets only what the top-level release-age settings already set for this phase today. It lets a repository set these values separately; it does not let project config reach anything that it cannot reach today.
+- **Scope:** `bootConfig` governs resolving and verifying config dependencies and the package-manager dependency. Regular dependencies do not read it.
+- **Allowed keys:** only settings governing this phase: `minimumReleaseAge`, `minimumReleaseAgeExclude`, `minimumReleaseAgeStrict`, `minimumReleaseAgeIgnoreMissingTime`, and `trustPolicy` and related settings if they are applied to this phase. Other keys are errors. In particular, the package-manager bootstrap continues to take registries only from non-project `.npmrc` files.
+- **Fallback, per key:** use a non-null `bootConfig` value when present; otherwise use the same setting from configuration loaded before package entries, with normal precedence through repository values, inherited global values and built-in defaults. A null placeholder does not stop fallback. A package-owned setting whose value is not loaded yet contributes no boot value.
+- **Repository files only:** the whole block belongs to one trusted local source or the root. A package cannot define it or receive a delegation for it. Its entries cannot be split between sources.
+- **No new trust:** the block separates values for the boot phase; it does not let project configuration reach settings unavailable to that phase today.
 
-**Changing the policy.** A policy change is a new version of the package. It reaches a repository as an edit to `configDependencies` in the protected local fragment, and that edit goes through the same review as any other policy change. The resolution recorded in `pnpm-lock.yaml` is checked against that declaration and the registry, as described above.
-
-`pnpm config get minimumReleaseAge --verbose` shows the package source:
-
-```text
-1440  (@acme/pnpm-policy@3.1.0: pnpm-config/security.yaml)
-```
+Repositories without policy packages retain today's fallback: a local `minimumReleaseAge: 10080` applies to config dependencies and the pnpm version unless `bootConfig` supplies a different value. The resolver and verifier must use the same boot policy.
 
 ### Writes
 
-pnpm commands that write project settings send each change to the file that currently defines the setting:
+Commands route each project configuration change by ownership:
 
 | Command | Setting written |
 | --- | --- |
@@ -282,127 +277,113 @@ pnpm commands that write project settings send each change to the file that curr
 | `pnpm patch-commit` | `patchedDependencies` |
 | `pnpm audit --fix`, `pnpm audit --ignore` | `overrides`, the audit ignore list |
 | install with `minimumReleaseAgeExclude` / `trustPolicyExclude` prune | the exclude lists |
-| `pnpm config set --location project` | any |
+| `pnpm config set --location project` / `delete` | any ordinary setting |
 
-- If the setting is defined in a fragment, the fragment is edited and `pnpm-workspace.yaml` is left alone.
-- If it is not defined anywhere, it is added to `pnpm-workspace.yaml`, as today.
-- A new named catalog is added to `pnpm-workspace.yaml`. A new entry in an existing catalog goes to the file that defines that catalog.
-- Removing the last entry keeps the key with an empty map (`{}`) or list (`[]`), so the claim stays where it is and the explicit empty value is preserved. (Today, an emptied list or map is removed from the file.)
+- An explicitly delegated setting goes to its assigned local file even when omitted there. A package-owned setting is read-only.
+- A setting defined in an unrestricted local file stays there. A setting defined in the root stays in the root.
+- A setting with no owner is added to the root, as today. No unrestricted fragment is implicitly selected as a destination. If the root is protected, the write fails and the user must delegate it or make an authorized root edit.
+- A new catalog goes to its explicit named owner or the owner of all `catalogs`, if either exists. Otherwise it is added to the root. An entry in an existing catalog goes to that catalog's owner.
+- Removing the last map or list entry preserves an explicit empty `{}` or `[]`, retaining its value semantics and any ownership established by key presence. An explicit `config delete` removes the value, but leaves any root delegation intact; ownership based solely on a definition ends when that definition is deleted.
 
-pnpm never moves a setting between files and never deletes a fragment. A write that fails because of permissions reports the file that could not be written and stops. It does not fall back to `pnpm-workspace.yaml`.
+pnpm never moves a setting between files, deletes an included file or edits the include mapping as a side effect of writing a setting. Changing delegation requires an explicit root-manifest edit; `include` cannot be mutated through the ordinary setting writer. A failed write reports its destination and stops without falling back to another file.
 
 ### Inspecting the result
 
-`pnpm config list` and `pnpm config get <key>` show the source file of each project setting. When a placeholder inherits its value, verbose output distinguishes the value's source from the file that owns the project key:
+`pnpm config list` and `pnpm config get <key>` report project ownership separately from the value's source when they differ:
 
 ```text
 $ pnpm config get minimumReleaseAge --verbose
-0  (global config.yaml; project owner: .pnpm/config/security.yaml)
+0  (global config.yaml; project owner: ./config/security.yaml)
+
+$ pnpm config get trustPolicy --verbose
+no-downgrade  (@acme/pnpm-policy@3.1.0: config.yaml)
 ```
+
+The first example applies when the key is delegated but omitted, or uses a null that means unset. An unavailable package source is marked incomplete rather than reported as an intentional omission.
 
 ### Local fragments
 
-A gitignored fragment, for example `.pnpm/config/local.yaml`, is loaded like any other fragment and follows the same duplicate rule. It can set keys that no committed file defines. It cannot override a committed value; per-machine overrides of committed settings already belong in the global `config.yaml`, which keeps its current precedence.
+A gitignored local fragment must be explicitly included. It follows the same ownership rules and cannot override a committed owner's value. Every local include is required: a committed include of a gitignored file requires developers and CI to create that file, even if empty. Optional includes are outside this proposal. Existing global `config.yaml` remains available for machine-specific settings with its existing precedence.
 
 ### Interaction with the rest of pnpm
 
-- **Lockfile:** the settings recorded in `pnpm-lock.yaml` (overrides, `packageExtensionsChecksum`, catalogs, and so on) are computed from the merged result. Moving a setting between files without changing it does not change the lockfile.
-- **Cache keys and up-to-date checks:** anything that keys on the contents or modification time of `pnpm-workspace.yaml` (workspace state, `optimisticRepeatInstall`, the boot document check for config dependencies) must also key on the fragments. Adding or removing a fragment counts as a change.
-- **`pnpm-workspace.yaml` stays required.** It is still the root marker that every tool in the ecosystem looks for. A workspace with everything in fragments has an empty or near-empty `pnpm-workspace.yaml`, which is allowed.
+- **Lockfile:** settings recorded in `pnpm-lock.yaml` are computed from the merged result. Moving a value between sources without changing it does not change those recorded settings.
+- **Cache keys and up-to-date checks:** workspace state, optimistic repeat installs and boot-policy checks must account for the root mapping, every included local file, and included packages' verified resolutions, config-entry metadata and contents. A missing required input cannot be treated as an unchanged configuration.
+- **Workspace root:** `pnpm-workspace.yaml` remains required and is the sole root marker. An unreferenced directory does not load policy or mark a workspace root. Protecting the root index also protects against removing its includes or deleting the manifest.
 
 ## Rationale and Alternatives
 
-### An `include:` list in `pnpm-workspace.yaml`
+### Automatic discovery in a fixed directory
 
-This is closest to Cargo's `include` and to Git's `[include]`. It is explicit, and it supports any path. But it fails the first constraint: the file an agent is allowed to edit decides whether the protected file is read at all. An `include:` list is good for organising files, but it cannot be a security boundary on its own. It would remain safe only if `pnpm-workspace.yaml` were itself protected, and that is the situation this RFC exists to avoid.
+An earlier version loaded every `.pnpm/config/*.yaml` file so an editable root could not remove a protected policy include. That allowed `pnpm-workspace.yaml` to remain broadly editable, but required protected files to claim neighbouring settings individually, including absent values. Tooling had to scan all fragments, and package ownership could remain unknown until packages were installed.
 
-An include list could be added later for organisation. If it is, files loaded through it must follow the same duplicate rule, and the fixed directory must still be loaded unconditionally.
+This proposal accepts a protected root index instead. Explicit lists limit less-trusted files, preserve ownership without placeholders and make package authority known in advance. There is no longer a reason to require a particular fragment directory.
 
-### Precedence instead of an error ("fragments override `pnpm-workspace.yaml`")
+### Explicit lists for every local file
 
-The discussion's first suggestion. It is the familiar model (`conf.d`, layered `.npmrc`). It also lets a protected file pin a value without claiming neighbouring keys.
+This would make ownership entirely visible in the root, but adding each new trusted setting would require an accompanying mapping edit. Unrestricted local includes avoid that churn. They are a trust choice: a broadly editable file needs an explicit list, while a protected security file can use `'*'`.
 
-It fails silently in both directions. A value that a contributor writes in `pnpm-workspace.yaml` has no effect, and nothing reports it. When precedence is used to protect a setting, the editable file can still define a neighbouring key the protected file forgot about. With the error, the forgotten key is still a gap, but every attempt to define a key twice is reported, and both files are named in the message.
+Config dependencies require explicit lists because package updates must not silently expand their authority. This protection applies to declarative settings, not executable plugin hooks.
+
+### Precedence instead of ownership errors
+
+Ordered overrides make a contributor's setting silently ineffective or let an editable source replace protected values. A delegation says which source may supply a setting; a conflicting source is an error. No ordering rule is needed.
 
 ### The full `.pnpm/` project directory
 
-The discussion also sketches `.pnpm/` as a home for all of pnpm's project files: `workspace.yaml`, the lockfile, the pnpmfile and patches. That layout is compatible with this RFC: fragments in `.pnpm/config/` work whether or not the other files move there. But moving the lockfile involves ecosystem tooling, CI cache keys and package-manager detection. This RFC solves the settings problem without waiting for that, and chooses a directory name that the larger layout can adopt unchanged.
+Moving the lockfile, pnpmfile and workspace manifest into `.pnpm/` involves ecosystem tooling, CI cache keys and package-manager detection. Explicit includes work with any chosen local layout without requiring those moves.
 
 ### Generate `pnpm-workspace.yaml` from parts
 
-The discussion considers a hook that assembles `pnpm-workspace.yaml` from several files. The generated file would need to be protected (otherwise editing it directly bypasses the parts), pnpm's own writes would go to the generated file, and the parts and the output could drift apart. This is the same feature with more ways to go wrong.
+The generated file must be protected, pnpm's writes need routing back to the original parts, and output can drift from its sources. Native includes supply that routing without a generated intermediate manifest.
 
-### Other ways to claim a setting without a value
+### Placeholders and separate claim lists
 
-- **A string marker** (`minimumReleaseAge: default` or `inherit`): this conflicts with settings that accept any string. `storeDir: default` is a valid directory today.
-- **A YAML tag** (`minimumReleaseAge: !inherit`): this could express a placeholder, but reader behavior varies. `js-yaml` rejects unknown tags; the `yaml` library used by Renovate accepts them with warnings. pnpm's readers would need to recognize the tag and its writers would need to preserve it. `!default` would describe a reset to the built-in default, which this RFC does not introduce.
-- **A reserved key** (`claim: [minimumReleaseAge, trustPolicy]`): this works with any YAML reader. But it separates the claim from the setting and requires moving a setting between the list and a value when its declaration changes. An inline null placeholder keeps the key in one place.
-
-Null placeholders use ordinary YAML and existing value semantics. Their new effect is the ownership described in [Claiming a setting](#claiming-a-setting).
+Null placeholders preserve existing YAML semantics and can still appear in unrestricted files, but an explicit delegation reserves a key without a value. No custom `!inherit` or `!default` tag is needed. There is also no need to move keys between a separate `claimedSettings` list and configured values: an include's delegation stays present whether its source omits or defines the setting.
 
 ### Per-key permissions inside pnpm
 
-pnpm could have a setting that marks keys as read-only, or require a flag to change them. That setting would live in a file the agent can edit, and the flag can be passed by the agent. Enforcement has to happen outside the process being restricted. pnpm's job is to make the policy something that can be restricted from outside.
+A prompt or bypassable flag is not a file-permission boundary. pnpm validates delegation and routes writes; external review or process restrictions protect the root index and trusted files.
 
 ## Implementation
 
-### TypeScript CLI (`pnpm11/`)
+This is a new feature targeting the Rust CLI (`pnpm/crates/`). The TypeScript CLI's existing single-manifest behavior is unchanged; tooling and documentation must state which pnpm versions support includes.
 
-- **`workspace/workspace-manifest-reader`:** add a reader that returns the merged manifest together with a key → source file map. It enforces the duplicate rule and the `catalogs` exception, and validates each fragment with `validateWorkspaceManifest`.
-- **`workspace/root-finder`:** treat `.pnpm/config/` without `pnpm-workspace.yaml` as an error at that directory.
-- **`config/reader`** (`getConfig/localSettings.ts`, `getConfig/workspaceManifestSettings.ts`): consume the merged manifest; keep the source map on the config for `pnpm config` output and for writers. Record ownership from key presence before value handling, including keys whose null value contributes no override. Keep existing setting-specific value handling in `addSettingsFromWorkspaceManifestToConfig`; do not reset null values to `defaultOptions`.
-- **`workspace/workspace-manifest-writer`:** `updateWorkspaceManifest` currently writes to one file. It becomes source-aware: it groups the updated fields by owning file, patches each file with the existing `patchDocument` path, and keeps emptied maps. Its callers (`approveBuilds`, `updatePatchedDependencies`, the audit fix/ignore commands, `policyHandlers`, `handleIgnoredBuilds`, `configSet`, the catalog writers in `add`/`update`) pass changes through unchanged and need no per-command logic.
-- **`config/writer` and `config/commands`:** route `--location project` writes the same way; add the source to `config get`/`list`.
-- Add the fragment paths to the inputs of the workspace state and optimistic-repeat-install checks.
-- **`pnpm/src/getConfig.ts`** (`installConfigDepsAndLoadHooks`): after `installConfigDeps` and before `loadPnpmfileHooks`, read `pnpm-config/*.yaml` from each installed config dependency in `node_modules/.pnpm-config`, reject the settings package fragments may not define, re-run the merge with the duplicate rule, and apply the result. Writers refuse to change a setting owned by a package fragment. They also refuse any project write while a config dependency is not installed (`config/commands` for `config set`/`delete`, plus an assertion in the source-aware writer).
-- **`installing/env-installer`** (`createConfigDepResolvers`, `createConfigDepsVerifier`): read the release-age settings from `bootConfig`, falling back per key as described above. The resolver and the verifier must keep using the same cutoff.
-- **`engine/pm/commands`** (`self-updater/resolvePnpmVersion.ts`) and the `packageManager` resolution in `pnpm/src`: the same `bootConfig` settings.
+- **`config` (`loading.rs`, `layout.rs`):** parse the root include index, resolve local sources and build canonical ownership before applying values. Validate exact setting lists, unrestricted local definitions, catalog selectors, duplicate sources and ownership conflicts. Only the root accepts `include`.
+- **Value handling:** preserve existing overlays and setting-specific null semantics. Capture ownership before optional-field deserialization can collapse omitted keys and nulls; reserve explicitly delegated keys independently of source values.
+- **Config dependency loading:** validate package delegations before installation, resolve included names only through verified config dependencies, load `package.json`'s `pnpm.config` entry inside the package, and validate its entire contents before applying values or loading hooks. Reject `'*'`, forbidden settings and entry paths escaping the package.
+- **`workspace-manifest-writer`:** route writes through ownership, including omitted delegated settings and named catalogs. Enforce package read-only ownership even when its contents are unavailable. Never edit the root index implicitly or fall back after a failed write.
+- **Config commands:** distinguish unavailable package values from absent values; allow unrelated local writes when local ownership is valid, and keep package-owned writes blocked.
+- **`workspace-state`:** include the ownership index, included files and package inputs in invalidation checks.
+- **Boot resolution and verification:** use the same `bootConfig` fallback for config dependencies and the package-manager dependency. Load no package-provided boot policy.
 
-### Rust CLI (`pnpm/crates/`)
+Fixtures cover local paths and package names; `.yaml` and `.yml`; unreferenced files being ignored; missing required inputs; duplicate sources and aliases; nested-include rejection; undelegated settings; empty delegated files and writes to omitted keys; unrestricted local additions without root edits; overlapping reservations; named and whole-catalog delegation and writer routing; package metadata and path validation; package updates adding undelegated settings; forbidden package delegations; and package-owned writes rejected before installation while unrelated local config writes succeed.
 
-Parity is required: if one CLI ignores fragments, a protected setting is not applied when that CLI is used.
-
-- **`config`** (`loading.rs`, `layout.rs`): the same discovery, merge and duplicate rule. Capture ownership before deserializing settings into optional fields, which can collapse absent keys and null placeholders. Preserve the current overlays and explicit null behaviors; a placeholder must leave an inherited global value intact.
-- **`workspace-manifest-writer`:** the same source-aware writes.
-- **`workspace-state`:** the same cache inputs.
-- **`env-installer` / config loading:** the same second merge pass over package fragments after config dependencies are installed, and `bootConfig` for config dependencies and the package-manager dependency.
-
-Shared fixtures in both test suites cover: a duplicate across files; the `catalogs` merge and a duplicate catalog name; a write routed to a fragment; an emptied map that stays in its file; a `*.yml` error; `.pnpm/config/` present without `pnpm-workspace.yaml`; a package fragment that conflicts with a local fragment; a package fragment that defines a forbidden setting; and a write refused because a package fragment owns the setting.
-
-Null fixtures cover ownership independently of value handling: a placeholder rejects a duplicate and routes a later write to its owner; a package fragment's placeholder still owns the key; and `bootConfig` placeholders fall through. Value tests preserve each CLI's current behavior before and after moving a setting to a fragment. In v12, global `minimumReleaseAge: 0` survives a project null placeholder, `hoistPattern: null` disables private hoisting, and `scriptShell: null` clears an inherited shell.
+Value fixtures preserve v12 behavior before and after moving a setting: global `minimumReleaseAge: 0` survives project omission or null where appropriate, `hoistPattern: null` disables private hoisting, `scriptShell: null` clears an inherited shell, and `bootConfig` nulls fall through. Tests also distinguish an unavailable package from a successfully loaded package that omits a delegated value.
 
 ### Docs
 
-- A page on splitting settings, including the recommended `security.yaml` and the threat model above stated plainly.
-- Example rules for `CODEOWNERS` and for at least one agent sandbox.
-- Rename the env lockfile / env document to the **boot document** in `lockfile.md`, `config-dependencies.md` and anywhere else it appears. Keep the old anchors, so existing links to "env document" still resolve. The lockfile format does not change, since the first document has no `env` key.
+- A page on splitting settings, with a protected-root example, explicit delegation for everyday files and unrestricted includes only for trusted local files.
+- Config dependency examples showing `pnpm.config`, setting lists, bootstrap policy and the distinction between declarative authority and executable hooks.
+- Example rules protecting the root, policy files and hook paths for `CODEOWNERS` and at least one process sandbox.
+- Rename the env lockfile / env document to the **boot document** in documentation, retaining existing anchors. The lockfile format does not change because the first document has no `env` key.
 
-The code still uses the old name (`EnvLockfile`, `readEnvLockfile` and `env_lockfile` in both CLIs, and the published `@pnpm/installing.env-installer` package). Renaming it is a mechanical follow-up and is not required to ratify this RFC. New user-facing messages use "boot document" from the start.
+Existing internal names such as `EnvLockfile`, `readEnvLockfile` and `env_lockfile` can be renamed separately; that mechanical change is not required to ratify this RFC. New user-facing messages use "boot document".
 
 ## Prior Art
 
-- **Cargo** `include` in `.cargo/config.toml`: explicit list, later files override earlier ones. Organisational, not a boundary.
-- **Git** `[include]` / `[includeIf]`: ordered imports, last value wins.
-- **Bazel** `.bazelrc` `import` / `try-import`: ordered imports; `try-import` is commonly used for a gitignored `user.bazelrc`, which is the local-fragment use case.
-- **systemd, sudo, apt** `*.d/` directories: fixed-location discovery in lexical order, last wins. `sudoers.d` is the closest precedent for a security policy split by path so that separate parts can have separate owners.
-- **`CODEOWNERS`**: the reason path granularity matters; the enforcement mechanism this RFC is designed around.
+- **Git** `[include]` / `[includeIf]`: explicitly referenced configuration files with ordered overrides.
+- **Bazel** `.bazelrc` `import` / `try-import`: explicit required and optional imports. This proposal supports required includes only.
+- **systemd, sudo, apt** `*.d/` directories: automatic discovery with location-based conventions. This proposal uses a protected explicit index instead.
+- **`CODEOWNERS`:** the path-based review mechanism motivating delegation into separate files.
 
-None of these treats a duplicate definition as an error. They are configuration systems where overriding is the purpose. Here overriding is the attack.
+Here the index also assigns setting authority, and conflicting ownership is an error rather than an override.
 
 ## Unresolved Questions and Bikeshedding
 
-- **Directory name.** `.pnpm/config/` matches the larger layout sketched in the discussion. Alternatives: `pnpm-workspace.d/` (the `conf.d` convention, next to the file it extends) or `pnpm-workspace.*.yaml` siblings (no new directory; a glob rule that harnesses already support). Siblings are the easiest to find, but they mix fragments into the repo root.
-- **Existing null semantics.** Before implementation, inventory the setting-specific null behaviors in both CLIs and cover them with fixtures. Moving a setting into a fragment must preserve its value semantics; it must not require replacing an existing null with another value.
-- **How a config dependency declares its fragments.** A `pnpm-config/` directory is proposed. Alternatives are a `package.json` field listing the files, or a name convention like the one for plugins (`pnpm-config-*`). A directory needs no extra metadata. A field makes the contribution visible in the package's manifest.
-- **Name of `bootConfig`.** "Boot" means loading what is needed before the main run, and pnpm's code already calls the pnpm download the package-manager bootstrap. Alternatives considered:
-  - `preflightConfig`: has no existing meaning in pnpm, but suggests checks more than installs.
-  - `envConfig`: matches the "env document" term already in the docs and needs no rename. It was rejected because in many tools "env config" means settings for a deployment environment (development, staging, production). `envConfig: { minimumReleaseAge: 0 }` reads as the value for some environment, and that misreading is likely here, since this RFC is partly about settings that differ between local and deployed environments. "Env" is also read as environment variables.
-  - `bootstrapConfig`: inside pnpm, "bootstrap" already means the trusted package-manager download specifically, and `lerna bootstrap` means installing a monorepo's dependencies.
-  - A suffixed setting such as `minimumReleaseAgeForConfigDeps`: needs one more top-level setting for each setting this phase overrides.
-
-  Whatever the name, it must be a separate top-level key. Nesting it under `minimumReleaseAge` would put a policy package's value and the repository's boot value under one key, which the duplicate rule forbids.
-- **Path-valued settings from packages.** Sharing `patchedDependencies` across an org would be useful, but it needs a rule for resolving paths inside the package. Forbidden for now.
-- **Should any map other than `catalogs` merge?** Candidates are `packageExtensions` and `publishConfig`-style maps that carry no policy. Merging only `catalogs` is the conservative start.
-- **Should pnpm warn about unclaimed neighbours?** For example, a fragment defines `minimumReleaseAge` but not `minimumReleaseAgeExclude`. It would be helpful, but it means maintaining a list of related settings.
-- **Local overrides.** Is "a local fragment cannot override a committed value" too strict for settings such as `storeDir`, or is the global `config.yaml` enough?
-- **`pnpm config set` for a setting that is not defined anywhere.** Should there be a `--file` option to write it to a chosen fragment, so it does not land in `pnpm-workspace.yaml` first and need moving?
+- **Package entry field name:** `pnpm.config` is proposed as a single YAML entry. Its package-relative meaning must be clear alongside existing repository metadata in `package.json`.
+- **Existing null semantics:** inventory setting-specific behaviors before implementation and preserve them with fixtures. Delegation must not change value interpretation.
+- **Name of `bootConfig`:** "boot" covers loading prerequisites for the main command. Alternatives include `preflightConfig` and `bootstrapConfig`; the block must remain separate from settings a policy package owns.
+- **Path-valued settings from packages:** shared patches could be useful, but need an explicit path-resolution and trust design. They remain forbidden here.
+- **Optional local includes:** these could ease gitignored machine-local configuration, but silently missing policy must not be allowed by default.
+- **Selecting a destination for a new setting:** a future explicit `--file` option could help with unowned keys. Ordinary writes in this proposal use existing ownership or the root and never create delegation implicitly.
