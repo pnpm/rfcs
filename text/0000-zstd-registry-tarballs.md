@@ -83,7 +83,7 @@ pnpm reconstructs it the same way it reconstructs `.tgz` URLs today, with the sa
 ```
 
 - **Unchanged fields:** fields that describe the unpacked package, such as `unpackedSize` and `fileCount`, stay as they are, because both formats hold the same tar.
-- **Removed fields:** fields that only hold for the publisher's `.tgz` are left out. `shasum` is the SHA-1 of the `.tgz`, and `signatures` sign `name@version:integrity` with the `.tgz` integrity, so neither describes the `.tar.zst`.
+- **Replaced fields:** `shasum` is the SHA-1 of the `.tgz`, so it is left out. The upstream's `signatures` sign `name@version:integrity` with the `.tgz` integrity, so they are replaced by the zstd registry's own signatures over the `.tar.zst` integrity (see [Registry signatures](#registry-signatures)).
 - **`attestations`:** kept, because they describe the published package. Their subject is the `.tgz` digest, as described under [Trust](#trust).
 
 A registry that offers both formats serves them at two URLs, for example `https://pnpr.corp.example/` for `.tgz` and `https://pnpr.corp.example/~zstd/` for `.tar.zst`. Each URL has one document per package, so no response varies by request header, and a CDN caches each as it caches metadata today. The URL a project keys in `registries` decides which format it gets.
@@ -140,10 +140,25 @@ The `.tgz` integrity is the publisher's. The `.tar.zst` integrity is the registr
 
 Two consequences:
 
-- **Registry signatures.** They sign `name@version:integrity` with the `.tgz` integrity, so a zstd registry leaves them out of its metadata, and `pnpm audit signatures` has nothing to verify against it. Signing the `.tar.zst` integrities is an open question.
+- **Registry signatures.** The upstream's signatures cover the `.tgz` integrity. A zstd registry signs the `.tar.zst` integrities with its own key instead, described below.
 - **Provenance.** Sigstore provenance names the `.tgz` digest as its subject. The link from the attested `.tgz` to the installed `.tar.zst` is the registry's claim.
 
 pnpr, in turn, must verify an upstream `.tgz` against its upstream integrity before it transcodes it.
+
+#### Registry signatures
+
+npm registry signatures sign `name@version:integrity` with the registry's key, published at `/-/npm/v1/keys`, and `pnpm audit signatures` verifies them. The registry that produces a `.tar.zst` is the party that can vouch for it, so a zstd registry signs its own artifacts:
+
+- Each version's `dist.signatures` holds signatures over `name@version:<.tar.zst integrity>`, made with the zstd registry's key.
+- The registry serves that key at its own `/-/npm/v1/keys`, for example `/~zstd/-/npm/v1/keys`.
+- `pnpm audit signatures` against the zstd registry then works unchanged.
+
+What a signature vouches for depends on where the package lives:
+
+- **Hosted packages:** the registry accepted the publish and produced the `.tar.zst` from the published `.tgz`. Its signature covers both steps.
+- **Upstream packages:** the registry vouches for its own transcoding of the upstream `.tgz`, which it verified against the upstream integrity. That is weaker than the upstream's signature over the published `.tgz`.
+
+A version the registry has not transcoded yet has no `.tar.zst` integrity, so its metadata carries no signature until it is transcoded.
 
 ### pnpr
 
@@ -229,7 +244,8 @@ The prototype behind the measurements covers the decoding sites in `pnpm/crates/
 - Config: `tarballs` on every registry type.
 - Publish path: transcode and store the `.tar.zst`.
 - Upstream path: transcode on first request, with single-flight deduplication, and store the result write-once in durable storage.
-- Metadata: in zstd registries, rewrite `dist.tarball` and `dist.integrity` to the `.tar.zst`. Drop `shasum` and `signatures`. Leave `dist.integrity` out for versions not transcoded yet.
+- Metadata: in zstd registries, rewrite `dist.tarball` and `dist.integrity` to the `.tar.zst`, drop `shasum`, and replace `signatures` with the registry's own. Leave `dist.integrity` and `signatures` out for versions not transcoded yet.
+- Signing: a registry signing key, served at `/-/npm/v1/keys` for the registries it signs. pnpr has no key of its own today; it proxies the upstream's keys.
 - Routes: serve `.tar.zst` under zstd registries.
 - Docs: `pnpr/docs`.
 
@@ -242,7 +258,7 @@ The prototype behind the measurements covers the decoding sites in `pnpm/crates/
 ## Unresolved Questions and Bikeshedding
 
 - **Names:** `tarballCompression` and `gzip`/`zstd`, or `tarballFormat` with `tgz`/`tar.zst`. In pnpr: `tarballs`. The extension: `.tar.zst`, the common convention, or `.tzst`, the counterpart of `.tgz`.
-- **Registry signatures:** whether a zstd registry should sign `name@version:integrity` with its own key over the `.tar.zst` integrity, so `pnpm audit signatures` works against it.
+- **Signing upstream packages:** whether a zstd registry should sign its transcodings of upstream packages, or only hosted ones. Unsigned upstream versions would fail `pnpm audit signatures`, while signed ones carry the weaker guarantee described under [Registry signatures](#registry-signatures).
 - **Level and parameters:** whether the RFC fixes level 19, or only the window limit and leaves the level to the registry.
 - **Dictionaries:** whether a zstd dictionary trained on npm tarballs is worth a later extension. It mainly helps small tarballs, which are most tarballs by count.
 - **Lockfile-only resolution:** whether pnpr should transcode the latest versions of a package eagerly when it caches its metadata, so `--lockfile-only` resolutions rarely download.
