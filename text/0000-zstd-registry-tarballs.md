@@ -217,7 +217,8 @@ Here `https://pnpr.corp.example/` serves `.tgz` and `https://pnpr.corp.example/~
 ### Trust
 
 - **Metadata:** a client that takes a tar hash from a tar registry's metadata trusts that registry as it trusts `dist.integrity` from any registry today. pnpr only ever derives the hash from a `.tgz` it verified.
-- **Signatures and provenance:** they cover the `.tgz`, and through the derivation, the tar. A tar registry's metadata carries no `.tgz` hash and no `signatures`, so `pnpm audit signatures` has nothing to verify against it. A client that wants to check the derivation itself reads the `.tgz` hash from the sibling `.tgz` registry's metadata and verifies the `.tgz` it downloads from there.
+- **Signatures:** npm's registry signatures sign `name@version:integrity` with the `.tgz` hash, and only npm can change what it signs. A tar registry's metadata carries no `.tgz` hash and no `signatures`, so `pnpm audit signatures` has nothing to verify against it. A client that wants to check the derivation itself reads the `.tgz` hash from the sibling `.tgz` registry's metadata and verifies the `.tgz` it downloads from there.
+- **Provenance:** an attestation is an in-toto statement whose `subject` is a list of artifacts. `pnpm publish --provenance` names two subjects: the `.tgz` digest, which npm's verifier matches as today, and the tar digest. An attestation made this way covers the tar directly rather than by derivation, so a tar registry can serve it for the tar it holds. Attestations made by other clients name only the `.tgz`, and cover the tar by derivation.
 - **Install-time checks** such as `trustPolicy` read provenance markers in metadata, which a tar registry keeps, so they work unchanged.
 
 ## Rationale and Alternatives
@@ -255,6 +256,7 @@ pnpm v12 only. pnpm v11 is maintenance-only and is not changed.
 - `config`: the `tarballFormat` field on npm registry entries, with validation and the workspace-only rule.
 - `resolving-npm-resolver`: accept a missing `dist.integrity` from a `tar` registry and record the hash of the downloaded tar. Rebuild `.tar` URLs.
 - `lockfile`: the lockfile version gate for lockfiles that contain tar hashes.
+- `publish`: add the tar digest as a second subject of the provenance statement.
 - `tarball`:
   - Extract a plain tar stream on the `.tar` path, where the HTTP client has already decoded the content coding, hashing the tar on the way.
   - The fallback: hash the decoded tar of a `.tgz` after a `.tgz` hash mismatch, and refetch the `.tgz` after a `.tar` hash mismatch.
@@ -285,7 +287,7 @@ pnpm v12 only. pnpm v11 is maintenance-only and is not changed.
 - **Names:** `tarballFormat: tar`, the `.tar` path, and pnpr's `tarballs: tar`.
 - **Lockfile version:** the exact gate for lockfiles that contain tar hashes, and whether a lockfile without them keeps today's version.
 - **Self-computed hashes for other sources:** pnpm computes `integrity` itself for `tarball:` URLs and `file:` tarballs. Hashing the tar there would make those pins survive a host re-compressing the same content, as GitHub did to its `codeload` archives in January 2023 before reverting, and the fallback in this RFC makes the change cheap. It touches sources this RFC does not otherwise change, so it is proposed as a follow-up.
-- **Signing tar hashes:** whether pnpr should sign `name@version:integrity` over tar hashes with its own key, so `pnpm audit signatures` works against a tar registry. pnpr has no signing key today.
+- **Signing tar hashes:** whether pnpr should sign `name@version:integrity` over tar hashes with its own key, so `pnpm audit signatures` works against a tar registry. pnpr has no signing key today. With that and the two-subject attestation, a hosted tar-only registry could stop keeping the `.tgz`, which this RFC does not allow.
 - **Upstream hashes:** whether pnpr should fetch the `.tgz` of the latest versions in the background, so `--lockfile-only` resolutions rarely download.
 - **Dictionaries:** whether a zstd dictionary trained on npm tarballs is worth a later content coding. It mainly helps small tarballs, which are most tarballs by count.
 - **Linux crossover:** to be measured before ratification, because it decides how many installs see the gain.
