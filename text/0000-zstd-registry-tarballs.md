@@ -5,25 +5,22 @@
 A registry can serve a package's tarball as an uncompressed tar with standard HTTP content coding, zstd for clients that accept it. Its metadata then describes the tar, in the same fields as today:
 
 ```jsonc
-"dist": {
-  "tarball": "https://pnpr.corp.example/~zstd/lodash/-/lodash-4.17.21.tar",
-  "integrity": "sha512-<tar digest>"
-}
+"dist": { "integrity": "sha512-<tar digest>" }
 ```
 
 The tar is the gzip-decoded content of the published `.tgz`, so its hash is a deterministic function of the publisher's artifact. Compression becomes a transport detail: the registry may encode the tar at any level, re-encode it, or let a CDN choose, because no hash depends on the encoded bytes.
 
-A project opts in per registry:
+A project opts in by using the tar registry's URL. The only declaration is pnpr's URL layout, so that lockfiles can keep omitting tarball URLs:
 
 ```yaml title="pnpm-workspace.yaml"
 registries:
   https://pnpr.corp.example/~zstd/:
     scopes: ["@"]
-    tarballFormat: tar
+    serverType: pnpr
 ```
 
 ```text
-GET /~zstd/lodash/-/lodash-4.17.21.tar
+GET /~zstd/lodash@4.17.21
 Accept-Encoding: zstd, gzip
 
 200 OK
@@ -31,7 +28,7 @@ Content-Type: application/x-tar
 Content-Encoding: zstd
 ```
 
-The lockfile keeps its `integrity` field. For packages from a `tar` registry it pins the tar's hash, and the entry installs from any registry: pnpm fetches the `.tar` where it is declared, and the `.tgz` everywhere else, and verifies the tar either way. A registry offers both formats at two URLs. pnpr exposes a tar registry over any of its sources with one setting.
+The lockfile keeps its `integrity` field. For packages from a tar registry it pins the tar's hash, and the entry installs from any registry: pnpm fetches whatever the registry serves, tells a tar from a `.tgz` by its first bytes, and verifies the tar either way. A registry offers both formats at two URLs. pnpr exposes a tar registry over any of its sources with one setting.
 
 ## Motivation
 
@@ -81,7 +78,7 @@ A misread can only fail. Whether pnpm treats a value as a `.tgz` hash or a tar h
 
 ### Lockfile
 
-An entry for a package from a `tar` registry pins the tar's hash in the existing field, and the tarball URL is omitted when pnpm can rebuild it:
+An entry for a package from a tar registry pins the tar's hash in the existing field, and the tarball URL is omitted when pnpm can rebuild it:
 
 ```yaml
 packages:
@@ -91,31 +88,36 @@ packages:
 ```
 
 - **Which hash an entry holds** follows from the registry the package resolved from, as the tarball URL does. The lockfile is not annotated.
-- **Portability:** the entry installs from any registry that serves the version (see [Fetching](#fetching)). Declaring or removing `tarballFormat: tar` never makes an existing entry invalid, and no install is forced to rewrite the lockfile. pnpm converts entries when it re-resolves them.
+- **Portability:** the entry installs from any registry that serves the version (see [Fetching](#fetching)). Moving a project between a tar registry and a `.tgz` registry never makes an existing entry invalid, and no install is forced to rewrite the lockfile. pnpm converts entries when it re-resolves them.
 - **Older pnpm versions** would fetch the `.tgz` and report an integrity mismatch, which reads like tampering. A lockfile that contains tar hashes therefore carries a lockfile version that older pnpm versions reject with a clear error.
 
-### The setting
+### The layout declaration
 
-`tarballFormat` is a field of an npm entry in the [`registries`](https://pnpm.io/registries) setting.
+No setting selects the tar format. A project opts in by keying a tar registry's URL in `registries`, and pnpm learns everything else from the registry's responses: the encoding from `Content-Encoding`, the format from the first bytes of the decoded body, and the hash from the metadata.
 
-| value | meaning |
+What a frozen install cannot learn from a response is the tarball URL it has to rebuild, because the lockfile omits it. That is what the existing `serverType` field declares, and this RFC adds the value `pnpr`:
+
+| `serverType` | tarball URL layout |
 |---|---|
-| `tgz` (default) | Today's behavior: pnpm downloads `.tgz`, and new lockfile entries pin its hash. |
-| `tar` | The registry serves tars. pnpm downloads `.tar` with `Accept-Encoding: zstd, gzip`, and new lockfile entries pin the tar's hash. |
+| *undeclared* | `<registry>/<name>/-/<scopeless-name>-<version>.tgz`, strict |
+| `npm` | the same, with the npm registry's leniencies |
+| `artifactory` | the same, with the scope repeated in the file name |
+| `pnpr` | `<registry>/<name>@<version>` |
 
-Like `serverType` and `supportsTimeField`, the field describes the server, and pnpm reads it only from `pnpm-workspace.yaml`. It is refused for Cargo and PyPI entries. The format is declared, never inferred from metadata.
+`pnpr` describes pnpr's layout, not the tar format: pnpr serves that path on every registry it exposes, `.tgz` and tar alike, and pnpm treats whatever comes back by its content. The existing rules for `serverType` apply: it is read only from `pnpm-workspace.yaml`, declared rather than inferred, and refused for Cargo and PyPI entries.
 
 ### Registry protocol
 
 A **tar registry** is a registry URL whose metadata and tarballs describe tars. A registry that offers both formats does so at two URLs, for example `https://pnpr.corp.example/` for `.tgz` and `https://pnpr.corp.example/~zstd/` for tars. Each URL serves one document per package, so no response varies by request header, and the URL a project keys in `registries` decides the format.
 
-**Tarball URL.** The tar of a version lives at the canonical npm-layout path with the `.tar` extension:
+**Tarball URL.** A tar registry serves the tar of a version at the package identifier under the registry base, with no file extension:
 
 ```text
-<registry>/<name>/-/<scopeless-name>-<version>.tar
+<registry>/<name>@<version>
+<registry>/@<scope>/<name>@<version>
 ```
 
-pnpm reconstructs it the way it reconstructs `.tgz` URLs today, with the same `serverType` layout rules, so lockfiles keep omitting tarball URLs.
+A package name contains `@` only as its scope prefix, so the path is unambiguous, and it does not collide with the npm version-document route `<registry>/<name>/<version>`. pnpm rebuilds it from the `serverType: pnpr` declaration, so lockfiles keep omitting tarball URLs. GitHub Packages already serves npm tarballs from extensionless URLs, and the npm clients handle them.
 
 **Response.** The response body, after content decoding, is the tar:
 
@@ -134,7 +136,6 @@ Adding an encoding later, brotli for example, means advertising its token in `Ac
 ```jsonc
 {
   "dist": {
-    "tarball": "https://pnpr.corp.example/~zstd/lodash/-/lodash-4.17.21.tar",
     "integrity": "sha512-<tar digest>",
     "unpackedSize": 1412415,
     "fileCount": 17
@@ -142,6 +143,7 @@ Adding an encoding later, brotli for example, means advertising its token in `Ac
 }
 ```
 
+- **`tarball` is optional.** A registry with a declared layout needs no URL per version, and a tar registry omits it. Measured on the fixture's 1,235 abbreviated packuments, dropping the field removes 11% of the raw JSON (2.7% after gzip, because the URLs compress well), and the registry no longer has to rewrite URLs to its public address. A registry may still set `tarball` for a version served from a non-canonical location, and pnpm records such a URL in the lockfile as it does today.
 - **Unchanged fields:** everything that describes the unpacked package, such as `unpackedSize`, `fileCount`, and the attestation markers, stays as it is, because both formats hold the same tar.
 - **Removed fields:** `shasum` is the SHA-1 of the `.tgz`, and `signatures` sign `name@version:integrity` with the `.tgz` hash, so neither describes the tar. The tar registry leaves both out.
 - **Size:** the document is as large as the `.tgz` registry's. Adding a second hash to every version instead would have grown abbreviated metadata by 38%; see [Rationale and Alternatives](#rationale-and-alternatives).
@@ -150,25 +152,25 @@ Adding an encoding later, brotli for example, means advertising its token in `Ac
 
 ### Resolution
 
-When pnpm resolves a version from a `tar` registry:
+When pnpm resolves a version from a tar registry:
 
 - **`integrity` present:** pnpm records it, trusting the registry's metadata exactly as it trusts `dist.integrity` today.
-- **`integrity` missing:** pnpm downloads the `.tar` and records the hash of the tar it received. The registry produces the tar from a `.tgz` it verified first (see [pnpr](#pnpr)), so this trusts the registry no more than taking a hash from its metadata does. An install needs the tarball anyway. A `--lockfile-only` resolution pays for downloads it would otherwise skip, and only for versions the registry does not describe yet.
+- **`integrity` missing:** pnpm downloads the tarball and records the hash of the tar it received. The registry produces the tar from a `.tgz` it verified first (see [pnpr](#pnpr)), so this trusts the registry no more than taking a hash from its metadata does. An install needs the tarball anyway. A `--lockfile-only` resolution pays for downloads it would otherwise skip, and only for versions the registry does not describe yet.
 
 ### Fetching
 
-For an entry whose package resolved from a `tar` registry, pnpm requests the `.tar` URL with `Accept-Encoding: zstd, gzip`. The HTTP client decodes the content coding. pnpm hashes the tar as it arrives, verifies it against `integrity` before it records the package in the store index, and extracts it as a plain tar stream.
+pnpm requests the tarball URL with `Accept-Encoding: zstd, gzip`, as it does for every registry. The HTTP client decodes the content coding. pnpm reads the first bytes of the decoded body: the gzip magic means a `.tgz`, which it handles as today, and anything else is a tar, which it hashes as it arrives, verifies against `integrity` before it records the package in the store index, and extracts as a plain tar stream.
 
-The tar is only known after decoding, so pnpm decodes every `.tar` response before it can verify it. Today it verifies a buffered `.tgz` before decoding. Integrity of encoded responses under [Rationale and Alternatives](#rationale-and-alternatives) covers why that is acceptable.
+The tar is only known after decoding, so pnpm decodes every tar response before it can verify it. Today it verifies a buffered `.tgz` before decoding. Integrity of encoded responses under [Rationale and Alternatives](#rationale-and-alternatives) covers why that is acceptable.
 
-**Fallback.** A lockfile and the configuration can disagree about a registry's format: the declaration was added or removed, the lockfile moved to another registry, or a tool rewrote one of them. pnpm handles both directions without an annotation:
+**Fallback.** A lockfile entry and the registry it is installed from can disagree about the format: the project moved between a tar registry and a `.tgz` registry, or a tool rewrote one of them. pnpm handles both directions without an annotation:
 
-- **Entry pins a tar hash, registry fetched as `.tgz`:** the hash of the `.tgz` bytes does not match. Before failing, pnpm hashes the decoded tar and accepts a match. A buffered download is still in memory, so this costs nothing unless the first check fails. A download that was streamed is fetched again.
-- **Entry pins a `.tgz` hash, registry fetched as `.tar`:** the tar's hash does not match. pnpm fetches the `.tgz` and verifies it as today.
+- **Entry pins a tar hash, registry serves a `.tgz`:** the hash of the `.tgz` bytes does not match. Before failing, pnpm hashes the decoded tar and accepts a match. A buffered download is still in memory, so this costs nothing unless the first check fails. A download that was streamed is fetched again.
+- **Entry pins a `.tgz` hash, registry serves a tar:** the tar's hash does not match, and there is no `.tgz` to fall back to on a tar registry. pnpm fails with an error that names the registry and says the entry was resolved from a `.tgz` registry; re-resolving the package fixes it.
 
-Ordinary installs pay nothing for this: the second check runs only after a mismatch. A mismatch of both hashes fails the install.
+Ordinary installs pay nothing for this: the second check runs only after a mismatch.
 
-The content-addressed store holds files, so a package fetched as `.tgz` in one project and as `.tar` in another shares its file content. Store index rows keyed by the integrity value differ between the two kinds of entry.
+The content-addressed store holds files, so a package fetched as `.tgz` in one project and as a tar in another shares its file content. Store index rows keyed by the integrity value differ between the two kinds of entry.
 
 ### pnpr
 
@@ -196,7 +198,7 @@ registries:
 defaultRegistry: main
 ```
 
-Here `https://pnpr.corp.example/` serves `.tgz` and `https://pnpr.corp.example/~zstd/` serves tars.
+Here `https://pnpr.corp.example/` serves `.tgz` and `https://pnpr.corp.example/~zstd/` serves tars. Every pnpr registry serves its tarballs at `<registry>/<name>@<version>`; a `.tgz` registry also keeps the npm-layout `.tgz` path and the `dist.tarball` field for npm and Yarn, while a tar registry omits both.
 
 | deployment | exposed registries |
 |---|---|
@@ -249,13 +251,13 @@ pnpm v12 only. pnpm v11 is maintenance-only and is not changed.
 
 **pnpm:**
 
-- `config`: the `tarballFormat` field on npm registry entries, with validation and the workspace-only rule.
-- `resolving-npm-resolver`: accept a missing `dist.integrity` from a `tar` registry and record the hash of the downloaded tar. Rebuild `.tar` URLs.
+- `config`: the `serverType: pnpr` value and its URL layout.
+- `resolving-npm-resolver`: accept a missing `dist.tarball`, and a missing `dist.integrity` from a tar registry, recording the hash of the downloaded tar.
 - `lockfile`: the lockfile version gate for lockfiles that contain tar hashes.
 - `publish`: add the tar digest as a second subject of the provenance statement.
 - `tarball`:
-  - Extract a plain tar stream on the `.tar` path, where the HTTP client has already decoded the content coding, hashing the tar on the way.
-  - The fallback: hash the decoded tar of a `.tgz` after a `.tgz` hash mismatch, and refetch the `.tgz` after a `.tar` hash mismatch.
+  - Tell a tar from a `.tgz` by the first bytes of the decoded body, and extract a tar as a plain stream, hashing it on the way.
+  - The fallback: hash the decoded tar of a `.tgz` after a `.tgz` hash mismatch.
   - Enforce the 8 MiB zstd window limit.
   - Choose streaming extraction without a reliable body length, using `dist.unpackedSize` or the size limit.
 - Store index and global virtual store: confirm that entries keyed by a tar hash reuse file content and that slot hashes stay correct.
@@ -265,8 +267,8 @@ pnpm v12 only. pnpm v11 is maintenance-only and is not changed.
 
 - Config: `tarballs` per registry.
 - Publish and upstream fetch: compute the tar hash, after verifying an upstream `.tgz`.
-- Metadata: in tar registries, rewrite `dist.tarball` and `dist.integrity` to the tar, drop `shasum` and `signatures`, and leave `integrity` out for versions whose `.tgz` pnpr does not hold yet.
-- Routes: serve `.tar` under tar registries with content negotiation. Optionally store and evict encoded variants.
+- Metadata: in tar registries, set `dist.integrity` to the tar's hash, drop `tarball`, `shasum`, and `signatures`, and leave `integrity` out for versions whose `.tgz` pnpr does not hold yet.
+- Routes: serve `<name>@<version>` on every registry, as a tar with content negotiation on tar registries and as the `.tgz` elsewhere. Optionally store and evict encoded variants.
 - Docs: `pnpr/docs`.
 
 ## Prior Art
@@ -280,7 +282,7 @@ pnpm v12 only. pnpm v11 is maintenance-only and is not changed.
 
 ## Unresolved Questions and Bikeshedding
 
-- **Names:** `tarballFormat: tar`, the `.tar` path, and pnpr's `tarballs: tar`.
+- **Names:** `serverType: pnpr` and pnpr's `tarballs: tar`.
 - **Lockfile version:** the exact gate for lockfiles that contain tar hashes, and whether a lockfile without them keeps today's version.
 - **Self-computed hashes for other sources:** pnpm computes `integrity` itself for `tarball:` URLs and `file:` tarballs. Hashing the tar there would make those pins survive a host re-compressing the same content, as GitHub did to its `codeload` archives in January 2023 before reverting, and the fallback in this RFC makes the change cheap. It touches sources this RFC does not otherwise change, so it is proposed as a follow-up.
 - **Signing tar hashes:** whether pnpr should sign `name@version:integrity` over tar hashes with its own key, so `pnpm audit signatures` works against a tar registry. pnpr has no signing key today. With that and the two-subject attestation, a hosted tar-only registry could stop keeping the `.tgz`, which this RFC does not allow.
