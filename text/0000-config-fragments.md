@@ -92,7 +92,19 @@ include:
   '@acme/pnpm-policy': [minimumReleaseAge, trustPolicy]
 ```
 
-**Local sources** start with `./` or `../` and are resolved relative to the workspace root. They name individual YAML files, with either `.yaml` or `.yml` extensions. Globs, directories, URLs and absolute paths are not accepted. An include outside the workspace is subject to the same trust requirements as any other include. Paths used inside a local fragment, such as `packages`, `patchedDependencies` and `pnpmfile`, are also resolved relative to the workspace root, so moving a setting between local files does not change its meaning.
+**Local sources** start with `./` or `../` and are resolved relative to the workspace root. They name individual YAML files, with either `.yaml` or `.yml` extensions. Globs, directories, URLs and absolute paths are not accepted. An include outside the workspace is subject to the same trust requirements as any other include.
+
+**Relative paths** inside a local fragment are relative to the directory of that fragment's path as `include` writes it, just as relative paths in the root manifest are relative to the workspace root. This covers path-valued settings such as `packages`, `patchedDependencies`, `patchesDir`, `pnpmfile` and `storeDir`, a `scriptShell` that contains a path separator, and `file:`, `link:` and bare-path specifiers in catalogs and `overrides`. Absolute paths and paths starting with `~` or an environment variable are unchanged. pnpm re-expresses these paths from the workspace root when it merges the fragments, so the merged configuration means what the same values would mean in the root manifest. A fragment can therefore sit next to the files it names:
+
+```yaml
+# pnpm-workspace.yaml (protected)
+include:
+  ./patches/patches.yaml: [patchedDependencies]
+
+# patches/patches.yaml
+patchedDependencies:
+  express@4.21.2: express@4.21.2.patch
+```
 
 **Package sources** are exact names of declared `configDependencies`, including scoped names. The version and integrity remain governed by the existing config-dependency declaration and lockfile verification. An include cannot fetch an undeclared package, select a different version, use a package subpath or fall back to a regular dependency or Node resolution. Package sources require a setting list; `'*'` is rejected.
 
@@ -281,6 +293,7 @@ Commands route each project configuration change by ownership:
 
 - An explicitly delegated setting goes to its assigned local file even when omitted there. A package-owned setting is read-only.
 - A setting defined in an unrestricted local file stays there. A setting defined in the root stays in the root.
+- A path written to a local fragment, such as the entry `pnpm patch-commit` adds or a local catalog or override specifier, is written relative to that fragment.
 - A setting with no owner is added to the root, as today. No unrestricted fragment is implicitly selected as a destination. If the root is protected, the write fails and the user must delegate it or make an authorized root edit.
 - A new catalog goes to its explicit named owner or the owner of all `catalogs`, if either exists. Otherwise it is added to the root. An entry in an existing catalog goes to that catalog's owner.
 - Removing the last map or list entry preserves an explicit empty `{}` or `[]`, retaining its value semantics and any ownership established by key presence. An explicit `config delete` removes the value, but leaves any root delegation intact; ownership based solely on a definition ends when that definition is deleted.
@@ -341,6 +354,10 @@ The generated file must be protected, pnpm's writes need routing back to the ori
 
 Null placeholders preserve existing YAML semantics and can still appear in unrestricted files, but an explicit delegation reserves a key without a value. No custom `!inherit` or `!default` tag is needed. There is also no need to move keys between a separate `claimedSettings` list and configured values: an include's delegation stays present whether its source omits or defines the setting.
 
+### Paths relative to the workspace root
+
+Resolving every path in a fragment from the workspace root would keep a setting's meaning when it moves between files. It would also stop a fragment from being kept with the files it names: a patch list in `patches/` would have to spell `patches/` in every entry, and moving the directory would mean rewriting each path. Config dependency entries, if they are ever allowed path-valued settings, can only resolve them from the package, so root-relative local fragments would give the two kinds of source different rules. Measuring from the defining file is the rule `tsconfig.json` and Docker Compose use for files they include, and the root manifest is the case where that file's directory is the workspace root. Moving a setting between files by hand is rare, and pnpm's own writes already target the owning file.
+
 ### Per-key permissions inside pnpm
 
 A prompt or bypassable flag is not a file-permission boundary. pnpm validates delegation and routes writes; external review or process restrictions protect the root index and trusted files.
@@ -376,6 +393,7 @@ Existing internal names such as `EnvLockfile`, `readEnvLockfile` and `env_lockfi
 - **Bazel** `.bazelrc` `import` / `try-import`: explicit required and optional imports. This proposal supports required includes only.
 - **systemd, sudo, apt** `*.d/` directories: automatic discovery with location-based conventions. This proposal uses a protected explicit index instead.
 - **`CODEOWNERS`:** the path-based review mechanism motivating delegation into separate files.
+- **TypeScript** `tsconfig.json` `extends` and **Docker Compose** `include`: relative paths in an included file resolve from that file. This proposal follows the same rule for local fragments.
 
 Here the index also assigns setting authority, and conflicting ownership is an error rather than an override.
 
@@ -384,6 +402,6 @@ Here the index also assigns setting authority, and conflicting ownership is an e
 - **Package entry field name:** `pnpm.config` is proposed as a single YAML entry. Its package-relative meaning must be clear alongside existing repository metadata in `package.json`.
 - **Existing null semantics:** inventory setting-specific behaviors before implementation and preserve them with fixtures. Delegation must not change value interpretation.
 - **Name of `bootConfig`:** "boot" covers loading prerequisites for the main command. Alternatives include `preflightConfig` and `bootstrapConfig`; the block must remain separate from settings a policy package owns.
-- **Path-valued settings from packages:** shared patches could be useful, but need an explicit path-resolution and trust design. They remain forbidden here.
+- **Path-valued settings from packages:** shared patches could be useful. Paths relative to the defining file give them a natural base, the package itself, but they still need a trust design. They remain forbidden here.
 - **Optional local includes:** these could ease gitignored machine-local configuration, but silently missing policy must not be allowed by default.
 - **Selecting a destination for a new setting:** a future explicit `--file` option could help with unowned keys. Ordinary writes in this proposal use existing ownership or the root and never create delegation implicitly.
