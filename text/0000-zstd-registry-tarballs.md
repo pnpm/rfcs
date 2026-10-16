@@ -121,7 +121,7 @@ pnpm reconstructs it the way it reconstructs `.tgz` URLs today, with the same `s
 - `Content-Encoding` chosen from the request's `Accept-Encoding`: `zstd`, `gzip`, or none;
 - `Vary: Accept-Encoding`, so caches keep one stored variant per encoding.
 
-This is ordinary HTTP content coding, so CDNs and proxies can cache and serve it without knowing about this RFC. A zstd response follows RFC 9659: its window is at most 8 MiB, which every level up to 19 respects without `--long`. pnpm rejects larger windows, so the memory each concurrent extraction can claim stays bounded. The existing ceiling on the unpacked size applies unchanged.
+This is ordinary HTTP content coding, so CDNs and proxies can cache and serve it without knowing about this RFC. No metadata or lockfile field describes an encoded response. Integrity of encoded responses under [Rationale and Alternatives](#rationale-and-alternatives) explains why. A zstd response follows RFC 9659: its window is at most 8 MiB, which every level up to 19 respects without `--long`. pnpm rejects larger windows, so the memory each concurrent extraction can claim stays bounded. The existing ceiling on the unpacked size applies unchanged.
 
 **Metadata.** A version's `dist` may carry the tar's integrity next to the existing fields:
 
@@ -155,7 +155,7 @@ For an entry with `tarIntegrity`:
 - **From a `tar` registry:** pnpm requests the `.tar` URL with `Accept-Encoding: zstd, gzip`. The HTTP client decodes the content coding. pnpm hashes the tar as it arrives and extracts it as a plain tar stream.
 - **From any other registry:** pnpm requests the `.tgz`, decodes the gzip, hashes the decoded tar, and extracts it.
 
-In both cases pnpm verifies the tar against `tarIntegrity` the way it verifies `integrity` today, and a mismatch fails the install. An entry with `integrity` is fetched exactly as today.
+In both cases pnpm verifies the tar against `tarIntegrity` before it records the package in the store index, and a mismatch fails the install. The tar is only known after decoding, so pnpm decodes every response before it can verify it. Today it verifies a buffered `.tgz` before decoding. Integrity of encoded responses under [Rationale and Alternatives](#rationale-and-alternatives) covers why that is acceptable. An entry with `integrity` is fetched exactly as today.
 
 A decoded body has no reliable length, so pnpm takes `dist.unpackedSize` or the size limit into account when it decides whether to extract while downloading.
 
@@ -204,6 +204,17 @@ The trust model does not change:
 - **a separate registry URL** for zstd metadata, to keep `dist` describing the served artifact.
 
 Hashing the tar removes all of these.
+
+**Integrity of encoded responses.** Metadata could also carry a hash of each encoded form, such as the bytes of the level-19 zstd encoding. This RFC defines none, and the published `.tgz` keeps the only compressed-artifact hash, `dist.integrity`:
+
+- **pnpm never keeps the encoded bytes.** It streams the response through the content decoder into the tar parser, hashes the tar on the way, and verifies it before it records the package in the store index. A hash of the encoded bytes would verify nothing that `tarIntegrity` does not.
+- **It would bind the encoding again.** A registry would have to serve exactly the hashed bytes, so it could no longer re-compress at another level, regenerate an evicted variant, or let a CDN choose. That is the coupling this RFC removes.
+- **Decoding before verification:** without a hash of the encoded bytes, pnpm decodes a response before it can verify it.
+  - Today pnpm verifies a buffered `.tgz` before decoding it. It already streams tarballs advertised at 4 MiB or more through the gzip decoder while they download, before their hash is final.
+  - Since pnpm/pnpm#16585, the same zstd decoder already processes unverified metadata responses from every registry.
+  - The unpacked-size ceiling and the 8 MiB window limit bound what a hostile stream can make the decoder do, so verifying after decoding adds no new kind of exposure.
+- **A local archive cache would not need it.** If pnpm kept archives on disk, it would pick its own on-disk encoding, so the registry's encoding would not matter. Checking a cached archive would mean decoding it and hashing the tar, which extraction does anyway.
+- **Transfer integrity belongs in HTTP.** A proxy or mirror that wants to verify a cached encoded response without decoding it can use `Content-Digest` (RFC 9530), a hash of the bytes as transferred. It is per response, so it never reaches metadata or lockfiles.
 
 **Per-file hashes,** as JSR publishes for its packages. A manifest of file hashes would also make compression a transport detail and would let clients skip files they already store. It needs a new manifest endpoint and a different store ingestion path. The tar hash keeps today's one-artifact-per-version model and could later be complemented by a manifest.
 
