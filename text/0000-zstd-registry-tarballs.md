@@ -244,7 +244,7 @@ Here `https://pnpr.corp.example/` serves `.tgz` and `https://pnpr.corp.example/~
 
 **Publisher-produced `.tar.zst`.** This needs registry support for a second artifact and helps only packages published after adoption. With the tar hash, any registry can serve any already-published version compressed with zstd.
 
-**Brotli.** On npm metadata it compresses about as well as zstd, its decoder is slower, and pnpm and pnpr already ship zstd since pnpm/pnpm#16585, so this RFC adds no second decoder. It is the test case for the design: a registry can offer `br` on the `.tar` endpoint, and a client can accept it, with no change to metadata, lockfiles, or the fallback. reqwest and tower-http both have brotli features, so the client and pnpr halves are each a feature flag plus a window limit when the time comes.
+**Brotli.** On the fixture's tarballs, brotli quality 11 gives 130.4 MB against zstd 19's 143.5 MB (gzip: 228.9 MB), and quality 5 gives 165.7 MB against zstd 3's 198.8 MB. Its decoder is slower, and pnpm and pnpr already ship zstd since pnpm/pnpm#16585, so this RFC adds no second decoder. It is the test case for the design: a registry can offer `br` on the `.tar` endpoint, and a client can accept it, with no change to metadata, lockfiles, or the fallback. reqwest and tower-http both have brotli features, so the client and pnpr halves are each a feature flag plus a window limit when the time comes.
 
 ## Implementation
 
