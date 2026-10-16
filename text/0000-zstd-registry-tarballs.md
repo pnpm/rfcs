@@ -37,29 +37,25 @@ The lockfile keeps its `integrity` field. For packages from a `tar` registry it 
 
 Tarballs are most of what a cold-store install downloads. A `.tgz` is gzip output, and npm's `dist.integrity` hashes those compressed bytes. That binds the compression format into every lockfile, registry signature, and provenance attestation, so no registry can serve a package with better compression without breaking every hash that names it. pnpm/pnpm#16585 made pnpm and pnpr use zstd for metadata responses, but tarballs cannot follow while the hash covers the gzip output.
 
-A prototype measured what zstd would gain (details in [pnpm/tasks#135]). The fixture is a project with 30 popular direct dependencies, whose macOS install fetches 1,183 tarballs:
+A prototype measured what zstd would gain (full tables in [pnpm/tasks#135]). The fixture is a project with 30 popular direct dependencies; a cold-store install fetches about 1,180 tarballs, 229-236 MB as published, depending on the platform's optional dependencies. Re-compressed with zstd, the same tars are 12-13% smaller at level 3 and 36-37% smaller at level 19.
 
-| encoding | total size | vs gzip |
-|---|---|---|
-| gzip, as published | 228.9 MB | |
-| zstd level 3 | 198.8 MB | -13% |
-| zstd level 19 | 143.5 MB | -37% |
+Each run was a frozen-lockfile install with a cold store and a warm metadata cache, so tarballs were the only network cost, behind an emulated link. Medians of 5 runs, gzip against zstd level 19:
 
-The install was frozen-lockfile with a cold store and a warm metadata cache, on an M1 Max. The figures are medians of 5 runs, comparing gzip with zstd level 19:
+| machine | install floor on loopback | zstd clearly faster below | at 25 Mbit/s, 60 ms RTT |
+|---|---|---|---|
+| Linux, Ryzen 9 9950X3D, btrfs on NVMe | 1.3 s | 2-4 Gbit/s | 75.7 -> 48.4 s (-36%) |
+| Windows 10, i7-3770, SATA SSD, Defender exclusion | 21 s | 50-100 Mbit/s | 80.0 -> 51.6 s (-36%) |
+| macOS, M1 Max | 45 s | 25-100 Mbit/s | 84.8 -> 56.3 s (-33%) |
 
-| link | wall time | user CPU |
-|---|---|---|
-| loopback | 48.5 -> 49.8 s, no difference | 3.29 -> 2.70 s |
-| 100 Mbit/s, 40 ms RTT | 46.3 -> 49.4 s, inconclusive | 3.49 -> 2.78 s |
-| 25 Mbit/s, 60 ms RTT | 84.8 -> 56.3 s, -33% | 4.59 -> 3.26 s |
-
-- **Slow links:** zstd shortens the install by up to the time saved on the download.
-- **Fast links:** the install is bound by creating files in the store. On this machine that floor is about 45 s, almost all system time, and a faster download hides behind it.
-- **CPU:** decoding takes 18-30% less CPU at every link speed.
+- **Below the crossover** the install is bandwidth-bound and the gain equals the size reduction: 28-36% on Linux from 1 Gbit/s down, 32-36% on Windows at 50 and 25 Mbit/s. Level 3 gives 12-14% on the same links.
+- **Above it** the variants are indistinguishable. The install is bound by creating files in the store, and the download hides behind that work.
+- **The crossover is set by the filesystem.** Where creating 48,000 store files takes 1.3 s, zstd helps on any link slower than a few Gbit/s. Where it takes 45 s, only links under about 100 Mbit/s see a difference.
+- **Antivirus dominates everything.** With Windows Defender's default real-time scanning, the same install took about 325 s, and zstd made no difference even at 20 Mbit/s.
+- **CPU:** decoding takes less user CPU with zstd on every platform (18-30% on macOS), but it never shows in wall time.
 
 The prototype served `.tar.zst` files. They carry the same bytes on the wire as a level-19 `Content-Encoding: zstd` response for the same tar.
 
-The installs that benefit are cold-store installs over a constrained link: CI without a restored store, Docker builds, developer machines on home or office connections, and remote runners pulling from a registry in another region. Where the crossover lies on Linux, which creates files faster, is not measured yet.
+The installs that benefit are cold-store installs over a constrained link: CI without a restored store, Docker builds, developer machines on home or office connections, and remote runners pulling from a registry in another region. On Linux that covers most links in use.
 
 [pnpm/tasks#135]: https://github.com/pnpm/tasks/issues/135
 
@@ -290,4 +286,3 @@ pnpm v12 only. pnpm v11 is maintenance-only and is not changed.
 - **Signing tar hashes:** whether pnpr should sign `name@version:integrity` over tar hashes with its own key, so `pnpm audit signatures` works against a tar registry. pnpr has no signing key today. With that and the two-subject attestation, a hosted tar-only registry could stop keeping the `.tgz`, which this RFC does not allow.
 - **Upstream hashes:** whether pnpr should fetch the `.tgz` of the latest versions in the background, so `--lockfile-only` resolutions rarely download.
 - **Dictionaries:** whether a zstd dictionary trained on npm tarballs is worth a later content coding. It mainly helps small tarballs, which are most tarballs by count.
-- **Linux crossover:** to be measured before ratification, because it decides how many installs see the gain.
