@@ -145,7 +145,7 @@ This is ordinary HTTP content coding, so CDNs and proxies can cache and serve it
 When pnpm resolves a version from a `tar` registry, it needs the version's `tarIntegrity`:
 
 - **Present in metadata:** pnpm uses it, trusting the registry's metadata exactly as it trusts `dist.integrity` today.
-- **Missing from metadata:** pnpm downloads the `.tgz`, verifies it against `dist.integrity`, and computes `tarIntegrity` from the decoded bytes. The lockfile entry is then derived from the publisher's hash, with no claim from the registry beyond what it makes today. An install needs the tarball anyway. A `--lockfile-only` resolution pays for downloads it would otherwise skip, and only for versions the registry does not describe yet.
+- **Missing from metadata:** pnpm downloads the `.tgz`, verifies it against the hash it checks a `.tgz` against today (`dist.integrity`, or `dist.shasum` for versions that have no `integrity`), and computes `tarIntegrity` from the decoded bytes. The lockfile entry is then derived from the publisher's hash, with no claim from the registry beyond what it makes today. An install needs the tarball anyway. A `--lockfile-only` resolution pays for downloads it would otherwise skip, and only for versions the registry does not describe yet.
 - **Verification policies:** when a policy that vouches for the publisher's artifact is enabled, such as `trustPolicy`, pnpm derives `tarIntegrity` from the verified `.tgz` even when the metadata carries one. It records the result only if the two agree, and fails resolution otherwise.
 
 ### Fetching
