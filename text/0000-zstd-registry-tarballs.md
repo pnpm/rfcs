@@ -127,7 +127,11 @@ pnpm reconstructs it the way it reconstructs `.tgz` URLs today, with the same `s
 - `Content-Encoding` chosen from the request's `Accept-Encoding`: `zstd`, `gzip`, or none;
 - `Vary: Accept-Encoding`, so caches keep one stored variant per encoding.
 
-This is ordinary HTTP content coding, so CDNs and proxies can cache and serve it without knowing about this RFC. A zstd response follows RFC 9659: its window is at most 8 MiB, which every level up to 19 respects without `--long`. pnpm rejects larger windows, so the memory each concurrent extraction can claim stays bounded. The existing ceiling on the unpacked size applies unchanged. No metadata or lockfile field describes an encoded response; Integrity of encoded responses under [Rationale and Alternatives](#rationale-and-alternatives) explains why.
+This is ordinary HTTP content coding, so CDNs and proxies can cache and serve it without knowing about this RFC, and a registry may add or drop an encoding without any change to metadata or lockfiles. The protocol itself names no encoding; which ones a client accepts and a server offers is a property of each, negotiated per request.
+
+pnpm accepts `zstd` and `gzip`. Each encoding pnpm accepts comes with a limit that keeps memory bounded across the many extractions an install runs in parallel: a zstd response follows RFC 9659, whose window is at most 8 MiB, which every level up to 19 respects without `--long`. pnpm rejects streams beyond the limit. The existing ceiling on the unpacked size applies unchanged.
+
+Adding an encoding later, brotli for example, means advertising its token in `Accept-Encoding`, adding its decoder and window limit to pnpm, and letting registries offer it. Metadata, lockfiles, and the fallback are untouched, because none of them refers to an encoding. No metadata or lockfile field describes an encoded response; Integrity of encoded responses under [Rationale and Alternatives](#rationale-and-alternatives) explains why.
 
 **Metadata.** In a tar registry's documents, each version's `dist` describes the tar:
 
@@ -240,7 +244,7 @@ Here `https://pnpr.corp.example/` serves `.tgz` and `https://pnpr.corp.example/~
 
 **Publisher-produced `.tar.zst`.** This needs registry support for a second artifact and helps only packages published after adoption. With the tar hash, any registry can serve any already-published version compressed with zstd.
 
-**Brotli.** On npm metadata it compresses about as well as zstd. Its decoder is slower, and pnpm and pnpr already ship zstd since pnpm/pnpm#16585. The `.tar` endpoint can still offer it later through content negotiation, without a lockfile change.
+**Brotli.** On npm metadata it compresses about as well as zstd, its decoder is slower, and pnpm and pnpr already ship zstd since pnpm/pnpm#16585, so this RFC adds no second decoder. It is the test case for the design: a registry can offer `br` on the `.tar` endpoint, and a client can accept it, with no change to metadata, lockfiles, or the fallback. reqwest and tower-http both have brotli features, so the client and pnpr halves are each a feature flag plus a window limit when the time comes.
 
 ## Implementation
 
