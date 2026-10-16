@@ -194,11 +194,15 @@ Here `https://pnpr.corp.example/` serves `.tgz` and `https://pnpr.corp.example/~
 | both | A `.tgz` registry and a zstd registry over the same sources, as above. npm, Yarn, and projects without the declaration use the first. Projects that declare `zstd` use the second. |
 | zstd only | Only zstd registries, for example `defaultRegistry: zstd`. Only pnpm with the declaration can install from it. |
 
-A `.tar.zst` belongs to the hosted or upstream registry that holds the package, not to the router that serves it. Two zstd registries over the same source serve the same bytes. Publishing still accepts a `.tgz`, and pnpr keeps it, because the `.tgz` is what the publisher's integrity and attestations cover.
+`tarballs` sets the format a registry serves at its own URL. It says nothing about who produces the artifact:
 
-**When pnpr transcodes:**
+- **Producer:** the hosted or upstream registry that holds the package produces and stores its `.tar.zst`. A router never transcodes or stores artifacts. It serves the artifact of the source that holds the package. Two zstd registries over the same source therefore serve the same bytes.
+- **zstd-enabled sources:** a hosted or upstream registry is zstd-enabled when it sets `tarballs: zstd` itself, or when a zstd registry includes it, directly or through other routers. In the example, `local` and `npmjs` are zstd-enabled through the `zstd` router. pnpr derives this from the configuration when it loads it. Nothing about the format is passed from a router to a source per request.
+- **The `.tgz` is kept:** publishing still accepts a `.tgz`, and pnpr keeps it, because the `.tgz` is what the publisher's integrity and attestations cover.
 
-- **Hosted registries:** at publish. The `.tar.zst` and its integrity exist before the first client resolves the version.
+**When a zstd-enabled source transcodes:**
+
+- **Hosted registries:** at publish. The `.tar.zst` and its integrity exist before the first client resolves the version. Versions published before the registry became zstd-enabled are transcoded on their first `.tar.zst` request, as upstream versions are.
 - **Upstream registries:** on the first `.tar.zst` request for a version. pnpr fetches and verifies the `.tgz`, transcodes it, stores the result, and only then serves it. Concurrent first requests for one version must produce one artifact.
 - **Storage:** the stored `.tar.zst` lives in durable storage, not in the disposable upstream cache that pnpr may evict. Evicting it would let a later request produce different bytes.
 
