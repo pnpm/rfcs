@@ -165,14 +165,14 @@ The tar is only known after decoding, so pnpm decodes every tar response before 
 
 #### Decoded-output budget
 
-pnpm verifies a tar only once it has decoded it, so a hostile response can make pnpm decode, hash, and write files before the mismatch is found. The window limit bounds decoder memory, not the decoded output. pnpm has no output ceiling today either: its 64 MiB limit bounds the buffer it reserves up front, and a larger archive streams through in full. This RFC adds an explicit budget on the decoded tar, on both the tar and `.tgz` paths:
+pnpm verifies a tar only once it has decoded it, so a hostile response can make pnpm decode, hash, and write files before the mismatch is found. The window limit bounds decoder memory, not the decoded output. pnpm has no output ceiling today either: its 64 MiB limit bounds the buffer it reserves up front, and a larger archive streams through in full. This RFC adds explicit limits on the decoded tar, on both the tar and `.tgz` paths. All of them use checked arithmetic, and none of them can be raised by anything the registry sends.
 
-- **With metadata** (resolution, or a cached packument): the tar may be at most `unpackedSize + fileCount × 2 KiB + 64 KiB`. A tar holds each file's bytes plus a 512-byte header and up to 511 bytes of padding per entry, so the formula leaves room for pax extension headers. On the fixture's 1,141 versions that carry both fields, the tar is never below `unpackedSize` and never within 2 KiB of the formula.
-- **Without metadata** (a frozen install): a fixed ceiling, `maxTarballUnpackedSize` (name open), default 4 GiB, settable per project for the rare package that exceeds it.
+- **File payload:** the bytes of regular-file entries may total at most `maxTarballUnpackedSize` (name open), a project setting with a default of 4 GiB. When the version's metadata is available it can only tighten the limit: `unpackedSize` is the exact sum of the file payloads, so a payload above it fails the package. On the fixture's 1,141 versions that carry the field, the sum equals it in every case.
+- **Archive metadata:** entry headers, pax extension headers, padding, and the end-of-archive marker may total at most a separate limit, 64 MiB by default, the value of today's cap on a single pax extension. They are not derived from `unpackedSize` or `fileCount`, because a valid pax header can be arbitrarily long without changing any installed file.
 - **After the end-of-archive marker:** at most one tar record (10 KiB) of zero bytes. Every tarball on the fixture decodes to exactly the marker and nothing after it.
-- **On overrun:** pnpm stops reading, fails the package, and removes the store files it wrote for it. The store is content-addressed and nothing is indexed until the hash matches, so an aborted extraction leaves no reachable package behind.
+- **On overrun:** pnpm stops reading and fails the package. The files it already wrote stay where they are: they are content-addressed, so a file of the same content may already belong to, or be about to be indexed by, another package, and nothing is indexed for the failed package itself. `pnpm store prune` removes blobs that no index refers to, as it does for every other interrupted install.
 
-The same budget applies when pnpm streams a `.tgz` through the decoder while downloading, which it already does for bodies of 4 MiB and more, so this closes a gap that exists today.
+The same limits apply when pnpm streams a `.tgz` through the decoder while downloading, which it already does for bodies of 4 MiB and more, so this closes a gap that exists today.
 
 The content-addressed store holds files, so a package fetched as `.tgz` in one project and as a tar in another shares its file content. Store index rows keyed by the integrity value differ between the two kinds of entry.
 
@@ -261,7 +261,7 @@ pnpm v12 only. pnpm v11 is maintenance-only and is not changed.
 - `resolving-npm-resolver`: accept a missing `dist.tarball`, and a missing `dist.integrity` from a tar registry, recording the hash of the downloaded tar.
 - `tarball`:
   - Tell a tar from a `.tgz` by the first bytes of the decoded body, and extract a tar as a plain stream, hashing it on the way.
-  - The decoded-output budget on both paths, with cleanup of the files an aborted extraction wrote.
+  - The decoded-output budget on both paths.
   - Enforce the 8 MiB zstd window limit.
   - Choose streaming extraction without a reliable body length, using `dist.unpackedSize` or the size limit.
 - Store index and global virtual store: confirm that entries keyed by a tar hash reuse file content and that slot hashes stay correct.
@@ -287,7 +287,7 @@ pnpm v12 only. pnpm v11 is maintenance-only and is not changed.
 ## Unresolved Questions and Bikeshedding
 
 - **Names:** `serverType: pnpr` and pnpr's `tarballs: tar`.
-- **Decoded-output budget:** the default of the fixed ceiling, and whether the metadata-derived budget should also apply to `.tgz` downloads that have metadata.
+- **Decoded-output budget:** the defaults of the payload ceiling and the archive-metadata limit.
 - **Self-computed hashes for other sources:** pnpm computes `integrity` itself for `tarball:` URLs and `file:` tarballs. Hashing the tar there would make those pins survive a host re-compressing the same content, as GitHub did to its `codeload` archives in January 2023 before reverting. It touches sources this RFC does not otherwise change, so it is proposed as a follow-up.
 - **Signing tar hashes:** whether pnpr should sign `name@version:integrity` over tar hashes with its own key, so `pnpm audit signatures` works against a tar registry. pnpr has no signing key today.
 - **A tar attestation:** whether `pnpm publish --provenance` should produce a second attestation whose single subject is the tar digest, published next to the `.tgz` one. npm's attestations endpoint already serves several attestations per version, but registry acceptance and the verifiers' handling of an extra bundle need testing first. With that and tar-hash signatures, a hosted tar-only registry could stop keeping the `.tgz`, which this RFC does not allow.
