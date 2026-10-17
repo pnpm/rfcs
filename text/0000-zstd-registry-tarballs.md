@@ -129,7 +129,7 @@ This is ordinary HTTP content coding, so CDNs and proxies can cache and serve it
 
 pnpm accepts `zstd` and `gzip`. Each encoding pnpm accepts comes with a limit that keeps decoder memory bounded across the many extractions an install runs in parallel: a zstd response follows RFC 9659, whose window is at most 8 MiB, which every level up to 19 respects without `--long`. pnpm rejects streams beyond the limit. The decoded output is bounded separately, by the [decoded-output budget](#decoded-output-budget).
 
-Enforcing the window means pnpm decodes tar responses with its own decoder rather than the HTTP client's. reqwest's built-in zstd decoding uses libzstd's default 128 MiB window limit and offers no setting. Metadata responses have been decoded that way since pnpm/pnpm#16585, so one decoder with the 8 MiB limit for every response, metadata included, is the simpler implementation: one client without automatic decompression instead of extra clients with their own connection pools. Bounding metadata decoding is a follow-up for pnpm either way.
+Enforcing the window means pnpm decodes tar responses with its own decoder rather than the HTTP client's. reqwest's built-in zstd decoding uses libzstd's default 128 MiB window limit and offers no setting. Until metadata responses move to the same decoder, tarball requests therefore go through HTTP clients of their own that leave `Content-Encoding` in place, alongside the clients that decode metadata. Metadata responses have been decoded by reqwest since pnpm/pnpm#16585; putting them behind the 8 MiB-window decoder too would leave one set of clients, but it touches every place pnpm reads a metadata body, so it is a separate change.
 
 Adding an encoding later, brotli for example, means advertising its token in `Accept-Encoding`, adding its decoder and window limit to pnpm, and letting registries offer it. Metadata and lockfiles are untouched, because neither refers to an encoding. No metadata or lockfile field describes an encoded response; Integrity of encoded responses under [Rationale and Alternatives](#rationale-and-alternatives) explains why.
 
@@ -215,8 +215,12 @@ Here `https://pnpr.corp.example/` serves `.tgz` and `https://pnpr.corp.example/~
 
 `tarballs` sets the format a registry serves at its own URL. The tar hash and the encoded variants belong to the hosted or upstream registry that holds the package; a router serves what its sources hold:
 
-- **Tar hash:** a hosted registry computes it at publish. An upstream registry computes it when it first fetches a version's `.tgz`, after verifying the `.tgz` against the upstream hash. The value is deterministic, so it can be recomputed at any time, and replicas that derive it independently agree. Store it in the shared storage backend rather than a replica-local cache, so every replica's metadata carries it once any replica has fetched the version; a replica whose metadata lacks it only costs the client a download during resolution.
-- **Serving:** pnpr serves a tar from the stored `.tgz`, encoded for the request. Compressing per request is only affordable at a fast level, zstd 3, which gives about 12% over gzip. The 36% measured in this RFC needs level 19, so pnpr stores a level-19 variant produced in the background, and serves level 3 until one exists. Variants can be evicted and regenerated at any time, because no hash depends on their bytes.
+- **Tar hash:** a hosted registry computes it at publish. An upstream registry computes it when it first fetches a version's `.tgz`, after verifying the `.tgz` against the upstream hash. The value is deterministic, so it can be recomputed at any time, and replicas that derive it independently agree. pnpr stores it in a reserved namespace of the hosted storage backend, which every replica shares, rather than in a replica-local cache, so every replica's metadata carries it once any replica has derived it. Each package has one table there, from `.tgz` integrity to tar integrity. Every value is a function of its key, so the table is shared across registries and storage namespaces: a lookup only happens for versions in metadata the requester may already read, and reveals nothing they could not compute. A replica whose metadata lacks a hash only costs the client a download during resolution.
+- **Serving:** pnpr serves a tar from the stored `.tgz`, encoded for the request:
+  - `gzip`: the stored `.tgz` itself, sent with `Content-Encoding: gzip`. A `.tgz` is the gzip encoding of its tar, so this costs no CPU. It also derives no tar hash; an upstream version gets one from its first zstd or identity request.
+  - `zstd`: the stored level-19 variant once one exists. Until then pnpr compresses at level 3 as the response streams, which is only about 12% smaller than gzip; the 36% measured in this RFC needs level 19, which is too slow to run per request.
+  - neither: the tar, decoded as it streams.
+- **Level-19 variants:** the first zstd request for a version keeps a copy of the tar it decoded and queues it for a bounded background worker, which replaces the level-3 encoding with a stored level-19 one. Only that one variant is stored, about 60% of the `.tgz` size again. Variants live in each replica's local cache and are evicted with it, because no hash depends on their bytes: a missing variant only means level 3 again until it is regenerated. When the queue is full, the copy is dropped and a later request queues it again. A level-3 response that an HTTP cache still holds stays valid, because both encodings decode to the same tar.
 - **The `.tgz` is kept:** publishing still accepts a `.tgz`, and pnpr keeps it, because the `.tgz` is what the publisher's hash, signatures, and attestations cover. The `.tgz` registry keeps serving it unchanged.
 
 ### Trust
@@ -273,9 +277,9 @@ pnpm v12 only. pnpm v11 is maintenance-only and is not changed.
 **pnpr:**
 
 - Config: `tarballs` per registry.
-- Publish and upstream fetch: compute the tar hash, after verifying an upstream `.tgz`.
+- Publish and upstream fetch: compute the tar hash, after verifying an upstream `.tgz`, and record it in the shared hosted storage.
 - Metadata: in tar registries, set `dist.integrity` to the tar's hash, drop `tarball`, `shasum`, and `signatures`, and leave `integrity` out for versions whose `.tgz` pnpr does not hold yet.
-- Routes: serve `<name>@<version>` on every registry, as a tar with content negotiation on tar registries and as the `.tgz` elsewhere. Tar registries serve no `.tgz` path. Optionally store and evict encoded variants.
+- Routes: serve `<name>@<version>` on every registry, as a tar with content negotiation on tar registries and as the `.tgz` elsewhere. Tar registries serve no `.tgz` path. Serve gzip clients the stored `.tgz`, and zstd clients a level-19 variant from the local cache, produced by a bounded background worker.
 - Docs: `pnpr/docs`.
 
 ## Prior Art
