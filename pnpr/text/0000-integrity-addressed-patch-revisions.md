@@ -28,11 +28,11 @@ replacement additionally advertises its registry revision number:
 }
 ```
 
-The original is revision zero and is never marked: the canonical npm tarball
-URL is pinned to it forever, so unmarked metadata — and the unmarked lockfile
-entries derived from it — stay correct on every registry. The package
-document also advertises an append-only history of the original artifact and
-every accepted replacement for that `name@version`.
+The original is revision zero and is never marked. Its canonical URL keeps
+serving the original resource. Unmarked lockfile pins remain valid across
+registries only when those registries serve the same original resource
+format. The package document also advertises an append-only history of the
+original artifact and every accepted replacement for that `name@version`.
 
 The revision has three client-facing purposes:
 
@@ -592,7 +592,7 @@ This provides backward compatibility:
 
 - any lockfile entry without a recorded revision — legacy or a deliberate
   revision-zero pin — reconstructs the canonical URL and receives original
-  bytes on every registry;
+  bytes on registries serving the same original resource format;
 - a lockfile entry recording replacement `N` constructs its digest URL;
 - changing the selected revision changes only mutable package metadata;
 - no CDN URL ever refers to two decoded resources.

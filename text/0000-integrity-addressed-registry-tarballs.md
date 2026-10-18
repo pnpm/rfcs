@@ -28,9 +28,10 @@ packages:
 
 An entry without `revision` keeps exactly today's meaning: pnpm reconstructs
 the canonical name-and-version tarball URL. The companion registry RFC pins
-that URL to the original upstream bytes forever, so **original artifacts need
-no marker at all** — a lockfile that has adopted no replacements is
-byte-identical to a current lockfile.
+that URL to the original resource in its registry's format, so **original
+artifacts need no marker at all**. Unmarked pins require that same original
+resource format after a registry change. A lockfile that has adopted no
+replacements is byte-identical to a current lockfile.
 
 An entry with `revision: N` must be fetched by digest. A frozen install
 converts the complete digest to base64url and makes one request to:
@@ -93,8 +94,8 @@ about an unpatched resolution changes, which means:
 - a workspace that has adopted no replacements produces a lockfile
   indistinguishable from today's — no format gate, no growth, readable by
   older pnpm;
-- pointing a lockfile at a registry without the digest endpoint keeps the
-  entire unpatched graph installable; only `revision` entries fail, and they
+- pointing a lockfile at a registry with the same original resource format
+  but without the digest endpoint keeps the entire unpatched graph installable; only `revision` entries fail, and they
   fail as genuine unavailability, not as ambiguity.
 
 Direct integrity URLs retain the performance and caching properties of
@@ -358,8 +359,8 @@ The registry-side design keeps the original canonical URL immutable:
 
 - legacy entries and deliberate revision-zero entries share one
   representation — integrity only — and reconstruct the canonical URL, which
-  continues serving the original bytes on every registry, revision-aware or
-  not;
+  serves the original bytes on registries with the same resource format,
+  revision-aware or not;
 - an entry with `revision: N` requests replacement `N` from the digest
   endpoint;
 - a frozen install never consults current metadata merely to choose an

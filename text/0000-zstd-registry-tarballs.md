@@ -88,7 +88,7 @@ packages:
 ```
 
 - **Which hash an entry holds** follows from its tarball resource. Unmarked entries use the registry's format. A positive `revision` always names a tar resource, as the [revision protocol](./0000-integrity-addressed-registry-tarballs.md#replacement-resources-and-their-integrity) specifies, even on a `.tgz` registry.
-- **Switching a registry's format** makes its entries' hashes stale, like any other change in what a registry serves. pnpm reports `ERR_PNPM_TARBALL_INTEGRITY`, and `pnpm install --update-checksums` refreshes the entries, as it does today when a registry rewrites its tarballs.
+- **Switching a registry's format** makes unmarked originals' hashes stale, like any other change in what a registry serves. Positive revisions retain their tar digest. For affected original entries, pnpm reports `ERR_PNPM_TARBALL_INTEGRITY`, and `pnpm install --update-checksums` refreshes them, as it does today when a registry rewrites its tarballs.
 - **Older pnpm versions** reject the unknown `serverType: pnpr` value when they read the configuration, so they never reach a tar hash.
 
 ### The layout declaration
