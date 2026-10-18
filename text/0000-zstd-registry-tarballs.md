@@ -87,8 +87,8 @@ packages:
       integrity: sha512-<tar digest>
 ```
 
-- **Which hash an entry holds** follows from the registry the package resolved from, as the tarball URL does. The lockfile is not annotated.
-- **Switching a registry's format** makes its entries' hashes stale, like any other change in what a registry serves. pnpm reports `ERR_PNPM_TARBALL_INTEGRITY`, and `pnpm install --update-checksums` refreshes the entries, as it does today when a registry rewrites its tarballs.
+- **Which hash an entry holds** follows from its tarball resource. Unmarked entries use the registry's format. An explicit `revision`, including zero, always names a tar resource, as the [revision protocol](./0000-integrity-addressed-registry-tarballs.md#revision-resources-and-their-integrity) specifies, even on a `.tgz` registry.
+- **Switching a registry's format** makes unmarked originals' hashes stale, like any other change in what a registry serves. Explicit revision entries, including zero, retain their tar digest. For affected original entries, pnpm reports `ERR_PNPM_TARBALL_INTEGRITY`, and `pnpm install --update-checksums` refreshes them, as it does today when a registry rewrites its tarballs.
 - **Older pnpm versions** reject the unknown `serverType: pnpr` value when they read the configuration, so they never reach a tar hash.
 
 ### The layout declaration
@@ -145,7 +145,7 @@ Adding an encoding later, brotli for example, means advertising its token in `Ac
 }
 ```
 
-- **`tarball` is optional.** A registry with a declared layout needs no URL per version, and a tar registry omits it. Measured on the fixture's 1,235 abbreviated packuments, dropping the field removes 11% of the raw JSON (2.7% after gzip, because the URLs compress well), and the registry no longer has to rewrite URLs to its public address. A registry may still set `tarball` for a version served from a non-canonical location, and pnpm records such a URL in the lockfile as it does today. A version without `tarball` from a registry with no declared `serverType` fails to resolve with a hint to declare one, because pnpm cannot know where it lives.
+- **`tarball` is optional for canonical originals.** A registry with a declared layout needs no URL per version, and a tar registry omits it. Measured on the fixture's 1,235 abbreviated packuments, dropping the field removes 11% of the raw JSON (2.7% after gzip, because the URLs compress well), and the registry no longer has to rewrite URLs to its public address. A registry may still set `tarball` for a version served from a non-canonical location, and pnpm records such a URL in the lockfile as it does today. Revision-aware versions retain the selected artifact's digest URL, `revision` (including zero), and `revisions` history; a marked revision must never be reconstructed as a canonical resource. A version without `tarball` from a registry with no declared `serverType` fails to resolve with a hint to declare one, because pnpm cannot know where it lives.
 - **Unchanged fields:** everything that describes the unpacked package, such as `unpackedSize`, `fileCount`, and the attestation markers, stays as it is, because both formats hold the same tar.
 - **Removed fields:** `shasum` is the SHA-1 of the `.tgz`, and `signatures` sign `name@version:integrity` with the `.tgz` hash, so neither describes the tar. The tar registry leaves both out.
 - **Size:** the document is as large as the `.tgz` registry's. Adding a second hash to every version instead would have grown abbreviated metadata by 38%; see [Rationale and Alternatives](#rationale-and-alternatives).
@@ -171,7 +171,7 @@ pnpm verifies a tar only once it has decoded it, so a hostile response can make 
 
 - **File payload:** the bytes of regular-file entries may total at most `maxTarballUnpackedSize` (name open), a project setting with a default of 4 GiB. For a tar, the version's metadata can only tighten the limit: `unpackedSize` is the exact sum of the file payloads, so a payload above it fails the package. On the fixture's 1,141 versions that carry the field, the sum equals it in every case. A `.tgz` gets the ceiling only: tightening it would break installs that work today wherever a registry or publisher under-reports `unpackedSize`, which the fixture cannot rule out.
 - **Everything else:** every decoded byte that is not regular-file payload counts against a separate limit, 256 MiB by default. Each entry costs about 1 KiB of headers and padding, so the default admits a package of roughly 250,000 files; the largest packages on npm have tens of thousands. That covers entry headers, pax extension headers, padding, the end-of-archive marker, and the bodies of entries pnpm skips, such as unsupported entry types, which the parser still has to read past. The two limits together cover every decoded byte. This limit is not derived from `unpackedSize` or `fileCount`, because a valid pax header or a skipped entry can be arbitrarily long without changing any installed file.
-- **After the end-of-archive marker:** at most one tar record (10 KiB) of zero bytes. Every tarball on the fixture decodes to exactly the marker and nothing after it. This rule is about decoded bytes; a gzip trailer error after the marker on the `.tgz` path keeps today's handling, which accepts the archive.
+- **After the end-of-archive marker:** at most one tar record (10 KiB) of zero bytes. Every tarball on the fixture decodes to exactly the marker and nothing after it. This rule is about decoded bytes. Legacy client extraction of a `.tgz` resource still accepts a gzip trailer error after the marker. That exception does not apply to deriving or serving a tar resource, which requires complete valid gzip decoding.
 - **An empty body** is not an archive and fails the package.
 - **On overrun:** pnpm stops reading and fails the package. The files it already wrote stay where they are: they are content-addressed, so a file of the same content may already belong to, or be about to be indexed by, another package, and nothing is indexed for the failed package itself. `pnpm store prune` removes blobs that no index refers to, as it does for every other interrupted install.
 
@@ -205,7 +205,7 @@ registries:
 defaultRegistry: main
 ```
 
-Here `https://pnpr.corp.example/` serves `.tgz` and `https://pnpr.corp.example/~zstd/` serves tars. Every pnpr registry serves its tarballs at `<registry>/<name>@<version>`. A `.tgz` registry also serves the npm-layout `.tgz` path and names it in `dist.tarball`, for npm and Yarn; a tar registry serves tars only and omits the field.
+Here `https://pnpr.corp.example/` serves `.tgz` and `https://pnpr.corp.example/~zstd/` serves tars. Every pnpr registry serves its tarballs at `<registry>/<name>@<version>`. A `.tgz` registry also serves the npm-layout `.tgz` path and names it in `dist.tarball`, for npm and Yarn; a tar registry serves tars only and omits canonical originals' `tarball` fields. Revision-aware metadata keeps the selected artifact's tar digest URL and history on either format, including for revision zero. Ordinary canonical routes keep serving the original in the registry's configured format; every explicit revision uses the tar-addressed digest route.
 
 | deployment | exposed registries |
 |---|---|
@@ -281,7 +281,7 @@ pnpm v12 only. pnpm v11 is maintenance-only and is not changed.
 
 - Config: `tarballs` per registry.
 - Publish and upstream fetch: compute the tar hash, after verifying an upstream `.tgz`, and record it in the shared hosted storage.
-- Metadata: in tar registries, set `dist.integrity` to the tar's hash, drop `tarball`, `shasum`, and `signatures`, and leave `integrity` out for versions whose `.tgz` pnpr does not hold yet.
+- Metadata: in tar registries, set `dist.integrity` to the tar's hash, drop canonical originals' `tarball` fields, `shasum`, and `signatures`, and leave `integrity` out for versions whose `.tgz` pnpr does not hold yet. Retain all explicit revisions' digest URLs, tar integrity, and revision history, including for zero, as the companion revision protocol requires.
 - Routes: serve `<name>@<version>` on every registry, as a tar with content negotiation on tar registries and as the `.tgz` elsewhere. Tar registries serve no `.tgz` path. Serve gzip clients the stored `.tgz`, and zstd clients a level-19 variant from the local cache, produced by a bounded background worker.
 - Docs: `pnpr/docs`.
 
