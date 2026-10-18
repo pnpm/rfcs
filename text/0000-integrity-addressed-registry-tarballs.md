@@ -1,8 +1,5 @@
 # Integrity-addressed registry tarballs
 
-> Status: proposed amendment to the experimental revision protocol;
-> implementation pending.
-
 ## Summary
 
 pnpm should support registries that serve immutable, integrity-addressed
@@ -38,9 +35,6 @@ converts the complete digest to base64url and makes one request to:
 ```text
 <effective-registry-base>/-/tarballs/sha512/<first-patch-digest-base64url>
 ```
-
-The digest names the replacement's uncompressed tar, not its `.tgz`. HTTP
-content coding may change without changing that URL or its integrity.
 
 No tarball URL, provider alias, custom request header, redirect, integrity
 failure, metadata lookup, or capability probe is required. The field itself is
@@ -102,7 +96,7 @@ ordinary immutable URLs:
 
 - one CDN request;
 - no custom request header;
-- only the standard `Vary: Accept-Encoding` for HTTP content coding;
+- no CDN `Vary` configuration;
 - no redirect;
 - no deliberate failed download;
 - no metadata recovery round trip.
@@ -130,10 +124,8 @@ the digest URL, a standard SRI integrity, and the revision number:
 extensions, so every strict SRI consumer parses it. `dist.revision` is
 present exactly when the selected artifact is a replacement (`N ≥ 1`). A
 version whose selected artifact is the original serves ordinary, unmarked
-metadata; its `dist.tarball` may be the canonical URL or a digest URL for the
-same resource. On a `.tgz` registry that original resource is still the
-`.tgz`; on a tar registry it is the original tar. Only replacements require
-tar integrity regardless of the registry's default format.
+metadata; its `dist.tarball` may be the canonical URL or the digest URL, at
+the registry's choice.
 
 When `dist.revision` is present, pnpm validates during resolution:
 
@@ -152,46 +144,8 @@ records a plain integrity-only entry rather than storing the absolute URL,
 because the canonical URL serves the same bytes and an absolute URL would pin
 the deployment hostname in the lockfile.
 
-Clients receiving replacements must remove HTTP content coding before SRI
-verification and accept a plain tar archive. Following `dist.tarball` and
-ignoring `dist.revision` alone is not sufficient; support in npm, Yarn, and
-other clients requires client-matrix tests.
-
-### Replacement resources and their integrity
-
-Every positive revision is a tar resource on every registry, including a
-registry that serves originals as `.tgz`. Its URL digest, `dist.integrity`,
-`dist.revisions[].integrity`, and `resolution.integrity` all hash the same
-uncompressed tar. This does not depend on `lockfileIntegrity` or on a
-registry's `tarballs` setting.
-
-The tar is the whole gzip-decoded provider artifact, as defined by
-[the tar registry RFC](./0000-zstd-registry-tarballs.md#the-tar-and-its-integrity).
-It is not re-packed or normalized. pnpr verifies the provider's `.tgz`
-against its signed digest before deriving the tar hash. That source digest
-remains evidence for provider signatures and attestations; it is not the
-client's content address.
-
-A replacement response has `Content-Type: application/x-tar`. Its
-`Content-Encoding` is `gzip`, `zstd`, or absent, negotiated through
-`Accept-Encoding`, with `Vary: Accept-Encoding`. After content decoding,
-pnpm hashes the tar and checks it against the locked digest before indexing
-the package. The decoded-output budget and decoder window limits of the tar
-registry RFC apply. There is no fallback to a compressed-byte hash.
-
-Revision zero keeps its registry's original resource and integrity. On a
-`.tgz` registry its canonical URL, unmarked metadata, and old lockfile pins
-still describe the original `.tgz`. An original advertised through a digest
-URL may be normalized to an integrity-only entry only when the canonical
-URL serves that same resource. A tar hash must not be normalized onto a
-canonical `.tgz` URL. Tar registries apply their existing tar semantics to
-revision zero as well.
-
-This changes the experimental replacement protocol. Existing replacement
-state and lockfiles pinned to compressed digests require explicit
-regeneration before adopting it. A registry must never serve a tar under a
-URL containing its old `.tgz` digest or silently rewrite a frozen pin.
-Original lockfiles remain unchanged.
+Existing npm-compatible clients follow `dist.tarball` directly, verify the
+standard integrity, and ignore the unknown `dist.revision` field.
 
 ### The revision field
 
@@ -263,8 +217,8 @@ For an entry carrying `revision: N`, pnpm:
 2. resolves `-/tarballs/<algorithm>/<digest>` against the effective registry
    base;
 3. sends one ordinary authenticated GET;
-4. removes HTTP content coding and verifies the tar against the complete SRI
-   digest before recording the package in the content-addressed store index.
+4. verifies the response against the complete SRI digest before admitting it
+   to the content-addressed store.
 
 If URL construction fails or the response does not match, installation fails.
 pnpm must not fetch current package metadata, change the checksum, retry the
@@ -305,8 +259,8 @@ resolution-cache design) can still improve two things:
   tarballs; the locked replacement cannot be fetched from it" instead of a
   bare `404`;
 - **optimization** — a registry advertising the capability may let pnpm fetch
-  originals through a digest route for the same resource (shared CDN cache
-  with compatible clients). The canonical route remains the specified default
+  originals through the digest route as well (shared CDN cache with fresh
+  npm-client resolutions). The canonical route remains the specified default
   for originals, so an install must behave identically with detection
   unavailable.
 
@@ -387,9 +341,8 @@ one content-addressed lookup. There is no redirect or selector request before
 the cacheable object.
 
 The full sha512 digest is small relative to a tarball body and is already
-present in metadata and the lockfile. A replacement is decoded and hashed
-once on the client, as a tar resource; compression variants share the same
-content-store identity.
+present in metadata and the lockfile. pnpm already hashes the response for SRI
+verification, so the protocol adds no cryptographic pass.
 
 If the tarball is already in pnpm's content-addressed store, installation
 remains network-free.
@@ -715,9 +668,8 @@ making provider identity part of package resolution.
    base64url and resolve `-/tarballs/<algorithm>/<digest>` against the
    effective registry base, preserving registry path prefixes such as
    `/~main/`.
-5. Fetch replacements as tar resources, removing HTTP content coding before
-   SRI verification under the tar registry RFC's limits. Do not add redirect,
-   selector-header, or recovery behavior; on failure, optionally consult the
+5. Fetch through the existing remote-tarball fetcher and SRI verifier without
+   redirect, header, or recovery behavior; on failure, optionally consult the
    registry handshake to report missing endpoint support distinctly from a
    missing object.
 6. Extend optional lockfile verification to accept current and historical
@@ -761,15 +713,7 @@ Tests should cover:
 - a pinned revision resolving with its own dependency metadata;
 - revision refresh updating integrity, `revision`, and snapshot together, and
   skipping override-pinned packages;
-- identical tar hashes and digest URLs for two gzip encodings of one tar;
-- gzip, zstd, and identity responses verifying against the same replacement pin,
-  with tampered or truncated responses failing before a package is indexed;
-- replacement tar integrity on `.tgz` and tar registries with
-  `lockfileIntegrity` unset or set to `tar`;
-- revision zero retaining its `.tgz` hash and canonical fetch on a `.tgz`
-  registry, including normalization of an original digest URL;
-- a tar-hashed original never normalized to a canonical `.tgz` URL;
-- no extra request, redirect, or encoded-response integrity check;
+- no extra request, redirect, or integrity pass;
 - offline installation from the content-addressed store.
 
 ## Prior Art
