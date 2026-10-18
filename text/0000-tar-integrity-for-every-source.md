@@ -73,7 +73,7 @@ Deriving a tar hash needs the tarball. The costs by command:
 
 - **`pnpm install`** downloads every tarball it does not have in the store anyway. Hashing the decoded tar adds about three times the `.tgz` bytes to the hashing work: for the fixture project of the tar RFC, roughly 0.7 GB per cold install, under a second of CPU across threads.
 - **`pnpm update`** installs what it selects, so the tarballs of new versions are downloaded either way. Versions it keeps need a hash only if the store cannot supply one.
-- **`pnpm install --lockfile-only`** and **`pnpm update --lockfile-only`** download no tarballs today. With the setting on, they download the `.tgz` of every version from a `.tgz` registry whose tar hash is not already known: 229 MB for the fixture project on a cold machine.
+- **`pnpm install --lockfile-only`** and **`pnpm update --lockfile-only`** download no registry tarballs today. With the setting on, they download the `.tgz` of every version from a `.tgz` registry whose tar hash is not already known: 229 MB for the fixture project on a cold machine. A `tarball:` URL or `file:` tarball is already downloaded and hashed when it is first resolved, because it has no metadata to take a hash from; the setting adds only the decode, and the one-time conversion downloads each of them again.
 
 Two things keep the download from being the steady state:
 
