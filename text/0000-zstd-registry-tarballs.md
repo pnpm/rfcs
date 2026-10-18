@@ -87,7 +87,7 @@ packages:
       integrity: sha512-<tar digest>
 ```
 
-- **Which hash an entry holds** follows from the registry the package resolved from, as the tarball URL does. The lockfile is not annotated.
+- **Which hash an entry holds** follows from its tarball resource. Unmarked entries use the registry's format. A positive `revision` always names a tar resource, as the [revision protocol](./0000-integrity-addressed-registry-tarballs.md#replacement-resources-and-their-integrity) specifies, even on a `.tgz` registry.
 - **Switching a registry's format** makes its entries' hashes stale, like any other change in what a registry serves. pnpm reports `ERR_PNPM_TARBALL_INTEGRITY`, and `pnpm install --update-checksums` refreshes the entries, as it does today when a registry rewrites its tarballs.
 - **Older pnpm versions** reject the unknown `serverType: pnpr` value when they read the configuration, so they never reach a tar hash.
 
@@ -145,7 +145,7 @@ Adding an encoding later, brotli for example, means advertising its token in `Ac
 }
 ```
 
-- **`tarball` is optional.** A registry with a declared layout needs no URL per version, and a tar registry omits it. Measured on the fixture's 1,235 abbreviated packuments, dropping the field removes 11% of the raw JSON (2.7% after gzip, because the URLs compress well), and the registry no longer has to rewrite URLs to its public address. A registry may still set `tarball` for a version served from a non-canonical location, and pnpm records such a URL in the lockfile as it does today. A version without `tarball` from a registry with no declared `serverType` fails to resolve with a hint to declare one, because pnpm cannot know where it lives.
+- **`tarball` is optional for canonical originals.** A registry with a declared layout needs no URL per version, and a tar registry omits it. Measured on the fixture's 1,235 abbreviated packuments, dropping the field removes 11% of the raw JSON (2.7% after gzip, because the URLs compress well), and the registry no longer has to rewrite URLs to its public address. A registry may still set `tarball` for a version served from a non-canonical location, and pnpm records such a URL in the lockfile as it does today. Revision-aware registries retain the selected replacement's digest URL, `revision`, and `revisions` history; a marked replacement must never be reconstructed as the canonical original. A version without `tarball` from a registry with no declared `serverType` fails to resolve with a hint to declare one, because pnpm cannot know where it lives.
 - **Unchanged fields:** everything that describes the unpacked package, such as `unpackedSize`, `fileCount`, and the attestation markers, stays as it is, because both formats hold the same tar.
 - **Removed fields:** `shasum` is the SHA-1 of the `.tgz`, and `signatures` sign `name@version:integrity` with the `.tgz` hash, so neither describes the tar. The tar registry leaves both out.
 - **Size:** the document is as large as the `.tgz` registry's. Adding a second hash to every version instead would have grown abbreviated metadata by 38%; see [Rationale and Alternatives](#rationale-and-alternatives).
@@ -205,7 +205,7 @@ registries:
 defaultRegistry: main
 ```
 
-Here `https://pnpr.corp.example/` serves `.tgz` and `https://pnpr.corp.example/~zstd/` serves tars. Every pnpr registry serves its tarballs at `<registry>/<name>@<version>`. A `.tgz` registry also serves the npm-layout `.tgz` path and names it in `dist.tarball`, for npm and Yarn; a tar registry serves tars only and omits the field.
+Here `https://pnpr.corp.example/` serves `.tgz` and `https://pnpr.corp.example/~zstd/` serves tars. Every pnpr registry serves its tarballs at `<registry>/<name>@<version>`. A `.tgz` registry also serves the npm-layout `.tgz` path and names it in `dist.tarball`, for npm and Yarn; a tar registry serves tars only and omits canonical originals' `tarball` fields. A revision-aware registry keeps the replacement's digest URL and history on either format. Its canonical `.tgz` and `<name>@<version>` routes keep serving revision zero, using the resource format of their registry; positive revisions always use tar-addressed digest routes.
 
 | deployment | exposed registries |
 |---|---|
@@ -281,7 +281,7 @@ pnpm v12 only. pnpm v11 is maintenance-only and is not changed.
 
 - Config: `tarballs` per registry.
 - Publish and upstream fetch: compute the tar hash, after verifying an upstream `.tgz`, and record it in the shared hosted storage.
-- Metadata: in tar registries, set `dist.integrity` to the tar's hash, drop `tarball`, `shasum`, and `signatures`, and leave `integrity` out for versions whose `.tgz` pnpr does not hold yet.
+- Metadata: in tar registries, set `dist.integrity` to the tar's hash, drop canonical originals' `tarball` fields, `shasum`, and `signatures`, and leave `integrity` out for versions whose `.tgz` pnpr does not hold yet. Retain positive revisions' digest URLs and revision history as the companion revision protocol requires.
 - Routes: serve `<name>@<version>` on every registry, as a tar with content negotiation on tar registries and as the `.tgz` elsewhere. Tar registries serve no `.tgz` path. Serve gzip clients the stored `.tgz`, and zstd clients a level-19 variant from the local cache, produced by a bounded background worker.
 - Docs: `pnpr/docs`.
 
