@@ -1,11 +1,16 @@
 # Integrity-addressed patch revisions for pnpr
 
+> Status: proposed amendment to the experimental revision protocol;
+> implementation pending.
+
 ## Summary
 
 pnpr should be able to project a provider's patched build directly over the
 original package's `name@version`, without exposing a provider alias or
 inventing a version suffix. Every accepted artifact is stored and served from
-an immutable, registry-scoped URL identified by its complete sha512 digest:
+an immutable, registry-scoped URL identified by its complete sha512 digest.
+For a replacement this is always the hash of its uncompressed tar, independent
+of the registry's default format and the client's lockfile setting:
 
 ```text
 https://registry.example/-/tarballs/sha512/<base64url-digest>
@@ -41,11 +46,13 @@ The revision has three client-facing purposes:
 The revision is not part of the content address or byte verification. The
 complete algorithm and digest remain the only artifact identity.
 
-The ordinary canonical npm URL
+On a `.tgz` registry, the ordinary canonical npm URL
 `<registry>/<name>/-/<name>-<version>.tgz` never changes: it continues to serve
 the original upstream artifact. Consequently, legacy lockfiles remain
-reproducible. Fresh resolutions in pnpm, npm, and Yarn receive the selected
-artifact directly from the immutable URL advertised in `dist.tarball`.
+reproducible. Fresh resolutions in tar-aware clients receive the selected
+artifact directly from the immutable URL advertised in `dist.tarball`. A client must support
+HTTP content decoding before SRI verification and extraction of a plain tar;
+npm and Yarn support requires client-matrix tests.
 
 This makes the identity split explicit:
 
@@ -142,8 +149,9 @@ directly from registry plus integrity.
 
 - An **original identity** is an npm package `name@version`, for example
   `ejs@2.7.4`.
-- An **artifact** is one exact tarball for that identity, identified by its
-  complete sha512 digest.
+- An **artifact** is one package resource for that identity, identified by its
+  complete sha512 digest. A replacement resource is always the uncompressed
+  tar; an original keeps the resource format of its registry.
 - A **registry revision** is an accepted artifact's entry in the identity's
   append-only history. Its position is its stable **revision number**: the
   original is revision zero and is never marked, a selected replacement's
@@ -154,8 +162,8 @@ directly from registry plus integrity.
   never parsed — and is not exposed in `dist.revision`.
 - The **selected revision** is the artifact advertised by the current version
   document.
-- The **canonical URL** is the ordinary npm tarball URL derived from registry,
-  name, and version.
+- The **canonical URL** serves the original resource: the npm tarball URL on
+  a `.tgz` registry, or `<registry>/<name>@<version>` on a tar registry.
 - The **integrity URL** is a registry-scoped content address containing the
   complete digest.
 
@@ -164,8 +172,9 @@ directly from registry plus integrity.
 1. **Full sha512 is artifact identity.** A truncated digest or revision number
    is never an object key, authorization input, or security decision.
 2. **Every tarball URL is immutable.** The canonical URL remains on the
-   original artifact, and an integrity URL always returns the bytes named by
-   its digest.
+   original artifact, and an integrity URL always returns the resource named
+   by its digest after HTTP content decoding. Re-encoding a replacement tar
+   changes neither its identity nor its revision number.
 3. **Replacements are explicitly marked.** A version whose selected artifact is
    a replacement advertises its revision number in `dist.revision`. Originals
    serve ordinary unmarked metadata: the canonical route is pinned to revision
@@ -207,7 +216,7 @@ opaque tarball; that delivery encoding is not exposed to consumers:
     "ejs@2.7.4": {
       "revision": "echo-r2",
       "tarball": "https://npm.echo.example/artifacts/ejs/2.7.4/r2.tgz",
-      "integrity": "sha512-<echo-r2>",
+      "integrity": "sha512-<echo-r2-tgz>",
       "fixes": ["GHSA-...", "CVE-2026-..."],
       "attestations": ["https://npm.echo.example/attestations/..."]
     }
@@ -215,9 +224,12 @@ opaque tarball; that delivery encoding is not exposed to consumers:
 }
 ```
 
-pnpr verifies the manifest signature, downloads the artifact, verifies its
-complete integrity, and stores it in the selected registry's
-content-addressed store before making it visible. The fetch itself is
+pnpr verifies the manifest signature, downloads the `.tgz`, and verifies its
+complete integrity against the manifest before decoding it. It then derives
+the tar hash and stores the artifact and the verified source-to-tar binding
+before making the replacement visible. The manifest's `integrity` pins the
+provider's `.tgz`; the projected `dist.integrity` pins its tar. Those two
+values are not interchangeable. The fetch itself is
 constrained: https only, artifact origins declared in provider configuration
 the way the manifest origin is, private and link-local addresses rejected,
 no redirects, provider credentials sent only to declared origins, and
@@ -250,7 +262,16 @@ The verified tarball must contain the original `name` and `version`. A provider
 may use aliases or revision identifiers in its distribution system, but the
 artifact offered for projection must identify itself as `ejs@2.7.4`. pnpr does
 not rewrite `package.json` after verification because that would produce bytes
-different from the provider's signed integrity.
+different from the provider's signed artifact. Provider attestations and
+signatures retain that source `.tgz` as their subject; they are not relabeled
+as direct signatures over the derived tar. Audit/VEX translation from a
+source digest to a tar digest requires the verified binding. A provider
+recompressing an identical tar supplies new source evidence for the same
+artifact, not a new revision. Source evidence is retained per signed input
+so a later upload cannot replace the evidence attached to an accepted input.
+Additional source evidence is append-only and separate from the immutable
+revision record; re-compression never rewrites that record's fixes or
+attestations.
 
 Illustrative configuration:
 
@@ -282,6 +303,36 @@ patchProviders:
 Provider credentials and artifact locations remain server-side. Consumers
 configure only the `main` registry; they do not configure an `@echo-patch`
 scope or named Echo registry.
+
+### Replacement tar resources
+
+Every positive revision uses the tar defined by
+[the tar registry RFC](../../text/0000-zstd-registry-tarballs.md#the-tar-and-its-integrity).
+The whole provider `.tgz` must decode successfully under that RFC's byte
+limits before a tar hash or revision is published. Concatenated gzip members
+are decoded together; a `.tgz` with invalid trailing data has no tar and is
+rejected. No re-packing, metadata rewriting, or tar normalization is allowed.
+
+The registry stores the provider's verified `.tgz` and its source digest as
+evidence. The tar hash keys replacement history, digest URLs, projected
+metadata, and client lockfiles. Uniqueness and concurrent allocation compare
+tar hashes, so differently compressed copies of one tar share a revision.
+Revision zero also records its original tar digest internally for allocation:
+provider input with that tar is the original, not a new positive revision.
+Its published original integrity still follows its registry's resource format.
+Distinct source attestations remain bound to their own signed inputs.
+
+Revision zero keeps the registry's original resource format. A `.tgz`
+registry retains the upstream `.tgz` hash in its original metadata, history,
+and canonical or digest URLs. A tar registry uses the verified original tar
+and tar hash instead. The corresponding canonical URL must serve the same
+resource as the unmarked metadata. Neither view may substitute a selected
+replacement for the original.
+
+This is an amendment to experimental revision identity. Existing replacement
+state and compressed-digest lockfiles require explicit regeneration; there
+is no silent conversion or alternate-hash fallback. The source-to-tar
+binding must be verified before new history or digest objects are exposed.
 
 ### Integrity URL
 
@@ -325,12 +376,28 @@ Successful public responses are ordinary immutable CDN objects:
 ```http
 HTTP/1.1 200 OK
 Cache-Control: public, max-age=31536000, immutable
-ETag: "<full-digest>"
-Content-Digest: sha-512=:<base64>:
+Content-Type: application/x-tar
+Content-Encoding: gzip
+Vary: Accept-Encoding
 ```
 
+This example is a replacement served with gzip content coding. Its HTTP
+resource is the tar; the stored provider `.tgz` can be sent unchanged as its
+gzip encoding. Clients accepting zstd receive the level-19 cached variant,
+or a level-3 stream until it exists; other clients receive the identity tar.
+Use the tar registry RFC's decoder limits, bounded variant worker, caching
+policy, and response-header rules. No `ETag` derived only from the tar digest
+is emitted for differently encoded responses. `Content-Digest`, if emitted,
+hashes the encoded message content and therefore differs by encoding; the
+URL and `dist.integrity` always name the decoded resource. Partial-content
+responses for replacements are outside this amendment; their range requests
+receive the full body.
+
 Private registries use cache directives compatible with their authorization
-model. pnpr verifies content against the digest before storing or serving it.
+model. The immutable object must have been verified before publication.
+A response that still checks a cached source must fail on a mismatch before
+completing, omit `Content-Length`, and evict the stale source. No derived
+hash or variant may be published from mismatched bytes.
 
 ### Intermediaries and the digest route
 
@@ -395,9 +462,9 @@ pnpr applies these rules:
   revision number can misdescribe a revision but never change what is fetched
   or verified.
 
-npm-compatible clients ignore the unknown `dist` field and follow
-`dist.tarball` normally. pnpm records the revision number in its lockfile as
-the durable signal to construct the digest URL, as the companion RFC specifies.
+Tar-aware clients ignore the unknown `dist.revision` field and follow
+`dist.tarball`; HTTP content decoding must precede SRI verification. pnpm records the revision
+number in its lockfile as the durable signal to construct the digest URL, as the companion RFC specifies.
 
 ### Projected package document
 
@@ -459,9 +526,10 @@ replacement:
 ```
 
 The selected revision is the entry whose complete digest equals
-`dist.integrity` and whose revision number equals `dist.revision`. Existing
-npm-compatible clients ignore `dist.revisions` and fetch selected
-`dist.tarball` normally.
+`dist.integrity` and whose revision number equals `dist.revision` (or zero
+when absent). Replacement entries carry tar digests; revision zero keeps
+the registry's original resource digest. Tar-aware clients ignore
+`dist.revisions` and fetch the selected `dist.tarball`.
 
 The history provides:
 
@@ -504,7 +572,7 @@ URL.
 
 ### The canonical URL remains the original artifact
 
-The canonical npm tarball route is never repointed:
+On a `.tgz` registry, the canonical npm tarball route is never repointed:
 
 ```text
 https://registry.example/ejs/-/ejs-2.7.4.tgz
@@ -521,14 +589,16 @@ This provides backward compatibility:
   bytes on every registry;
 - a lockfile entry recording replacement `N` constructs its digest URL;
 - changing the selected revision changes only mutable package metadata;
-- no CDN URL ever refers to two bodies.
+- no CDN URL ever refers to two decoded resources.
 
-Patch delivery to npm-compatible clients does not depend on the canonical
-route changing. A fresh npm or Yarn resolution follows `dist.tarball` — which
-points at the selected replacement's digest URL — and records that URL with
-the patched integrity in its own lockfile, so registry-selected patches reach
-those clients too; what stays pnpm-only is revision *management* (host-free
-lockfile entries, `+rN` pinning, revision refresh). A client that ignores
+Patch delivery to tar-aware clients does not depend on the canonical route
+changing. Such a client follows the selected replacement's `dist.tarball`,
+removes HTTP content coding, and records the tar integrity. Following an
+extensionless URL alone does not prove this support: clients that hash the
+encoded bytes or require a `.tgz` resource are incompatible. A deployment
+must validate its supported client matrix before enabling replacements;
+revision management remains pnpm-specific (host-free lockfile entries,
+`+rN` pinning, revision refresh). A client that ignores
 `dist.tarball` and reconstructs the conventional URL from name and version
 fails loudly, because original bytes cannot match the advertised replacement
 integrity — never a silent wrong install. And existing lockfiles of every
@@ -586,8 +656,9 @@ packument resolution → one tarball URL → one CDN request
 A frozen revision-aware pnpm install skips packument resolution for artifact
 selection and constructs that same URL from its lockfile.
 
-There is no custom header, `Vary` cache key, redirect, metadata recovery
-request, or intentionally failed download. A warm CDN serves the object without
+There is no selector header, redirect, metadata recovery request, or
+intentionally failed download. Standard `Vary: Accept-Encoding` separates
+transport encodings of one tar resource. A warm CDN serves the object without
 contacting pnpr. On a miss, pnpr performs one content-addressed lookup.
 
 The URL is longer by one sha512 digest. Patched packuments contain a small
@@ -633,9 +704,10 @@ pnpr indexes artifact content by:
 Physical bytes may be deduplicated beneath that authorization index. A provider
 refresh that accepts a distinct artifact follows this order:
 
-1. Download and verify the tarball.
-2. Store it under its immutable integrity URL.
-3. Derive and validate projected version metadata from the verified tarball.
+1. Download the provider `.tgz` and verify its signed source digest.
+2. Decode it in full, derive the tar hash, and store the source-to-tar binding
+   and the artifact before exposing its tar-addressed URL.
+3. Derive and validate projected version metadata from the verified tar.
 4. Assign the next stable registry revision.
 5. Append its structured revision metadata.
 6. Atomically update the projected version entry and `dist`.
@@ -648,8 +720,10 @@ observes the existing digest mapping instead of allocating again, and two
 concurrent refreshes carrying different digests cannot both receive the same
 next revision number.
 
-No tarball cache object is invalidated or overwritten. Metadata never advertises
-an integrity URL before it is available.
+No immutable tar resource is overwritten. Encoded variants are disposable
+cache entries and may be evicted or regenerated without changing history,
+revision numbers, or client pins. Metadata never advertises an integrity URL
+before its verified resource is available.
 
 ### Authorization, retention, and enforcement
 
@@ -664,15 +738,16 @@ lockfile then cannot install through that registry. Patch selection must not
 silently weaken a registry's separate screening policy.
 
 Immutability is a statement about bytes, not availability: a successful
-response for a digest URL always carries the same bytes, but policy may stop
-the URL from answering successfully. A transition to refusal is effective
-only once the edge stops serving, so deployments that publish long public
-cache lifetimes must purge affected objects on such transitions, and a
+response for a digest URL always decodes to the same resource bytes, but
+policy may stop the URL from answering successfully. A transition to refusal
+is effective only once the edge stops serving, so deployments that publish
+long public cache lifetimes must purge affected objects on such transitions, and a
 registry whose policy may require immediate refusal should prefer
 authorization-aware (non-shared) caching for the affected class of artifacts
 over year-long shared caching. Policy applies to the artifact, never the
 route: the canonical URL and the digest URL must give the same answer for the
-same bytes, so the canonical route can never serve as a policy bypass.
+same artifact. Source and tar addresses are joined by their verified binding
+for this check, so neither route nor resource format can bypass policy.
 
 ### Auditing a revision
 
@@ -704,7 +779,7 @@ provider package documents, and depends on pnpm-specific annotation or override
 behavior.
 
 Integrity-addressed revisions keep provenance in registry metadata and present
-ordinary `dist` entries to npm-compatible clients.
+ordinary `dist` entries to clients that support the tar resource contract.
 
 ### Encode the revision in the version
 
@@ -845,12 +920,15 @@ The compact `dist.revision` field complements but does not replace
 
 1. Add provider manifest configuration, signature verification, pinned refresh,
    and content-addressed ingestion.
-2. Validate every artifact's complete integrity and original `name@version`,
-   then derive projected version metadata from its verified `package.json`.
+2. Verify the provider's `.tgz` digest and original `name@version`, decode it
+   in full under the tar registry RFC's limits, and retain the verified
+   source-to-tar binding. Key replacements and revision allocation by tar
+   digest, then derive projected metadata from the verified `package.json`.
 3. Add a registry-scoped digest index that separates physical deduplication
    from authorization.
-4. Serve immutable `<registry-base>/-/tarballs/<algorithm>/<digest>` routes
-   with range request, CDN, and access-policy support.
+4. Serve replacement digest routes as tar resources with gzip, zstd, or
+   identity content coding, standard encoding-aware CDN caching, and the
+   existing access policy. Keep originals' resource semantics unchanged.
 5. Expose original upstream artifacts through the digest route even before any
    replacement exists.
 6. Emit `dist.revision` with stable integer revision numbers for selected
@@ -883,7 +961,18 @@ Tests should cover:
   cross-registry disclosure;
 - a known digest requested through an unauthorized registry returning no
   bytes;
-- immutable CDN caching, range requests, and warm-CDN behavior;
+- provider `.tgz` integrity checked before the tar hash is derived;
+- source signatures, attestations, and VEX bound to the verified source-to-tar
+  mapping rather than asserted to sign the tar directly;
+- two gzip encodings of an identical tar allocating only one revision, and
+  input matching the original tar remaining revision zero;
+- all replacement encodings yielding the same tar hash and digest URL;
+- encoded variant regeneration preserving pins and revision numbers;
+- invalid gzip members or trailing data rejected before publication;
+- stale-source failures over real HTTP for gzip, zstd, and identity, including
+  a gzip response whose declared length would otherwise hide a late error;
+- immutable CDN caching, `Vary: Accept-Encoding`, ignored range requests,
+  and warm-CDN behavior;
 - atomic refresh with no metadata-visible-but-unavailable interval;
 - selected metadata derived from the verified tarball;
 - a dependency-changing revision updating snapshot and integrity together;
@@ -937,10 +1026,10 @@ contains the client and lockfile changes.
   projected manifest fields should historical entries retain?
 - Does `pnpm update --patches` update every artifact revision, only
   security-motivated revisions, or accept provider and advisory filters?
-- Which npm-compatible clients honor a non-conventional `dist.tarball` (npm,
-  Yarn classic, Yarn Berry via `__archiveUrl`, Bun), and which reconstruct
-  conventional URLs and therefore hit the loud-failure path? This needs
-  verification and client-matrix tests, not assumption.
+- Which clients both honor a non-conventional `dist.tarball` and remove HTTP
+  content coding before verifying SRI and extracting a plain tar (npm, Yarn
+  classic, Yarn Berry, Bun)? This needs client-matrix tests, including frozen
+  installs, redirects, and missing or unsupported content codings.
 - Should pnpr expose a batch revision endpoint — POST the locked
   `(name@version, revision)` pairs, receive each entry's currently selected
   revision, integrity, and fixes — so `pnpm update --patches` and
