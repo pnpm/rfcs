@@ -317,7 +317,9 @@ Every positive revision uses the tar defined by
 The whole provider `.tgz` must decode successfully under that RFC's byte
 limits before a tar hash or revision is published. Concatenated gzip members
 are decoded together; a `.tgz` with invalid trailing data has no tar and is
-rejected. No re-packing, metadata rewriting, or tar normalization is allowed.
+rejected. The client's legacy `.tgz` extraction exception for gzip trailer
+errors after the tar end marker does not apply to deriving a tar resource.
+No re-packing, metadata rewriting, or tar normalization is allowed.
 
 The registry stores the provider's verified `.tgz` and its source digest as
 evidence. The tar hash keys replacement history, digest URLs, projected
@@ -607,11 +609,9 @@ revision management remains pnpm-specific (host-free lockfile entries,
 `+rN` pinning, revision refresh). A client that ignores
 `dist.tarball` and reconstructs the conventional URL from name and version
 fails loudly, because original bytes cannot match the advertised replacement
-integrity — never a silent wrong install. And existing lockfiles of every
-client keep installing exactly what they pin: no registry design can
-retroactively patch a resolution that pins the original integrity, because
-serving different bytes would only turn reproducible installs into integrity
-failures. Canonical immutability makes that fact honest instead of breaking.
+integrity. A registry cannot retroactively patch a resolution that pins the
+original integrity; serving different resource bytes causes an integrity
+failure.
 
 There is no need to use an integrity mismatch as protocol negotiation.
 
@@ -976,7 +976,8 @@ Tests should cover:
   input matching the original tar remaining revision zero;
 - all replacement encodings yielding the same tar hash and digest URL;
 - encoded variant regeneration preserving pins and revision numbers;
-- invalid gzip members or trailing data rejected before publication;
+- invalid gzip members, gzip trailers, or decoded trailing tar data rejected
+  before publication, including errors after the tar end marker;
 - stale-source failures over real HTTP for gzip, zstd, and identity, including
   a gzip response whose declared length would otherwise hide a late error;
 - immutable CDN caching, `Vary: Accept-Encoding`, ignored range requests,
