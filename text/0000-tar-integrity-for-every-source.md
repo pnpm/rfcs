@@ -18,7 +18,7 @@ Pinning the compressed bytes couples a lockfile to one encoding of each package:
 
 - **A registry cannot change how it compresses.** Switching a `.tgz` registry to a tar registry, or moving from npmjs to a pnpr in front of it, invalidates every hash and needs `--update-checksums`. The tar RFC accepted that cost because the hash kind followed the registry.
 - **A host re-compressing the same content breaks installs.** In January 2023 GitHub changed how it compressed `codeload` archives, and checksums broke across Bazel, Homebrew, and Nix until it reverted. Tools that hashed the unpacked content were unaffected. pnpm pins `tarball:` URLs by their compressed bytes and would have broken.
-- **Two kinds of hash in one lockfile** is a permanent split if tar registries spread. An entry's meaning depends on which registry it came from, and a reader has to know the registry to interpret it.
+- **Two kinds of hash in one lockfile** is a permanent split if tar registries spread. An unmarked entry's meaning depends on which registry it came from, and a reader has to know the registry to interpret it. Revision-aware entries already escaped this: the [revision protocol](./0000-integrity-addressed-registry-tarballs.md) pins the tar digest for every revision, including the original, on any registry. This RFC extends the same rule to the unmarked entries.
 
 Hashing the tar removes the coupling: the hash is a function of the published content, and compression becomes a transport detail everywhere, not only on tar registries. Go's `go.sum` and Nix's `fetchzip` already pin content this way; see Prior Art.
 
@@ -50,6 +50,7 @@ The setting covers every entry whose resource is a package tarball: registry pac
 - **Binary resolutions** (`BinaryResolution`: Node, Deno, and Bun runtime archives) pin the downloaded archive, which may be a zip. They are not package tarballs and have no tar in this RFC's sense.
 - **Custom fetchers** own their integrity semantics and are not touched.
 - **Git and directory dependencies** have no `integrity`.
+- **Revision-aware entries** (those with a `revision`, including `revision: 0`) already pin the tar digest and fetch it from the digest route, whatever the setting says. The setting changes nothing for them.
 
 ### Which hash pnpm computes
 
@@ -60,9 +61,11 @@ With `lockfileIntegrity: tar`, pnpm hashes the decoded tar of every download:
 
 Both run under the decoded-output budget the tar RFC defined, so a hostile body is bounded the same way on both paths. This moves the `.tgz` path to decode-before-verify, which the tar RFC's "Integrity of encoded responses" section discusses; the budget is what makes it acceptable.
 
+Deriving a tar needs the whole `.tgz` to decode cleanly. A `.tgz` whose gzip stream ends in an error after the tar's end-of-archive marker installs today, because pnpm stops at the marker; with the setting on, it fails, as the tar RFC already requires for deriving or serving a tar. Such tarballs are rare, and the error names the package.
+
 ### Where the hash comes from at resolution
 
-- **Tar registries:** from `dist.integrity`, as today.
+- **Tar registries, and revision-aware versions on any registry:** from `dist.integrity`, which is the tar digest there already.
 - **`.tgz` registries, including npmjs:** metadata carries only the `.tgz` hash. pnpm downloads the `.tgz`, verifies it against `dist.integrity` (or `dist.shasum` for versions without it), decodes it, and records the tar's hash. The lockfile entry is derived from the publisher's hash, so no trust moves to the registry.
 - **`tarball:` URLs and `file:` tarballs:** pnpm already downloads and hashes these at resolution; it hashes the decoded tar instead of the file.
 - **Git and directory dependencies:** unchanged; they have no `integrity`.
@@ -84,7 +87,7 @@ What remains is one download per version this machine has never installed from a
 
 ### Switching the setting
 
-Turning `lockfileIntegrity: tar` on or off changes what every `integrity` means, so pnpm treats a lockfile whose recorded setting differs from the configured one like any other outdated setting: a frozen install fails with an error that names the setting, and a non-frozen install re-resolves and rewrites the hashes. The conversion is one install and one lockfile diff, in which every entry changes. Converting in the other direction behaves the same.
+Turning `lockfileIntegrity: tar` on or off changes what every unmarked `integrity` means, so pnpm treats a lockfile whose recorded setting differs from the configured one like any other outdated setting: a frozen install fails with an error that names the setting, and a non-frozen install re-resolves and rewrites the hashes. The conversion is one install and one lockfile diff, in which every unmarked entry changes and revision-aware entries stay as they are. Converting in the other direction behaves the same.
 
 ### Older pnpm versions
 
@@ -111,7 +114,7 @@ What the gate guarantees differs by reader:
 
 ## Rationale and Alternatives
 
-**Keep the hash kind per registry** (the tar RFC as merged). Simplest, and right as a first step, but a lockfile is then valid only against registries of the kinds it was resolved from, every registry format switch needs `--update-checksums`, and two kinds of hash coexist indefinitely.
+**Keep the hash kind per registry** (the tar RFC as merged). Simplest, and right as a first step, but a lockfile is then valid only against registries of the kinds it was resolved from, every registry format switch needs `--update-checksums`, and two kinds of hash coexist indefinitely for unmarked entries, next to the tar digests that revision-aware entries already carry.
 
 **Make tar hashes the default now.** The download cost on first resolution falls on every project at once, including bots that run `--lockfile-only` per pull request on machines with no store. An opt-in lets projects that are behind a tar registry, or that keep a store, take the benefit first, and lets the store-index cache prove itself before a default changes.
 
@@ -140,6 +143,7 @@ pnpm v12 only.
 - **OCI images:** `diff_ids` in the image config are the digests of the uncompressed layer tars, next to the compressed digests in the manifest.
 - **Yarn Berry:** `yarn.lock` checksums hash the zip Yarn builds in its cache, and changing the cache's compression level in Yarn 4 changed every checksum. That is the coupling this RFC removes.
 - **`0000-zstd-registry-tarballs.md`:** defines the tar, its hash, the decoded-output budget, and tar registries; this RFC builds on all of them.
+- **`0000-integrity-addressed-registry-tarballs.md`:** pins the tar digest for every revision-aware entry on every registry and fetches it from a digest route. This RFC gives unmarked entries the same hash; the store index rows reachable by tar hash serve both.
 
 ## Unresolved Questions and Bikeshedding
 
