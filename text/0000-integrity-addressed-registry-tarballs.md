@@ -133,7 +133,7 @@ When `dist.revision` is present, pnpm validates during resolution:
 3. decoding the URL's base64url digest produces exactly the digest in
    `dist.integrity`;
 4. the digest is complete, well formed, and unambiguous;
-5. `dist.revision` is a canonical nonnegative integer within the range defined
+5. `dist.revision` is a safe nonnegative integer within the range defined
    under *The revision field*;
 6. `dist.revisions` includes revision zero and a record matching the selected
    revision number and tar integrity. The history and selected marker must both
@@ -174,12 +174,12 @@ registry RFC apply. There is no fallback to a compressed-byte hash.
 
 Rules:
 
-- `N` is a nonnegative base-10 integer in canonical form — no leading zeros, sign,
-  or exponent — bounded by `0 ≤ N ≤ 2^53 − 1` (JavaScript's
-  `Number.MAX_SAFE_INTEGER`), so registries implemented in any language and
-  JSON parsers everywhere agree on every representable revision number;
-  registries must not allocate outside the range, and clients reject values
-  outside it;
+- `N` is a nonnegative integer bounded by `0 ≤ N ≤ 2^53 − 1`
+  (JavaScript's `Number.MAX_SAFE_INTEGER`). Producers serialize it as a
+  canonical base-10 integer: no leading zeros, sign, fraction, or exponent.
+  Clients validate the parsed value as a safe nonnegative integer; they need
+  not recover the original numeric token from JSON or YAML. Strings,
+  fractional values, negative values, and values outside the range are rejected;
 - revision numbering is scoped to one registry and one `name@version`;
 - the original artifact is recorded as `revision: 0`; absence of the field
   means an ordinary resolution outside the revision protocol;
@@ -672,9 +672,9 @@ Tests should cover:
   metadata fetch, or fall-forward;
 - revision zero using the same tar digest route as positive revisions;
 - digest-route revision metadata without `dist.revision` rejected;
-- malformed `revision` values (negative, non-integer, strings, leading
-  zeros, values above `2^53 − 1`) rejected at resolution and at lockfile
-  parsing;
+- malformed `revision` values (negative, fractional, strings, values above
+  `2^53 − 1`) rejected at resolution and at lockfile parsing;
+- producers serializing revision numbers as canonical decimal integers;
 - base64/base64url conversion;
 - malformed, abbreviated, unsupported, and mismatched digests;
 - registry path-prefix preservation;

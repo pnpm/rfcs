@@ -438,14 +438,15 @@ pnpr applies these rules:
   `0` when the original is selected;
 - it assigns `1` to the first distinct accepted replacement and monotonically
   increasing values to later replacements, within the canonical integer range
-  the companion RFC fixes (`0 ≤ N ≤ 2^53 − 1`, canonical decimal);
+  the companion RFC fixes (`0 ≤ N ≤ 2^53 − 1`), serialized as canonical
+  decimal integers;
 - it never uses the provider name or provider revision in the field;
 - it preserves revision numbers in `dist.revisions`, audit output, and logs;
 - it excludes the field from object lookup, equality, authorization, VEX, and
   integrity verification;
 - it validates the field under one rule, identical for full and abbreviated
-  packuments: a malformed value (negative, non-integer, out of the
-  canonical range) or a revision number that does not match the
+  packuments: an invalid parsed value (negative, fractional, a string, or
+  outside the safe-integer range) or a revision number that does not match the
   `dist.revisions` entry whose integrity equals `dist.integrity` is a protocol
   error — pnpr never emits it, and a client rejects the version's metadata
   instead of reconciling the mismatch from either side;
