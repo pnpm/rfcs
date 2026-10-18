@@ -273,6 +273,12 @@ Additional source evidence is append-only and separate from the immutable
 revision record; re-compression never rewrites that record's fixes or
 attestations.
 
+Projected replacement `dist` omits `shasum` and signatures over a source
+`.tgz`, even on a `.tgz` registry: neither authenticates the tar resource.
+Attestation links and provenance markers may remain, with their source
+subjects and verified bindings intact. Original metadata keeps the fields
+appropriate to its own resource.
+
 Illustrative configuration:
 
 ```yaml
@@ -964,6 +970,8 @@ Tests should cover:
 - provider `.tgz` integrity checked before the tar hash is derived;
 - source signatures, attestations, and VEX bound to the verified source-to-tar
   mapping rather than asserted to sign the tar directly;
+- projected replacements omitting source `shasum` and signatures on either
+  registry format, with original metadata retaining its resource semantics;
 - two gzip encodings of an identical tar allocating only one revision, and
   input matching the original tar remaining revision zero;
 - all replacement encodings yielding the same tar hash and digest URL;
