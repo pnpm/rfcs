@@ -5,11 +5,10 @@
 
 ## Summary
 
-pnpm should support registries that serve immutable, integrity-addressed
-tarball URLs:
+pnpm should support registries that serve immutable revision tarball URLs:
 
 ```text
-<registry-base>/-/tarballs/<algorithm>/<base64url-digest>
+<registry-base>/<name>@<version>+r<revision>
 ```
 
 and represent registry artifact revisions with a `revision` field in the
@@ -29,19 +28,19 @@ packages:
 
 Every revision-aware entry records its revision explicitly, including
 `revision: 0` for the original. All revisions use the uncompressed tar's
-integrity and the same digest route, independent of registry format.
-An entry without `revision` is an ordinary registry resolution outside this
-protocol and retains its existing retrieval convention.
+integrity and the same `<name>@<version>+r<revision>` route, independent of
+registry format. An entry without `revision` is an ordinary registry
+resolution outside this protocol and retains its existing retrieval convention.
 
-An entry with `revision: N` must be fetched by digest. A frozen install
-converts the complete digest to base64url and makes one request to:
+An entry with `revision: N` must be fetched from the revision route. A frozen
+install makes one request to:
 
 ```text
-<effective-registry-base>/-/tarballs/sha512/<first-patch-digest-base64url>
+<effective-registry-base>/<name>@<version>+r<N>
 ```
 
-The digest names the revision's uncompressed tar, not its `.tgz`. HTTP
-content coding may change without changing that URL or its integrity.
+`resolution.integrity` names the revision's uncompressed tar, not its `.tgz`.
+HTTP content coding may change without changing that URL or its integrity.
 
 No tarball URL, provider alias, custom request header, redirect, integrity
 failure, metadata lookup, or capability probe is required. The field itself is
@@ -104,14 +103,14 @@ ordinary immutable URLs:
 ### Registry metadata
 
 For every revision-aware version, the registry advertises
-the digest URL, a standard SRI integrity, and the revision number:
+the revision URL, a standard SRI integrity, and the revision number:
 
 ```jsonc
 {
   "name": "ejs",
   "version": "2.7.4",
   "dist": {
-    "tarball": "https://registry.example/-/tarballs/sha512/AbCd...",
+    "tarball": "https://registry.example/ejs@2.7.4+r2",
     "integrity": "sha512-AbCd...",
     "revision": 2
   }
@@ -121,27 +120,27 @@ the digest URL, a standard SRI integrity, and the revision number:
 `dist.integrity` is an ordinary Subresource Integrity value with no
 extensions. `dist.revision` is present for every revision-aware version:
 `0` selects the original and `N ≥ 1` selects a replacement. Its `dist.tarball`
-always names the tar by digest, including for revision zero. A version outside
-this protocol omits both `dist.revision` and `dist.revisions` and follows the
-registry's ordinary resource convention.
+always names `<name>@<version>+r<revision>`, including for revision zero. A
+version outside this protocol omits both `dist.revision` and `dist.revisions`
+and follows the registry's ordinary resource convention.
 
 When `dist.revision` is present, pnpm validates during resolution:
 
-1. `dist.tarball` is on the selected registry origin and beneath its
-   integrity-tarball route;
-2. the URL algorithm is supported and is sha512 for this protocol;
-3. decoding the URL's base64url digest produces exactly the digest in
-   `dist.integrity`;
-4. the digest is complete, well formed, and unambiguous;
-5. `dist.revision` is a safe nonnegative integer within the range defined
+1. `dist.tarball` is on the selected registry origin at
+   `<name>@<version>+r<revision>` for the resolved package, version, and
+   revision;
+2. `dist.integrity` contains a complete, well-formed sha512 digest;
+3. `dist.revision` is a safe nonnegative integer within the range defined
    under *The revision field*;
-6. `dist.revisions` includes revision zero and a record matching the selected
-   revision number and tar integrity. The history and selected marker must both
-   be present; incomplete or contradictory revision metadata is rejected.
+4. `dist.revisions` includes revision zero and a record matching the selected
+   revision number, URL, and tar integrity. The history and selected marker
+   must both be present; incomplete or contradictory revision metadata is
+   rejected.
 
-A digest-route `dist.tarball` without `dist.revision` is not valid revision
-metadata. pnpm must not infer a revision or normalize that URL onto a canonical
-route. Ordinary non-revision URLs retain their existing handling.
+A `<name>@<version>+r<revision>` `dist.tarball` without `dist.revision` is not
+valid revision metadata. pnpm must not infer a revision or normalize that URL
+onto a canonical route. Ordinary non-revision URLs retain their existing
+handling.
 
 Clients receiving revision resources must remove HTTP content coding before
 SRI verification and accept a plain tar archive. Following `dist.tarball` and
@@ -209,7 +208,7 @@ packages:
 
 This remains portable when a registry deployment moves between hostnames or
 when the user changes registry configuration. It also retains named-registry
-path prefixes. Resolving the digest route against:
+path prefixes. Resolving the revision route against:
 
 ```text
 https://registry.example/~main/
@@ -218,7 +217,7 @@ https://registry.example/~main/
 produces:
 
 ```text
-https://registry.example/~main/-/tarballs/sha512/AbCd...
+https://registry.example/~main/ejs@2.7.4+r2
 ```
 
 The endpoint path is relative to the registry base. It is not root-relative,
@@ -227,16 +226,15 @@ because a leading slash would discard `/~main/`.
 The representation is self-describing with two states:
 
 - no `revision` field means the ordinary registry retrieval convention;
-- `revision: N`, including `revision: 0`, means the tar digest endpoint and
+- `revision: N`, including `revision: 0`, means `<name>@<version>+r<N>` and
   registry revision `N`.
 
 ### Fetch and verification
 
 For an entry carrying `revision: N`, pnpm:
 
-1. converts the complete base64 digest to base64url;
-2. resolves `-/tarballs/<algorithm>/<digest>` against the effective registry
-   base;
+1. verifies that `resolution.integrity` contains a complete sha512 digest;
+2. resolves `<name>@<version>+r<N>` against the effective registry base;
 3. sends one ordinary authenticated GET;
 4. removes HTTP content coding and verifies the tar against the complete SRI
    digest before recording the package in the content-addressed store index.
@@ -596,12 +594,15 @@ configuration.
 Digest URLs are ordinary cache keys, use one request, and work for unaware npm
 clients through `dist.tarball`.
 
-### Add integrity to the canonical package URL
+### Digest-only URLs (`/-/tarballs/sha512/<digest>`)
 
-`<canonical-url>+<integrity>` is workable and retains a visible package
-relationship. A digest-only route is shorter, deduplicates identical artifacts
-inside the same registry, and can be constructed from registry plus integrity.
-Registry scoping supplies the authorization boundary.
+Earlier drafts constructed `<registry>/-/tarballs/sha512/<base64url-digest>`
+from the registry base and the digest alone. Replacing that route with
+`<registry>/<name>@<version>+r<revision>` matches `<registry>/<name>@<version>`
+and the `+rN` override/dependency selector syntax, avoids maintaining a reverse
+digest-to-package index in registry storage, and keeps the package identity
+legible in request logs while `resolution.integrity` continues to authenticate
+the uncompressed tar.
 
 ### Use a digest prefix
 
@@ -636,9 +637,10 @@ making provider identity part of package resolution.
 
 ## Implementation
 
-1. Recognize `dist.revision` alongside a digest-route `dist.tarball` during
-   resolution and validate the pair (origin, algorithm, digest equality,
-   nonnegative integer revision number).
+1. Recognize `dist.revision` alongside a `<name>@<version>+r<revision>`
+   `dist.tarball` during resolution and validate the pair (origin, package,
+   version, revision, complete sha512 integrity, nonnegative integer revision
+   number).
 2. Record `revision: N` in the resolution object and gate the field with an
    appropriate lockfile version; lockfiles without the field keep the current
    version. Ship the field's type in `@pnpm/lockfile-types` and document it
@@ -647,10 +649,9 @@ making provider identity part of package resolution.
    reverse-engineering it.
 3. Require explicit `dist.revision: 0` and tar integrity for originals in
    revision-aware metadata. Reject incomplete revision metadata.
-4. During lockfile hydration of a `revision` entry, convert the digest to
-   base64url and resolve `-/tarballs/<algorithm>/<digest>` against the
-   effective registry base, preserving registry path prefixes such as
-   `/~main/`.
+4. During lockfile hydration of a `revision` entry, verify complete sha512
+   integrity and resolve `<name>@<version>+r<N>` against the effective
+   registry base, preserving registry path prefixes such as `/~main/`.
 5. Fetch all revisions as tar resources, removing HTTP content coding before
    SRI verification under the tar registry RFC's limits. Do not add redirect,
    selector-header, or recovery behavior; on failure, optionally consult the
@@ -668,14 +669,14 @@ making provider identity part of package resolution.
 Tests should cover:
 
 - ordinary entries without `revision` retaining their existing fetch behavior;
-- `revision: N` entries making one digest request with no canonical retry,
-  metadata fetch, or fall-forward;
-- revision zero using the same tar digest route as positive revisions;
-- digest-route revision metadata without `dist.revision` rejected;
+- `revision: N` entries making one `<name>@<version>+r<N>` request with no
+  canonical retry, metadata fetch, or fall-forward;
+- revision zero using the same `<name>@<version>+r0` route as positive
+  revisions;
+- `<name>@<version>+r<N>` revision metadata without `dist.revision` rejected;
 - malformed `revision` values (negative, fractional, strings, values above
   `2^53 − 1`) rejected at resolution and at lockfile parsing;
 - producers serializing revision numbers as canonical decimal integers;
-- base64/base64url conversion;
 - malformed, abbreviated, unsupported, and mismatched digests;
 - registry path-prefix preservation;
 - changed configured registry bases without lockfile rewrites;
@@ -720,7 +721,6 @@ Tests should cover:
 
 ## Unresolved Questions and Bikeshedding
 
-- Should the route be `/-/tarballs/` or another registry-neutral path?
 - Should sha512 be required initially or should algorithms be allow-listed?
 - What lockfile version should introduce the `revision` field?
 - What is the exact shape of the advisory handshake (endpoint, fields, cache

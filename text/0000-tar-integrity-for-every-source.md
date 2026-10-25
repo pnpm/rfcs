@@ -144,7 +144,7 @@ pnpm v12 only.
 - **OCI images:** `diff_ids` in the image config are the digests of the uncompressed layer tars, next to the compressed digests in the manifest.
 - **Yarn Berry:** `yarn.lock` checksums hash the zip Yarn builds in its cache, and changing the cache's compression level in Yarn 4 changed every checksum. That is the coupling this RFC removes.
 - **`0000-zstd-registry-tarballs.md`:** defines the tar, its hash, the decoded-output budget, and tar registries; this RFC builds on all of them.
-- **`0000-integrity-addressed-registry-tarballs.md`:** pins the tar digest for every revision-aware entry on every registry and fetches it from a digest route. This RFC gives unmarked entries the same hash; the store index rows reachable by tar hash serve both.
+- **`0000-integrity-addressed-registry-tarballs.md`:** pins the tar digest for every revision-aware entry on every registry and fetches it from `<name>@<version>+r<revision>`. This RFC gives unmarked entries the same hash; the store index rows reachable by tar hash serve both.
 
 ## Unresolved Questions and Bikeshedding
 

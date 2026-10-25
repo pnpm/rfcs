@@ -8,13 +8,13 @@
 pnpr should be able to project a provider's patched build directly over the
 original package's `name@version`, without exposing a provider alias or
 inventing a version suffix. Every accepted artifact is stored and served from
-an immutable, registry-scoped URL identified by its complete sha512 digest.
-For every revision, including the original, this is the hash of its
-uncompressed tar, independent of the registry's default format and the client's
-lockfile setting:
+an immutable, registry-scoped URL identified by its package name, version, and
+revision number. For every revision, including the original, `dist.integrity`
+is the hash of its uncompressed tar, independent of the registry's default
+format and the client's lockfile setting:
 
 ```text
-https://registry.example/-/tarballs/sha512/<base64url-digest>
+https://registry.example/<name>@<version>+r<revision>
 ```
 
 The selected version's `dist.tarball` points directly at that URL.
@@ -23,29 +23,30 @@ artifact advertises its registry revision number:
 
 ```jsonc
 "dist": {
-  "tarball": "https://registry.example/-/tarballs/sha512/<digest>",
+  "tarball": "https://registry.example/ejs@2.7.4+r2",
   "integrity": "sha512-<second-patch-digest>",
   "revision": 2
 }
 ```
 
-The original is explicitly marked `revision: 0` and uses the same tar digest
-route as every replacement. The package document advertises an append-only
-history of the original artifact and every accepted replacement for that
-`name@version`. The protocol is experimental and has no backward compatibility
-or migration requirement for earlier experimental state or lockfiles.
+The original is explicitly marked `revision: 0` and uses the same
+`<name>@<version>+r<revision>` route as every replacement. The package document
+advertises an append-only history of the original artifact and every accepted
+replacement for that `name@version`. The protocol is experimental and has no
+backward compatibility or migration requirement for earlier experimental state
+or lockfiles.
 
 The revision has three client-facing purposes:
 
 - it tells pnpm that the artifact's tar must be fetched from the
-  integrity-addressed URL, constructed from the effective registry and
-  complete digest;
+  `<name>@<version>+r<revision>` URL, constructed from the effective registry,
+  package name, version, and revision number;
 - it makes an integrity change understandable in a lockfile diff;
 - it gives workspace overrides a stable revision number to pin (the companion
   RFC's `+rN` build-metadata specs).
 
-The revision is not part of the content address or byte verification. The
-complete algorithm and digest remain the only artifact identity.
+The revision is not part of byte verification. The complete algorithm and
+digest remain the artifact identity.
 
 Fresh resolutions receive the selected artifact directly from the immutable
 URL advertised in `dist.tarball`. A client must support HTTP content decoding
@@ -116,10 +117,10 @@ artifact identity or exposing the provider's own naming system.
 
 ### One convention for every revision
 
-Every revision-aware artifact uses the tar digest route. Revision zero is
-explicitly marked so clients need no exception for original checksums or
-canonical URLs. Restoring the original changes selection to `revision: 0`
-while preserving retrieval and verification semantics.
+Every revision-aware artifact uses the `<name>@<version>+r<revision>` route.
+Revision zero is explicitly marked so clients need no exception for original
+checksums or canonical URLs. Restoring the original changes selection to
+`revision: 0` while preserving retrieval and verification semantics.
 
 Versions outside this protocol retain ordinary registry metadata and fetch
 behavior. Introducing revisions for a version does not reinterpret any existing
@@ -132,10 +133,10 @@ caches ambiguous. Sending an integrity selector in a request header could
 recover old content, but it requires special CDN forwarding and either a
 varying cache key or an extra redirect.
 
-A digest in the URL needs neither. Every representation has one ordinary,
-immutable cache key. Package managers resolving current metadata follow
-`dist.tarball`, while revision-aware pnpm lockfiles construct the same route
-directly from registry plus integrity.
+A revision suffix in the URL needs neither. Every representation has one
+ordinary, immutable cache key. Package managers resolving current metadata
+follow `dist.tarball`, while revision-aware pnpm lockfiles construct the same
+route directly from the registry, package name, version, and revision number.
 
 ## Detailed Explanation
 
@@ -157,20 +158,21 @@ directly from registry plus integrity.
   document.
 - The **canonical URL** serves the original resource: the npm tarball URL on
   a `.tgz` registry, or `<registry>/<name>@<version>` on a tar registry.
-- The **integrity URL** is a registry-scoped content address containing the
-  complete digest.
+- The **revision URL** is `<registry>/<name>@<version>+r<revision>`.
 
 ### Invariants
 
 1. **Full sha512 is artifact identity.** A truncated digest or revision number
-   is never an object key, authorization input, or security decision.
+   is never a byte-verification input or security decision.
 2. **Every tarball URL is immutable.** The canonical URL remains on the
-   original artifact, and an integrity URL always returns the resource named
-   by its digest after HTTP content decoding. Re-encoding a revision tar
-   changes neither its identity nor its revision number.
+   original artifact, and a revision URL always returns the resource bound to
+   that revision in the identity's append-only history, verified against its
+   complete sha512 digest after HTTP content decoding. Re-encoding a revision
+   tar changes neither its identity nor its revision number.
 3. **Every revision is explicitly marked.** Revision-aware metadata advertises
-   `dist.revision`, including zero, and a tar-addressed `dist.tarball`.
-   Absence of the marker means ordinary metadata outside this protocol.
+   `dist.revision`, including zero, and a `<name>@<version>+r<revision>`
+   `dist.tarball`. Absence of the marker means ordinary metadata outside this
+   protocol.
 4. **Revision numbers are stable and uniquely allocated.** A distinct accepted
    replacement receives the next positive integer. Numbers are never
    reassigned. Selecting a previously accepted artifact again uses its existing
@@ -326,42 +328,37 @@ outside the protocol until that succeeds. Publishing revision zero and its
 history is atomic with activating revision-aware metadata, including when the
 first selected artifact is a replacement.
 
-### Integrity URL
+### Revision URL
 
-The content-addressed route is relative to the addressed npm registry:
+The revision route is relative to the addressed npm registry:
 
 ```text
-<registry-base>/-/tarballs/<algorithm>/<base64url-digest>
+<registry-base>/<name>@<version>+r<revision>
 ```
 
 Examples:
 
 ```text
-https://registry.example/-/tarballs/sha512/AbCd...
-https://pnpr.example/~main/-/tarballs/sha512/AbCd...
+https://registry.example/ejs@2.7.4+r2
+https://pnpr.example/~main/@scope/pkg@1.0.0+r0
 ```
 
-The complete sha512 digest uses base64url without padding — exactly one
-canonical encoding (86 characters for sha512); servers reject padded,
-re-encoded, or percent-encoded variants. Raw SRI base64 is not embedded because
-`/`, `+`, and `=` have awkward URL and intermediary semantics. Package metadata
-uses standard SRI base64 with no extensions; the selected artifact's
-revision number travels separately in `dist.revision`, and the URL is derived
-from the digest alone.
+The revision number uses canonical decimal digits without leading zeros (except
+`0` itself), matching the `+rN` build-metadata spec syntax; servers reject
+non-canonical variants such as `+r01`. Package metadata uses standard SRI
+base64 with no extensions, and the selected artifact's revision number in
+`dist.revision` matches the `+r<revision>` suffix in `dist.tarball`.
 
-The package name and version are absent from the URL. The digest locates the
-object in the registry's content-addressed index, deduplicates identical
-tarballs, and keeps the endpoint independent of provider naming.
+Because the package name and version are part of the URL, the route routes and
+authorizes directly by `(registry, name, version)` without requiring a separate
+digest-to-package reverse index, while keeping the endpoint independent of
+provider naming.
 
 The registry base remains load-bearing for security. A request to
-`/~main/-/tarballs/...` is authorized in `main` and succeeds only if that
-registry references the digest through at least one package identity the
-requesting principal may access. When one registry serves packages under
-different access rules, the digest route evaluates the principal against
-those package-level rules; "the registry references this digest" alone is
-not sufficient. pnpr may deduplicate physical storage globally, but it must
-not expose an object merely because another organization or registry stored
-the same digest. Knowledge of a digest is not a bearer credential.
+`/~main/<name>@<version>+r<revision>` is authorized in `main` against that
+package's access rules. pnpr may deduplicate physical storage globally, but it
+must not expose an object merely because another organization or registry
+stored the same digest.
 
 Successful public responses are ordinary immutable CDN objects:
 
@@ -391,15 +388,11 @@ A response that still checks a cached source must fail on a mismatch before
 completing, omit `Content-Length`, and evict the stale source. No derived
 hash or variant may be published from mismatched bytes.
 
-### Intermediaries and the digest route
+### Intermediaries and the revision route
 
-The canonical URL tells any layer between client and registry — a corporate
-proxy, a mirror, a registry firewall — which package a request is for;
-`lodash/-/lodash-4.17.21.tgz` is what those layers key policy, caching, and
-audit logs on. `/-/tarballs/sha512/<digest>` deliberately does not
-(deduplication, provider neutrality), so the protocol states what an
-intermediary relies on instead of leaving each deployment to invent a
-heuristic:
+The `<name>@<version>+r<revision>` URL tells any layer between client and
+registry — a corporate proxy, a mirror, a registry firewall — which package,
+version, and revision a request is for, without exposing a provider name:
 
 - **The effective registry is the base the client addresses.** When a proxy
   fronts pnpr, the proxy's base URL is the registry from the client's point of
@@ -408,11 +401,9 @@ heuristic:
   several upstream registries must present them as distinct bases (for example,
   distinct path prefixes), because one base implies one revision numbering and
   one credential scope.
-- **`dist.revisions` is the digest-to-package mapping.** A layer that must
-  attribute a digest request to package identities resolves it through the
-  registry's metadata, and the answer may be plural: deduplication lets one
-  digest back several `name@version`s. A pnpr deployment should expose this
-  reverse lookup to authorized policy and audit tooling.
+- **`dist.revisions` binds each revision URL to its tar digest.** A proxy or
+  client verifies the downloaded tar against the `dist.integrity` recorded for
+  that revision in the package's metadata or lockfile.
 
 ### Advertising the selected revision
 
@@ -421,7 +412,7 @@ integer field beside an ordinary SRI integrity:
 
 ```jsonc
 "dist": {
-  "tarball": "https://registry.example/-/tarballs/sha512/<digest>",
+  "tarball": "https://registry.example/ejs@2.7.4+r2",
   "integrity": "sha512-<digest-base64>",
   "revision": 2
 }
@@ -462,9 +453,9 @@ number in its lockfile as the durable signal to construct the digest URL, as the
 ### Projected package document
 
 For a covered version, pnpr projects the selected artifact under the original
-name and version. `dist.tarball` points directly to the immutable integrity URL.
-`dist.revisions` advertises the original artifact and every accepted provider
-replacement:
+name and version. `dist.tarball` points directly to the immutable
+`<name>@<version>+r<revision>` URL. `dist.revisions` advertises the original
+artifact and every accepted provider replacement:
 
 ```jsonc
 {
@@ -476,14 +467,14 @@ replacement:
       // metadata derived from the selected echo-r2 tarball
       "dependencies": {},
       "dist": {
-        "tarball": "https://registry.example/-/tarballs/sha512/<echo-r2-base64url>",
+        "tarball": "https://registry.example/ejs@2.7.4+r2",
         "integrity": "sha512-<echo-r2-base64>",
         "revision": 2,
         "revisions": [
           {
             "revision": 0,
             "integrity": "sha512-<upstream>",
-            "tarball": "https://registry.example/-/tarballs/sha512/<upstream-base64url>",
+            "tarball": "https://registry.example/ejs@2.7.4+r0",
             "source": "upstream",
             "publishedAt": "2020-04-03T00:00:00.000Z",
             "manifest": { "dependencies": {} }
@@ -491,7 +482,7 @@ replacement:
           {
             "revision": 1,
             "integrity": "sha512-<echo-r1>",
-            "tarball": "https://registry.example/-/tarballs/sha512/<echo-r1-base64url>",
+            "tarball": "https://registry.example/ejs@2.7.4+r1",
             "source": "echo",
             "providerRevision": "echo-r1",
             "publishedAt": "2026-05-10T00:00:00.000Z",
@@ -502,7 +493,7 @@ replacement:
           {
             "revision": 2,
             "integrity": "sha512-<echo-r2>",
-            "tarball": "https://registry.example/-/tarballs/sha512/<echo-r2-base64url>",
+            "tarball": "https://registry.example/ejs@2.7.4+r2",
             "source": "echo",
             "providerRevision": "echo-r2",
             "publishedAt": "2026-07-28T00:00:00.000Z",
@@ -796,41 +787,21 @@ high-cardinality field or return an extra redirect.
 
 Direct integrity URLs use ordinary cache keys and require one request.
 
-### Include package name and version in the integrity URL
+### Digest-only URLs (`/-/tarballs/sha512/<digest>`)
 
-A format such as `<canonical-url>+sha512.<digest>` makes the relationship
-human-readable and allows routing without a digest-to-package index. It also
-duplicates identical content under several URLs and makes content addressing
-depend on package naming.
+Earlier drafts addressed revisions by digest alone (`/-/tarballs/sha512/<base64url-digest>`),
+omitting the package name and version from the URL. While a digest-only URL
+deduplicates identical tarballs across package names at the URL layer, it
+requires a reverse digest-to-package index on hosted registries (`O(N)`
+storage entries under `.revisions/sha512/<digest>/index.json`) to enforce
+per-package access and OSV policy, and obscures package identity in proxy logs.
 
-The digest-only route deduplicates naturally and lets pnpm construct the URL
-from registry plus integrity. Registry-scoped authorization provides the
-package-policy boundary omitted from the path.
-
-### Encode the revision number in the tarball URL
-
-Distinct per-revision URLs such as
-`ejs/-/ejs-2.7.4+echo.1.tgz` avoid repointing the canonical route: old URLs
-keep serving their bytes, and metadata advances to a new URL on each accepted
-artifact. npm clients ignore the build metadata and see the regular version.
-The URLs are human-readable, and a proxy log identifies the artifact without a
-digest-to-package index.
-
-The scheme shares the append-only intent of this design but the URL only names
-the bytes — it does not commit to them. Immutability becomes a policy the
-registry must honor rather than a property clients can verify: a buggy or
-compromised registry can serve different bytes at the same revision URL, and
-nothing in the request detects it before integrity verification of a completed
-download. The digest route is self-authenticating — the CDN cache key is the
-content itself, pnpm constructs the URL from registry plus the integrity it
-already stores, and the no-fallback fetch rule holds by construction. Embedding
-a provider name in the URL also leaks provider identity into a route that
-survives provider changes, which the neutral revision number deliberately
-avoids.
-
-A registry may still expose such a route as a convenience alias for humans
-and non-pnpm tooling. The fetch convention pnpm relies on remains the digest
-URL.
+Because `<registry>/<name>@<version>` is already the canonical tarball URL on
+pnpr, appending `+r<revision>` (`<registry>/<name>@<version>+r<revision>`)
+matches the `+rN` override and dependency selector syntax, routes directly by
+package and version without a reverse index, and remains provider-neutral and
+immutable per `(registry, name, version, revision)`. Content-hash verification
+still rests on `dist.integrity` and the lockfile's `resolution.integrity`.
 
 ### Use only a digest prefix
 
@@ -893,29 +864,28 @@ The compact `dist.revision` field complements but does not replace
    source-to-tar binding. Key all revisions and revision allocation by tar
    digest, including revision zero, then derive projected metadata from the
    verified `package.json`.
-3. Add a registry-scoped digest index that separates physical deduplication
-   from authorization.
-4. Serve every revision's digest route as a tar resource with gzip, zstd, or
-   identity content coding, standard encoding-aware CDN caching, and the
-   existing access policy.
-5. Materialize verified original tar resources before activating revision-aware
+3. Serve every revision's `<name>@<version>+r<revision>` route as a tar
+   resource with gzip, zstd, or identity content coding, standard
+   encoding-aware CDN caching, and the existing access policy.
+4. Materialize verified original tar resources before activating revision-aware
    metadata, including versions with no replacement yet.
-6. Emit `dist.revision` with stable nonnegative integer revision numbers,
+5. Emit `dist.revision` with stable nonnegative integer revision numbers,
    including zero for the original.
-7. Project selected digest URLs and append-only `dist.revisions` into full and
-   abbreviated packuments.
-8. Keep original canonical tarball routes immutable.
-9. Make provider refresh atomic and audit every selected-revision transition.
-10. Extend audit handling to understand integrity-scoped fixes and
-    attestations.
+6. Project selected `<name>@<version>+r<revision>` URLs and append-only
+   `dist.revisions` into full and abbreviated packuments.
+7. Keep original canonical tarball routes immutable.
+8. Make provider refresh atomic and audit every selected-revision transition.
+9. Extend audit handling to understand integrity-scoped fixes and
+   attestations.
 
 Tests should cover:
 
 - revision-aware originals explicitly marked zero with tar integrity and a
-  digest URL, including before any replacement exists;
+  `<name>@<version>+r0` URL, including before any replacement exists;
 - ordinary versions remaining outside the protocol until their original tar
   and history are materialized atomically;
-- original, first replacement, and second replacement retrievable by digest;
+- original, first replacement, and second replacement retrievable by revision
+  URL;
 - `1` assigned to the first replacement and stable monotonic revision numbers;
 - malformed `dist.revision` values rejected from protocol metadata;
 - `dist.tarball` selecting the latest revision without changing name/version;
@@ -995,7 +965,7 @@ contains the client and lockfile changes.
 
 ## Unresolved Questions and Bikeshedding
 
-- Is `/-/tarballs/<algorithm>/<digest>` the right registry-neutral endpoint?
+- Is `<name>@<version>+r<revision>` the right revision endpoint?
 - Is `dist.revisions` the right package-document field name?
 - Beyond the resolution-relevant fields required for revision selection, which
   projected manifest fields should historical entries retain?
