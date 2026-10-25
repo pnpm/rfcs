@@ -51,7 +51,7 @@ The setting covers every entry whose resource is a package tarball: registry pac
 - **Binary resolutions** (`BinaryResolution`: Node, Deno, and Bun runtime archives) pin the downloaded archive, which may be a zip. They are not package tarballs and have no tar in this RFC's sense.
 - **Custom fetchers** own their integrity semantics and are not touched.
 - **Git and directory dependencies** have no `integrity`.
-- **Revision-aware entries** (those with a `revision`, including `revision: 0`) already pin the tar digest and fetch it from the digest route, whatever the setting says. The setting changes nothing for them.
+- **Revision-aware entries** (those with a `revision`, including `revision: 0`) already pin the tar digest and fetch it from the `<name>@<version>+r<revision>` route, whatever the setting says. The setting changes nothing for them.
 
 ### Which hash pnpm computes
 
@@ -144,7 +144,7 @@ pnpm v12 only.
 - **OCI images:** `diff_ids` in the image config are the digests of the uncompressed layer tars, next to the compressed digests in the manifest.
 - **Yarn Berry:** `yarn.lock` checksums hash the zip Yarn builds in its cache, and changing the cache's compression level in Yarn 4 changed every checksum. That is the coupling this RFC removes.
 - **`0000-zstd-registry-tarballs.md`:** defines the tar, its hash, the decoded-output budget, and tar registries; this RFC builds on all of them.
-- **`0000-integrity-addressed-registry-tarballs.md`:** pins the tar digest for every revision-aware entry on every registry and fetches it from a digest route. This RFC gives unmarked entries the same hash; the store index rows reachable by tar hash serve both.
+- **`0000-integrity-addressed-registry-tarballs.md`:** pins the tar digest for every revision-aware entry on every registry and fetches it from `<name>@<version>+r<revision>`. This RFC gives unmarked entries the same hash; the store index rows reachable by tar hash serve both.
 
 ## Unresolved Questions and Bikeshedding
 
