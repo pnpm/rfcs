@@ -184,9 +184,9 @@ route directly from the registry, package name, version, and revision number.
    silently change meaning.
 5. **History is append-only.** Selecting a revision never removes or mutates an
    older artifact record or object.
-6. **Content addressing is registry-scoped.** A digest locates an object inside
-   one addressed registry; it does not bypass authorization or expose a global
-   content store.
+6. **Revision routes are registry-scoped.** A revision URL locates an object
+   inside one addressed registry; it does not bypass authorization or expose a
+   global content store.
 7. **One selected revision per identity.** Within one projected registry,
    exactly one revision of a `name@version` is current. Provider conflicts are
    configuration errors, not implicit precedence.
@@ -622,12 +622,13 @@ selection and constructs that same URL from its lockfile.
 There is no selector header, redirect, metadata recovery request, or
 intentionally failed download. Standard `Vary: Accept-Encoding` separates
 transport encodings of one tar resource. A warm CDN serves the object without
-contacting pnpr. On a miss, pnpr performs one content-addressed lookup.
+contacting pnpr. On a miss, pnpr resolves the package revision directly and
+serves its verified tar.
 
-The URL is longer by one sha512 digest. Patched packuments contain a small
-revision list. Both costs are negligible relative to tarball bodies. pnpr
-should precompute projected packuments and index objects directly by binary
-digest rather than scanning revision arrays on the fetch path.
+The URL adds only `+r<revision>` to `<name>@<version>`. Patched packuments
+contain a small revision list. Both costs are negligible relative to tarball
+bodies. pnpr should precompute projected packuments and bind each revision
+directly to its verified tar digest.
 
 ### Selecting and updating revisions
 
@@ -658,18 +659,18 @@ pnpm policy question.
 
 ### Caching and atomic provider refresh
 
-pnpr indexes artifact content by:
+pnpr binds each revision's artifact content by:
 
 ```text
-(concrete registry identity, algorithm, complete digest)
+(concrete registry identity, package, version, revision) -> complete tar digest
 ```
 
-Physical bytes may be deduplicated beneath that authorization index. A provider
-refresh that accepts a distinct artifact follows this order:
+Physical bytes may be deduplicated beneath that authorization boundary. A
+provider refresh that accepts a distinct artifact follows this order:
 
 1. Download the provider `.tgz` and verify its signed source digest.
 2. Decode it in full, derive the tar hash, and store the source-to-tar binding
-   and the artifact before exposing its tar-addressed URL.
+   and the artifact before exposing its `<name>@<version>+r<revision>` URL.
 3. Derive and validate projected version metadata from the verified tar.
 4. Assign the next stable registry revision.
 5. Append its structured revision metadata.
@@ -685,12 +686,12 @@ next revision number.
 
 No immutable tar resource is overwritten. Encoded variants are disposable
 cache entries and may be evicted or regenerated without changing history,
-revision numbers, or client pins. Metadata never advertises an integrity URL
+revision numbers, or client pins. Metadata never advertises a revision URL
 before its verified resource is available.
 
 ### Authorization, retention, and enforcement
 
-Both current and historical integrity URLs apply the addressed registry's
+Both current and historical revision URLs apply the addressed registry's
 access policy. History and availability remain separate: an operator may
 retain a revision record for audit while a legal or security policy refuses its
 bytes. Such a request returns a policy-specific `403`.
@@ -780,13 +781,13 @@ clients, and makes one CDN URL refer to several bodies over time. Keeping the
 canonical URL on the original bytes and selecting current content through
 `dist.tarball` avoids all three problems.
 
-### Select integrity through a request header
+### Select revisions through a request header
 
-A complete integrity request header could select a historical representation,
-but CDNs must forward it and either vary large cached bodies on a
-high-cardinality field or return an extra redirect.
+A request header could select a historical representation on the canonical URL,
+but CDNs must forward it and either vary large cached bodies on that header or
+return an extra redirect.
 
-Direct integrity URLs use ordinary cache keys and require one request.
+Direct revision URLs use ordinary cache keys and require one request.
 
 ### Digest-only URLs (`/-/tarballs/sha512/<digest>`)
 
@@ -895,8 +896,8 @@ Tests should cover:
   entry's `revision` number included in the abbreviated form;
 - revision entries carrying `manifest` fields equal to their verified
   artifacts' `package.json` (declared provider metadata cannot diverge);
-- the `dist.revision` field excluded from digest lookup, byte verification,
-  and policy;
+- the `dist.revision` field excluded from content-store identity, byte
+  verification, and policy;
 - a forged `dist.revision` unable to change accepted bytes;
 - provider revisions represented only in structured metadata;
 - the same physical digest referenced by two authorized registries without

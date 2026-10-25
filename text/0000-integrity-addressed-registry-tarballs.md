@@ -90,7 +90,7 @@ The revisions feature is experimental. This proposal replaces its earlier
 contract without a compatibility or migration requirement for experimental
 registry state or lockfiles.
 
-Direct integrity URLs retain the performance and caching properties of
+Direct revision URLs retain the performance and caching properties of
 ordinary immutable URLs:
 
 - one CDN request;
@@ -251,7 +251,8 @@ authentication and credential-scoping behavior applies. Redirects — to another
 origin or the same origin — are not part of this protocol; every 3xx response
 fails the fetch. One GET means one GET: every extra hop is another log that
 sees the URL, and a deployment that wants a CDN puts it at the registry
-origin. Knowledge of a digest is not authorization to retrieve it.
+origin. Knowledge of a revision number or digest is not authorization to
+retrieve it.
 
 The `revision` field selects the `<name>@<version>+r<revision>` fetch URL,
 while remaining excluded from:
@@ -273,20 +274,20 @@ The fetch convention is determined entirely by the lockfile: an entry with
 Correctness never depends on detecting what the registry supports.
 
 A pnpr deployment's discovery surface (the `/-/pnpr/v0/*` namespace of the
-resolution-cache design) may improve diagnostics after a digest fetch fails.
-It may report that the registry does not advertise integrity-addressed tarballs
+resolution-cache design) may improve diagnostics after a revision fetch fails.
+It may report that the registry does not advertise revision tarballs
 rather than a bare `404`. It cannot change the locked resource or fetch route.
 
 ### Registry identity
 
-Constructing the digest endpoint requires the same registry identity used
+Constructing the revision endpoint requires the same registry identity used
 during package resolution. For ordinary default and scope registries, pnpm can
 recover that base through its existing registry mapping.
 
 The known lockfile gap for named registries remains: current package keys do not
 distinguish identical `name@version` values from different named registries,
 and the named registry identity is not always retained for fetching. This RFC
-does not make that collision worse, but content addressing does not solve it.
+does not make that collision worse, but revision routes do not solve it.
 
 Until registry identity is represented unambiguously, one lockfile can contain
 only one selected registry and artifact for a given `name@version`.
@@ -295,10 +296,10 @@ Revision numbers are registry-scoped, not global. The same `name@version` may
 have different revision histories on different registries, so re-resolving a
 `+rN` spec against a different registry can select different bytes, a different
 revision number for the same bytes, or fail. A frozen install stays safe
-regardless — it fetches by complete digest and verifies the bytes — but
-portability across registry configuration guarantees integrity, never
-availability or identical revision-number meaning. A revision-addressed spec is
-an assertion about the currently effective registry.
+regardless — it fetches the locked revision URL and verifies the bytes against
+the complete digest — but portability across registry configuration guarantees
+integrity, never availability or identical revision-number meaning. A
+revision-addressed spec is an assertion about the currently effective registry.
 
 ### Historical lockfile verification
 
@@ -341,7 +342,7 @@ one resolved package → one <name>@<version>+r<N> URL → one tarball GET
 ```
 
 A warm CDN answers without contacting the registry application. A miss reaches
-one content-addressed lookup. There is no redirect or selector request before
+one revision lookup. There is no redirect or selector request before
 the cacheable object.
 
 The full sha512 digest is small relative to a tarball body and is already
@@ -582,21 +583,21 @@ require a 404 followed by the canonical request. That would either break
 compatibility or slow the normal registry path. The unmarked representation
 keeps its existing, universally supported meaning instead.
 
-### Keep the absolute integrity URL
+### Keep the absolute revision URL
 
 Keeping `dist.tarball` works and is what pnpm does with non-canonical URLs
 today. It pins the registry deployment hostname in the lockfile even though the
 endpoint is defined relative to a registry. The `revision` field preserves
 portability.
 
-### Select integrity through a request header
+### Select revisions through a request header
 
 A request header lets one canonical URL return several revisions, but CDNs must
 forward the field and include it in cache selection. A redirect adds another
 round trip; caching bodies by the header adds deployment-specific cache
 configuration.
 
-Digest URLs are ordinary cache keys, use one request, and work for unaware npm
+Revision URLs are ordinary cache keys, use one request, and work for unaware npm
 clients through `dist.tarball`.
 
 ### Digest-only URLs (`/-/tarballs/sha512/<digest>`)
