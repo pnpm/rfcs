@@ -51,7 +51,7 @@ The setting covers every entry whose resource is a package tarball: registry pac
 - **Binary resolutions** (`BinaryResolution`: Node, Deno, and Bun runtime archives) pin the downloaded archive, which may be a zip. They are not package tarballs and have no tar in this RFC's sense.
 - **Custom fetchers** own their integrity semantics and are not touched.
 - **Git and directory dependencies** have no `integrity`.
-- **Revision-aware entries** (those with a `revision`, including `revision: 0`) already pin the tar digest and fetch it from the digest route, whatever the setting says. The setting changes nothing for them.
+- **Revision-aware entries** (those with a `revision`, including `revision: 0`) already pin the tar digest and fetch it from the `<name>@<version>+r<revision>` route, whatever the setting says. The setting changes nothing for them.
 
 ### Which hash pnpm computes
 

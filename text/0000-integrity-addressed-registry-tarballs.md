@@ -70,16 +70,18 @@ packages:
 ```
 
 That compact representation implies a name-and-version request. A
-revision-aware resolution needs an explicit marker to select the digest route
-and tar integrity. The same convention applies to the original and every
-replacement, so selecting revision zero does not change fetch semantics.
+revision-aware resolution needs an explicit marker to select the
+`<name>@<version>+r<revision>` route and tar integrity. The same convention
+applies to the original and every replacement, so selecting revision zero does
+not change fetch semantics.
 
-Storing an absolute digest URL would pin the lockfile to a deployment
-hostname. Storing a relative tarball path would duplicate information already
-present in the integrity. Registry configuration already determines the
-origin, and the complete SRI digest already determines the immutable object.
-A `revision` field carries the one missing bit — which retrieval convention
-applies — and doubles as the human-readable explanation: a lockfile diff
+Storing an absolute revision URL would pin the lockfile to a deployment
+hostname. Storing a relative tarball path would duplicate the package name,
+version, and revision number already present in the package key and `revision`
+field. Registry configuration already determines the effective registry base,
+and `revision` plus the package key determines `<name>@<version>+r<revision>`.
+A `revision` field carries the one missing bit — which retrieval convention and
+revision number apply — and doubles as the human-readable explanation: a lockfile diff
 showing `revision: 1` → `revision: 2` beside the integrity change says why
 the integrity changed without exposing a provider-specific package name or
 version.
@@ -126,9 +128,9 @@ and follows the registry's ordinary resource convention.
 
 When `dist.revision` is present, pnpm validates during resolution:
 
-1. `dist.tarball` is on the selected registry origin at
-   `<name>@<version>+r<revision>` for the resolved package, version, and
-   revision;
+1. `dist.tarball` matches the selected effective registry base, including its
+   path prefix, at `<name>@<version>+r<revision>` for the resolved package,
+   version, and revision;
 2. `dist.integrity` contains a complete, well-formed sha512 digest;
 3. `dist.revision` is a safe nonnegative integer within the range defined
    under *The revision field*;
@@ -149,8 +151,8 @@ other clients requires client-matrix tests.
 
 ### Revision resources and their integrity
 
-Every revision, including zero, is a tar resource on every registry. Its URL
-digest, `dist.integrity`, `dist.revisions[].integrity`, and
+Every revision, including zero, is a tar resource on every registry.
+`dist.integrity`, `dist.revisions[].integrity`, and
 `resolution.integrity` all hash the same uncompressed tar. This does not depend
 on `lockfileIntegrity` or on a registry's `tarballs` setting.
 
@@ -251,22 +253,24 @@ fails the fetch. One GET means one GET: every extra hop is another log that
 sees the URL, and a deployment that wants a CDN puts it at the registry
 origin. Knowledge of a digest is not authorization to retrieve it.
 
-The `revision` field is excluded from:
+The `revision` field selects the `<name>@<version>+r<revision>` fetch URL,
+while remaining excluded from:
 
-- URL and content-store keys;
+- content-store keys;
 - byte verification and equality;
 - authorization;
 - advisory or VEX policy.
 
 A revision-only difference does not create another content-store object or
-require another download. The structured registry record decides whether the
-recorded revision number is truthful.
+require another download when the tar digest is already in the store. The
+structured registry record decides whether the recorded revision number is
+truthful.
 
 ### Feature detection is advisory, never load-bearing
 
 The fetch convention is determined entirely by the lockfile: an entry with
-`revision: N`, including zero, uses the digest route. Correctness never depends
-on detecting what the registry supports.
+`revision: N`, including zero, uses the `<name>@<version>+r<N>` route.
+Correctness never depends on detecting what the registry supports.
 
 A pnpr deployment's discovery surface (the `/-/pnpr/v0/*` namespace of the
 resolution-cache design) may improve diagnostics after a digest fetch fails.
@@ -306,13 +310,13 @@ lockfile:       ejs@2.7.4, integrity sha512-<patch-1>, revision 1
 current dist:   ejs@2.7.4, integrity sha512-<patch-2>, revision 2
 ```
 
-Fetching does not require current metadata: the locked digest URL is immutable.
-If a policy separately verifies the lockfile against registry metadata, it
-accepts the resolution when the same registry, name, version, complete digest,
-and revision number appear either in current `dist` or in that version's
-append-only `dist.revisions`.
+Fetching does not require current metadata: the `<name>@<version>+r<N>` URL is
+immutable. If a policy separately verifies the lockfile against registry
+metadata, it accepts the resolution when the same registry, name, version,
+complete digest, and revision number appear either in current `dist` or in that
+version's append-only `dist.revisions`.
 
-A syntactically valid digest route alone is not enough to prove that the
+A syntactically valid revision route alone is not enough to prove that the
 registry associated those bytes with the package.
 
 ### Existing and older lockfiles
@@ -333,7 +337,7 @@ Every revision, including the original, fetches from an ordinary immutable
 CDN cache key:
 
 ```text
-one resolved package → one digest URL → one tarball GET
+one resolved package → one <name>@<version>+r<N> URL → one tarball GET
 ```
 
 A warm CDN answers without contacting the registry application. A miss reaches
@@ -384,7 +388,7 @@ Resolving a `<version>+rN` spec, pnpm:
 1. resolves the version half normally (build metadata is ignored for version
    matching);
 2. selects registry revision `N` from the resolved entry's `dist.revisions`
-   instead of the selected `dist`: its integrity, its digest URL, and its
+   instead of the selected `dist`: its integrity, its revision URL, and its
    `manifest` record. Revisions may legally differ in dependencies, optional
    and peer dependencies, `bin`, engines, and install-script posture, so the
    pinned entry's own `manifest` drives subtree resolution — never the current
@@ -435,7 +439,7 @@ feature, and receiving registry policy is the intended fallback for unaware
 clients.
 
 Client selection remains a preference, not a security boundary. A registry
-whose policy refuses a revision's bytes answers its digest URL with the policy
+whose policy refuses a revision's bytes answers its revision URL with the policy
 `403`; a pinned install then fails loudly, naming the policy and the
 advertised revisions. A workspace can choose failure over substitution; it
 cannot obtain bytes the registry refuses.
@@ -542,11 +546,12 @@ relink every dependent instead of re-materializing one package's files.
 ### Mark original artifacts in the lockfile
 
 Recording `revision: 0` gives originals and replacements one representation:
-all revision entries use the tar digest route. Selecting the original does not
-require a format-dependent checksum or canonical-route exception. The
-experimental protocol does not preserve unmarked revision-zero pins.
+all revision entries use the `<name>@<version>+r<N>` tar route. Selecting the
+original does not require a format-dependent checksum or canonical-route
+exception. The experimental protocol does not preserve unmarked revision-zero
+pins.
 
-### Detect the digest endpoint instead of recording anything
+### Detect the revision endpoint instead of recording anything
 
 The lockfile records the fetch convention for each revision explicitly,
 including revision zero. A capability probe would add a network dependency and
@@ -561,21 +566,21 @@ An earlier design stored:
 resolution:
   integrity: sha512-<digest>
   revision: 2
-  tarball: -/tarballs/sha512/<digest>
+  tarball: ejs@2.7.4+r2
 ```
 
-This is host-portable and explicit, but the tarball path duplicates the
-algorithm and digest. Once the `revision` field durably distinguishes the
-retrieval convention, pnpm can synthesize the same path without lockfile
-redundancy.
+This is host-portable and explicit, but the tarball path duplicates the package
+name, version, and revision number. Once the `revision` field durably
+distinguishes the retrieval convention, pnpm can synthesize the same path
+without lockfile redundancy.
 
-### Request digest URLs for every unmarked integrity
+### Request `+r0` URLs for every unmarked integrity
 
-pnpm could reinterpret every existing `{ integrity }` resolution as a digest
-request. Registries that do not implement the endpoint would fail or require a
-404 followed by the canonical request. That would either break compatibility
-or slow the normal registry path. The unmarked representation keeps its
-existing, universally supported meaning instead.
+pnpm could reinterpret every existing `{ integrity }` resolution as a `+r0`
+revision request. Registries that do not implement the endpoint would fail or
+require a 404 followed by the canonical request. That would either break
+compatibility or slow the normal registry path. The unmarked representation
+keeps its existing, universally supported meaning instead.
 
 ### Keep the absolute integrity URL
 
@@ -638,9 +643,9 @@ making provider identity part of package resolution.
 ## Implementation
 
 1. Recognize `dist.revision` alongside a `<name>@<version>+r<revision>`
-   `dist.tarball` during resolution and validate the pair (origin, package,
-   version, revision, complete sha512 integrity, nonnegative integer revision
-   number).
+   `dist.tarball` during resolution and validate the tuple (effective registry
+   base, package, version, revision, complete sha512 integrity, nonnegative
+   integer revision number).
 2. Record `revision: N` in the resolution object and gate the field with an
    appropriate lockfile version; lockfiles without the field keep the current
    version. Ship the field's type in `@pnpm/lockfile-types` and document it
@@ -697,7 +702,8 @@ Tests should cover:
 - a pinned revision resolving with its own dependency metadata;
 - revision refresh updating integrity, `revision`, and snapshot together, and
   skipping override-pinned packages;
-- identical tar hashes and digest URLs for two gzip encodings of one tar;
+- identical tar hashes, revision allocation, and revision URLs for two gzip
+  encodings of one tar;
 - gzip, zstd, and identity responses verifying against the same revision pin,
   including revision zero, with tampered or truncated responses failing before a package is indexed;
 - tar integrity for every revision on `.tgz` and tar registries with

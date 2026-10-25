@@ -317,7 +317,7 @@ metadata rewriting, or tar normalization is allowed.
 
 The registry stores each verified source `.tgz` and its source digest as
 evidence, including for revision zero. The tar hash keys revision history,
-digest URLs, projected metadata, and client lockfiles. Uniqueness and concurrent
+projected metadata, and client lockfiles. Uniqueness and concurrent
 allocation compare tar hashes, so differently compressed copies of one tar
 share a revision. Provider input matching the original tar remains revision
 zero. Distinct source attestations remain bound to their own signed inputs.
@@ -448,7 +448,7 @@ pnpr applies these rules:
 
 Tar-aware clients ignore the unknown `dist.revision` field and follow
 `dist.tarball`; HTTP content decoding must precede SRI verification. pnpm records the revision
-number in its lockfile as the durable signal to construct the digest URL, as the companion RFC specifies.
+number in its lockfile as the durable signal to construct the `<name>@<version>+r<revision>` URL, as the companion RFC specifies.
 
 ### Projected package document
 
@@ -546,7 +546,7 @@ artifact-derived field, byte, or revision number — append-only means records
 are never removed or renumbered, not that their status can never be annotated.
 The full packument may additionally carry all provenance fields. Abbreviated
 metadata should keep current `dist` plus the `revision` number, integrity,
-digest URL, and `manifest` of each historical revision — `+rN` resolution maps
+revision URL, and `manifest` of each historical revision — `+rN` resolution maps
 a revision number to its history record using the metadata pnpm actually
 fetches, so the revision number must survive abbreviation. A revision-aware
 version includes both fields even when zero is its only revision. A version
@@ -556,12 +556,13 @@ outside the protocol omits both fields and uses ordinary metadata.
 
 Ordinary name-and-version routes keep serving the original resource in the
 registry's configured format. They do not participate in revision selection.
-Every revision-aware metadata record and lockfile entry uses the tar digest
-route, including revision zero. A registry's `.tgz` canonical route and revision
-zero's digest route can therefore expose different resource formats derived
-from the same verified original source.
+Every revision-aware metadata record and lockfile entry uses the
+`<name>@<version>+r<revision>` route, including revision zero. A registry's
+`.tgz` canonical route and revision zero's `<name>@<version>+r0` route can
+therefore expose different resource formats derived from the same verified
+original source.
 
-Clients must follow the advertised digest URL, remove HTTP content coding, and
+Clients must follow the advertised revision URL, remove HTTP content coding, and
 verify the tar integrity. A client that reconstructs a canonical `.tgz` URL
 cannot install such metadata. A deployment must validate its supported client
 matrix before enabling revisions. Revision management remains pnpm-specific
@@ -588,7 +589,7 @@ is zero or a replacement.
 Every later selection rebuilds the version document's artifact-derived fields
 from the selected revision's manifest. Selecting revision zero restores the
 original artifact-derived fields and sets `dist.revision: 0`, while retaining
-the complete revision history and tar digest URL. A change of upstream source
+the complete revision history and `<name>@<version>+r0` tarball URL. A change of upstream source
 MUST NOT redefine revision zero; an artifact with a different digest is either
 accepted as a new revision or rejected by registry policy.
 
@@ -700,14 +701,14 @@ lockfile then cannot install through that registry. Patch selection must not
 silently weaken a registry's separate screening policy.
 
 Immutability is a statement about bytes, not availability: a successful
-response for a digest URL always decodes to the same resource bytes, but
+response for a revision URL always decodes to the same resource bytes, but
 policy may stop the URL from answering successfully. A transition to refusal
 is effective only once the edge stops serving, so deployments that publish
 long public cache lifetimes must purge affected objects on such transitions, and a
 registry whose policy may require immediate refusal should prefer
 authorization-aware (non-shared) caching for the affected class of artifacts
 over year-long shared caching. Policy applies to the artifact, never the
-route: the canonical URL and the digest URL must give the same answer for the
+route: the canonical URL and the revision URL must give the same answer for the
 same artifact. Source and tar addresses are joined by their verified binding
 for this check, so neither route nor resource format can bypass policy.
 
@@ -900,7 +901,7 @@ Tests should cover:
 - provider revisions represented only in structured metadata;
 - the same physical digest referenced by two authorized registries without
   cross-registry disclosure;
-- a known digest requested through an unauthorized registry returning no
+- a revision URL requested through an unauthorized registry returning no
   bytes;
 - provider `.tgz` integrity checked before the tar hash is derived;
 - source signatures, attestations, and VEX bound to the verified source-to-tar
@@ -910,7 +911,7 @@ Tests should cover:
 - two gzip encodings of an identical tar allocating only one revision, and
   input matching the original tar remaining revision zero;
 - all revision encodings, including zero, yielding the same tar hash and
-  digest URL;
+  revision URL;
 - encoded variant regeneration preserving pins and revision numbers;
 - invalid gzip members, gzip trailers, or decoded trailing tar data rejected
   before publication, including errors after the tar end marker;
@@ -934,9 +935,9 @@ Tests should cover:
   unrenumbered;
 - `withdrawn`/`supersededBy` status annotated without removing records or
   renumbering revisions;
-- digest requests evaluated against the principal's package-level access, not
-  mere registry membership;
-- policy refusal answered identically on canonical and digest routes, with
+- revision tarball requests evaluated against the principal's package-level
+  access and registry boundary;
+- policy refusal answered identically on canonical and revision routes, with
   edge purge or non-shared caching on the transition;
 - retention and screening policy on historical objects;
 - audit/VEX evaluation tied to exact integrity.
