@@ -31,14 +31,26 @@ who can produce an endorsement and who verifies it:
 - Against a network attacker, TLS and `dist.integrity` already protect the
   archive. Records add nothing there.
 - Against a compromised serving registry, a record endorsed by a key held by
-  that same registry adds nothing; it can forge both metadata and record. A
-  benefit requires a signer key held apart from the serving infrastructure.
+  that same registry adds nothing; it can forge both metadata and record.
+  Moving the key to a separate signing service helps only if that service
+  validates what it signs. A service that signs any record the serving
+  registry submits is as compromised as the registry.
 - Records help third parties that receive data from a mirror, cache, or export
   and need to verify it without contacting the authority.
 - Records give snapshots and receipts a stable identity to pin.
 
 The draft should state which of these it targets and size the mechanism to
-match.
+match. For a signer separate from the serving registry, it must specify:
+
+- **Who validates the binding.** The signer reads the archive by integrity from
+  artifact storage and derives the manifest under the named profile itself. It
+  does not sign a manifest supplied by the serving registry.
+- **Who authorizes signing.** Which publication or acceptance decision the
+  signer requires before it endorses a record, and how that decision is
+  authenticated to it.
+- **Which trust roots clients already hold.** A key fetched from the same
+  registry it vouches for adds nothing against that registry. The draft must
+  say how clients obtain and rotate trust roots out of band.
 
 ## Detailed Explanation
 
@@ -86,17 +98,22 @@ authority. Identical bytes from separate registries do not establish shared
 ownership. Rebinding an authority to a different source requires an explicit
 operator action.
 
-### Encoding
+### Encoding and transport
 
-Two options:
+These are two separate decisions.
 
-- **Ship canonical bytes.** pnpr stores the exact record bytes and serves them
-  as an opaque string. Clients hash what they received and then parse it. No
-  canonicalization is needed by anyone who does not re-serialize.
-- **JCS.** Hash `SHA512(JCS_UTF8(record))` per
-  [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785). Lets third parties rebuild
-  the record from parsed JSON, at the cost of canonicalization edge cases
-  (Unicode, numbers, duplicate keys) that every implementation must match.
+**Encoding** is the deterministic production rule. Independent parties that
+derive a record from the same archive and profile must produce the same bytes,
+for example a separate signer or an auditor re-deriving records. The strawman
+is [RFC 8785 JCS](https://www.rfc-editor.org/rfc/rfc8785), with
+`recordIntegrity` = `sha512-` + base64(`SHA512(JCS_UTF8(record))`). JCS input
+rejects duplicate keys, invalid Unicode, and integers outside the JSON safe
+range.
+
+**Transport** is how clients receive the record. pnpr stores the exact encoded
+bytes and transmits them unchanged. Clients hash the received bytes, then
+parse them, and never re-serialize. Clients then do not need a JCS
+implementation. Only producers and auditors that rebuild records need one.
 
 Either way, `recordIntegrity`, `endorsements`, and `evidence` are outside the
 hashed input, and storage row IDs never enter the record.
@@ -135,9 +152,15 @@ integrities.
 | Verify and match | Requires a verified archive with matching install-critical metadata; disagreements fail closed. |
 | Archive authoritative | Explicitly accepts the archive-derived manifest despite a recorded disagreement. |
 
-Archive-authoritative acceptance changes the metadata used for resolution: the
-graph is resolved from the archive manifest, never resolved from upstream
-metadata and patched afterwards.
+- An archive-authoritative approval binds the package, the complete artifact
+  integrity, and the interpretation profile. It does not carry over to another
+  artifact, version, or profile. It never waives archive integrity, archive
+  safety, or package identity checks.
+- When verification is required and fails, resolution fails. It never falls
+  back to compatibility mode.
+- Archive-authoritative acceptance changes the metadata used for resolution:
+  the graph is resolved from the archive manifest, never resolved from upstream
+  metadata and patched afterwards.
 
 Verification costs downloads. Range selection can nominate candidates from
 observed metadata, but each selected candidate's archive must be fetched before
@@ -171,8 +194,20 @@ Extend the `GET /-/pnpr` capability document:
 Paths are relative to the effective registry base (`/npm/` or `/npm/~<name>/`).
 A digest is never a global read capability: every record, evidence, and
 artifact read is authorized through its package and registry, and
-unauthorized callers must not learn whether a private record exists. When
-record support is required, clients do not fall back to ordinary metadata.
+unauthorized callers must not learn whether a private record exists.
+
+When record support is required, clients do not fall back to ordinary
+metadata. A policy block is an explicit refusal, never an empty candidate list
+or a skipped candidate. If the endorsements and evidence the active policy
+requires exceed response limits, the response is an explicit error, never a
+truncated envelope.
+
+### Caching
+
+Generated views extend the fragment-cache key from SQL metadata storage with
+the interpretation profile and, for formats carrying envelopes, the
+evidence/endorsement generation. A record's integrity is not an ETag for its
+envelope, because evidence can change without changing the record.
 
 ## Rationale and Alternatives
 
@@ -215,7 +250,7 @@ private records cannot be read through digest paths.
 
 - Which threat does a record endorsement defend against, and who holds the
   signing key?
-- Ship canonical bytes or adopt JCS?
+- Is JCS the right production rule, and should any client re-serialize?
 - How are authority identities made portable without embedding deployment
   hostnames in lockfiles?
 - Which signatures should clients require, and how are trust roots configured
