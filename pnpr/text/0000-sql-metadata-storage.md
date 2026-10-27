@@ -79,13 +79,16 @@ revision, including `r0`; it is an internal key, not new version syntax.
 
 | Relation | Primary key | Notes |
 | --- | --- | --- |
-| `versions` | `(package_key, version, revision_key)` | Insert-only accepted manifest and artifact integrity. |
+| `versions` | `(package_key, version, revision_key)` | Insert-only artifact integrity assignment. |
+| `accepted_manifests` | `(package_key, version, revision_key, profile)` | Insert-only archive-derived manifest and raw input digests. |
 | `tags` | `(package_key, tag)` | Points to a version; changes are versioned. |
 | `annotations` | `(package_key, version)` | Deprecations and other mutable annotations. |
 | `publication_outcomes` | `(registry, principal, idempotency_key)` | Request integrity and committed result. |
 
 All key columns are non-null, so a nullable revision column cannot weaken
-duplicate-publication protection. Tables for snapshots, retention, and
+duplicate-publication protection. A new interpretation profile adds
+`accepted_manifests` rows next to the existing ones and never overwrites
+accepted metadata. Which profile a view uses is an explicit selection. Tables for snapshots, retention, and
 workspace publication belong to their own RFCs and build on these operations.
 
 ### Generated views and caching
@@ -93,8 +96,9 @@ workspace publication belong to their own RFCs and build on these operations.
 The npm full, abbreviated, and exact-version responses are views over accepted
 versions and mutable state.
 
-- Cache per-version rendered fragments keyed by version, representation,
-  renderer version, and annotation generation. A tag change reuses all
+- Cache per-version rendered fragments keyed by registry, package, version,
+  revision, interpretation profile, representation, renderer version, and
+  annotation generation. A tag change reuses all
   fragments; a new release renders one new fragment; a deprecation re-renders
   one fragment.
 - Cache assembled full and abbreviated responses keyed by representation and
