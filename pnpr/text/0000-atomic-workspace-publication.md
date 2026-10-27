@@ -13,7 +13,7 @@ Snapshot-aware readers pin that generation for their operation, so concurrent
 publication cannot give them a mixture of the old and new release.
 
 This strengthens pnpr's existing journaled batch publication. It builds on
-the [SQL metadata contract](https://github.com/pnpm/rfcs/pull/44) and composes with
+the [SQL metadata contract](https://github.com/pnpm/rfcs/pull/48) and composes with
 resolution snapshots. An initial implementation can restrict batches to one
 organization and one configured hosted catalog; it does not promise transactions
 across independent servers.
