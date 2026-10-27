@@ -5,8 +5,10 @@
 ## Summary
 
 Make an immutable release record the authoritative representation of each
-accepted package artifact and its install-critical metadata. Generate npm
-package documents from these records and separately stored mutable state.
+accepted package artifact and its install-critical metadata. Store authoritative
+metadata in a transactional SQL database, with archives and large evidence
+bundles in the filesystem or object storage. Generate npm package documents
+from these records and separately stored mutable state.
 Bind the package's declared origin, archive integrity, and verified manifest
 together, while preserving pnpr's existing registry revision and tar-integrity
 contracts. Tags, selected revisions, deprecations, screening decisions, and
@@ -125,6 +127,68 @@ binding. It is distinct from publisher provenance and does not prove a package
 is benign. Existing npm signatures and provenance bundles remain available in
 their original form.
 
+### SQL metadata and backend contract
+
+Use SQL for authoritative metadata and its relationships. Keep package archives
+and large evidence bundles in the filesystem or S3-compatible object storage.
+The logical storage split is:
+
+| Data | Storage |
+| --- | --- |
+| Canonical release-record bytes and indexed identity fields | SQL |
+| Package/version/revision bindings and artifact references | SQL |
+| Tags, selected revisions, annotations, and policy bindings | SQL |
+| Catalog generations, snapshots, receipts, and retention references | SQL |
+| Publication outcomes and idempotency records | SQL |
+| Archives and large evidence bundles | Filesystem or object storage |
+| Generated npm metadata JSON | Disposable cache |
+
+Preserve each record's exact canonical bytes alongside its digest. Indexed
+columns support lookup and constraints, but database JSON serialization must
+not determine the record digest. Storage row IDs and backend locations must
+not enter signed package identities.
+
+pnpr depends on domain operations such as accepting a release, committing a
+publication, reading a package view, and retaining a dependency set. Each backend
+owns its queries, migrations, and transaction mechanics. Do not expose a remote
+SQL connection or vendor-specific types to registry handlers and resolvers.
+
+Every supported backend must provide:
+
+- Atomic metadata transactions and enforced uniqueness of release bindings.
+- Commit-time conflict detection for concurrent publication and policy changes.
+- Durable, queryable publication outcomes after a lost response or restart.
+- Defined read consistency, including a path for current authorization checks.
+- A consistent export/import procedure and shared backend conformance tests.
+
+Transaction isolation and policy validation must jointly satisfy the publication
+contract. A transaction that reads an old permission and writes a different
+row is insufficient unless the backend detects or serializes that conflict.
+Offline or asynchronous replica writes cannot acknowledge publication before
+the authoritative commit. Replica and cache reads are usable only where their
+freshness satisfies the operation's policy and generation requirements.
+
+Embedded SQLite is the initial target for a single-instance deployment. Turso
+is a candidate shared SQL backend, subject to conformance and workload testing.
+The exact engine and replication mode must be evaluated; SQL syntax alone does
+not establish equivalent isolation, durability, or freshness guarantees. Another
+SQL backend can replace it through the same domain operations.
+
+Backend replacement requires a consistent logical export or a quiesced transfer,
+verification of record digests and referenced blobs, and a controlled cutover.
+Preserve authority and package identities, canonical bytes, revision numbers,
+retained generations, and transaction outcomes through their retry period.
+Re-establish operator-approved trust and policy bindings at the destination;
+importing records must not grant access. This is an operational transfer
+between supported backends. Alpha format consolidation continues to follow
+pnpr's existing experimental-format policy.
+
+Keep this contract in this RFC. The
+[snapshot draft](https://github.com/pnpm/rfcs/pull/45) and
+[publication draft](https://github.com/pnpm/rfcs/pull/46) define their operations
+against it. A backend substitution must preserve those operations and the
+public registry protocol, not just load the same tables.
+
 ### Mutable state and compatibility views
 
 Store these separately from immutable records:
@@ -144,6 +208,21 @@ release records. Clients must negotiate support before relying on a record
 binding. Tar-only and revision resources retain their existing client support
 limits; this RFC does not declare them compatible with every npm client.
 
+For example, SQL can bind `@example/widgets@1.2.0` to an immutable record that
+declares `@example/core: ^2.0.0` and the archive digest. A separate tag row points
+`latest` at that release. Deprecating `1.2.0` updates its annotation while the
+record bytes and digest stay unchanged. The generated npm version entry joins
+the accepted manifest and archive location with the current annotation.
+
+Cache the serialized full and abbreviated responses separately. Publication,
+tag, revision-selection, and annotation changes invalidate the affected package
+view. Cache keys bind the representation and committed package generation,
+plus any authorization context needed by the existing cache contract. Regenerate
+eagerly or once on the next read, coalescing concurrent misses for the same view.
+Ordinary reads can serve the cached JSON without recomposing every record.
+Give live views bounded freshness and revalidate their generation on expiry or
+startup. A lost invalidation event cannot leave an old view cached indefinitely.
+
 ### Authorization and lifecycle
 
 Authorize every record, evidence, and artifact read through its package and
@@ -158,9 +237,15 @@ separate guarantee. Current security policy can deny an otherwise valid record.
 ### Performance
 
 Verify archives once per accepted artifact and reuse verified derivations.
-Generate or cache compatibility views without rebuilding them from all release
-records on every read. A tag change should not invalidate immutable record or
-artifact caches.
+A tag change should not invalidate immutable record or artifact caches.
+Use indexed package lookups and batched metadata reads. Keep uploads, scanning,
+and network requests outside SQL write transactions. Download counters and
+request logs must not create a metadata write on every install.
+
+Scope catalog coordination to the organization and hosted catalog rather than
+one global row. Scale artifact traffic through object storage and authorized
+caches. Database partitioning must preserve each advertised transaction boundary.
+Avoid requiring every replica to hold the entire upstream metadata dataset.
 
 Upstream verification can add downloads to lockfile-only resolution. Keep this
 cost explicit and measure it separately from ordinary installs. This draft
@@ -180,7 +265,12 @@ package authorization. Archive transport remains independently usable.
 2. **Sign the whole package document.** Binds metadata but requires a new
    signature for tag and annotation changes and complicates historical reads.
    Separate immutable records preserve a useful long-lived verification unit.
-3. **Use an OCI artifact manifest directly.** Provides a digest-based envelope,
+3. **Keep all authoritative metadata in object storage.** Preserves an
+   object-store-only deployment, but requires custom coordination for release
+   uniqueness, tag changes, retention, and publication outcomes. SQL makes those
+   relationships and commit boundaries explicit at the cost of operating a
+   metadata database and coordinating its backup with the blob store.
+4. **Use an OCI artifact manifest directly.** Provides a digest-based envelope,
    but does not settle npm manifest interpretation, revision selection, or
    package authorization. Reusing a standard envelope remains possible without
    making npm users adopt OCI repository semantics.
@@ -193,11 +283,14 @@ Target pnpr and new client support in pnpm v12. Do not add a feature to pnpm v11
    signature trust configuration. Add fixtures for the record contract.
 2. Extend the existing publication staging and archive-reading code to produce
    verified records. Share normalization with the existing pnpm manifest code.
-3. Store records and mutable package state separately in `pnpr-storage`, using
-   the existing journal and conditional-write facilities for acceptance.
+3. Split `pnpr-storage` metadata operations from artifact storage. Add SQL-backed
+   immutable records and mutable state behind the domain interface, starting
+   with embedded SQLite. Retain existing artifact validation and staging.
 4. Generate registry responses and historical revision views from those records.
 5. Add upstream verification and negotiated record retrieval. Preserve the
    existing authorization-aware cache and route classification.
+6. Add a shared SQL backend only after its transaction, replica freshness,
+   durability, and export/import behavior pass the same conformance suite.
 
 pnpr is experimental. Consolidate its internal format in place, without
 introducing migration fallbacks between alpha builds. Public client protocol
@@ -209,6 +302,10 @@ Verify that deprecation and tag updates preserve record digests, historical
 revisions keep their manifests, private digest reads cannot bypass policy,
 and source signatures retain their original subjects. Benchmark cold and warm
 reads and the extra downloads required by verified lockfile-only resolution.
+Exercise concurrent publication and policy revocation, lost commit responses,
+replica lag, cache invalidation loss, and export/import with identical record
+digests. Measure metadata cache misses, ingestion throughput, write contention,
+and retained-history growth before selecting a shared backend.
 
 ## Prior Art
 
@@ -219,6 +316,9 @@ reads and the extra downloads required by verified lockfile-only resolution.
 - [npm package metadata](https://github.com/npm/registry/blob/main/docs/responses/package-metadata.md)
   and [registry signatures](https://docs.npmjs.com/about-registry-signatures/).
 - [npm publication implementation](https://github.com/npm/cli/blob/latest/workspaces/libnpmpublish/lib/publish.js).
+- [SQLite deployment guidance](https://www.sqlite.org/whentouse.html) and
+  [Turso's Rust backend options](https://docs.turso.tech/sdk/rust/reference),
+  to evaluate against the required storage contract.
 
 ## Unresolved Questions and Bikeshedding
 
@@ -233,6 +333,12 @@ reads and the extra downloads required by verified lockfile-only resolution.
 - Should hosted manifest verification become mandatory immediately, and what
   diagnostics should help publishers repair rejected packages?
 - Which verified-record modes should upstream lockfile-only requests expose?
+- What SQL schema, indexes, and isolation strategy meet the domain contract on
+  embedded SQLite and the first shared backend?
+- Which Turso engine and deployment mode, or alternative shared SQL backend,
+  passes the conformance, durability, and workload requirements?
+- What logical export format, cutover procedure, and coordinated metadata/blob
+  backup process preserve identities and retained availability?
 
 ---
 Written by an agent (Codex, GPT-6).
