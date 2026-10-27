@@ -98,11 +98,14 @@ The resolver produces an immutable receipt binding:
 | Policy digest and evaluation time | Fixes the eligibility rules used for this decision. |
 | Output lockfile digest and artifact references | Identifies the accepted result. |
 
-Pin release-record integrities, their manifest interpretation profiles, upstream
-observation integrities, and any archive-authoritative acceptance policy from
-the release-record draft. A newer profile or a corrected upstream observation
-cannot reinterpret a sealed snapshot or receipt. An unsupported or withdrawn
-profile is an explicit replay failure under current policy, not a silent update.
+Pin release-record integrities, their manifest interpretation profiles, captured
+package-index integrities, the per-version observation integrities compared with
+those records, and any archive-authoritative acceptance policy from the
+release-record draft. Package-index captures preserve candidate sets and tags;
+per-version observations exclude unrelated index changes and detached evidence.
+A newer profile or a corrected upstream observation cannot reinterpret a sealed
+snapshot or receipt. An unsupported or withdrawn profile is an explicit replay
+failure under current policy, not a silent update.
 
 Time-dependent policy, including release-age rules, uses an explicit evaluation
 time. The server chooses and records it; an untrusted caller cannot backdate
