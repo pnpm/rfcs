@@ -204,8 +204,8 @@ truncated envelope.
 
 ### Caching
 
-Generated views extend the fragment-cache key from SQL metadata storage with
-the interpretation profile and, for formats carrying envelopes, the
+Generated views that carry envelopes extend the fragment-cache key from SQL
+metadata storage, which already includes the interpretation profile, with the
 evidence/endorsement generation. A record's integrity is not an ETag for its
 envelope, because evidence can change without changing the record.
 
