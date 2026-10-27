@@ -12,8 +12,9 @@ authorization and security policy still apply when that set is restored.
 
 This builds on pnpr's server-side resolver and authorization-aware cache.
 The companion immutable release records draft supplies verified package
-records; the atomic publication draft describes consistent hosted release
-visibility. Snapshot selection and retention are separate operations.
+records and the SQL metadata storage contract; the atomic publication draft
+describes consistent hosted release visibility. Snapshot selection and retention
+are separate operations.
 
 ## Motivation
 
@@ -46,6 +47,14 @@ origin and package it binds:
 
 A snapshot has an algorithm-qualified digest and a separately authorized
 reference. Private snapshots and their dependency names are private data.
+
+Store snapshot manifests, observations, receipts, and their memberships in the
+authoritative SQL metadata database under the
+[release-record storage contract](https://github.com/pnpm/rfcs/pull/44).
+Membership references shared immutable records; creating a snapshot must not
+copy an entire catalog or duplicate every member's canonical bytes. A SQL read
+transaction can give hosted metadata reads a consistent view. A sealed snapshot
+requires persisted membership to remain readable after that transaction ends.
 
 The scope is finite and declared. Initial support should capture the packages
 observed while resolving a request, rather than mirror every upstream version
@@ -148,6 +157,14 @@ object cannot be collected between verification and committing its reference.
 Restore checks current authorization even when another organization retains
 identical bytes. Physical deduplication does not share retention permissions.
 
+Download, verify, and durably stage artifacts outside SQL write transactions.
+Protect staging from garbage collection while acceptance is pending. Commit
+retention membership and completeness in one metadata transaction only after
+every required object is durable. Object storage does not participate in that
+SQL transaction: a failed commit leaves protected staging for retry or later
+cleanup, and never a complete set referencing an unfinished upload. Retention
+expiry and collection coordinate through the same authoritative references.
+
 Security blocks do not automatically destroy retained bytes. Deletion for a
 legal, privacy, or explicit administrative requirement can override retention;
 record the resulting incomplete state and report it on restore. No retention
@@ -181,6 +198,12 @@ package count, metadata bytes, capture duration, retained bytes, and active
 capture count per organization. Snapshot capture and retention are explicit
 work; they must not turn a normal install into a full upstream mirror.
 
+Batch indexed SQL reads for package observations and snapshot membership.
+Serving immutable records can use caches or replicas; completeness decisions,
+current authorization checks, and reference deletion require the authoritative
+consistency defined by the storage contract. Ordinary installs must not create
+a new durable snapshot or retention transaction unless explicitly requested.
+
 Measure initial capture, replay, retention transfer, metadata storage, and warm
 frozen restores separately. No performance gain is assumed by this draft.
 
@@ -204,8 +227,9 @@ Target pnpr and capability-negotiated support in pnpm v12 only.
    a sealed snapshot without live fall-through. Reuse the existing resolver.
 2. Define the versioned receipt and replay-input contract. Preserve the existing
    authorization-aware cache classification and gates.
-3. Store snapshots and receipts durably, with organization authorization and
-   limits. Keep artifact retention separate from snapshot metadata retention.
+3. Store snapshots, receipts, memberships, and retention references in the shared
+   SQL metadata layer, with organization authorization and limits. Keep artifact
+   retention separate from snapshot metadata retention.
 4. Add verified artifact promotion from disposable cache into retained storage,
    with race-safe retention references and completeness reporting.
 5. Expose negotiated operations and update pnpr and pnpm documentation.
@@ -215,7 +239,10 @@ missing-observation failures without network fallback; resolver-version and
 policy-time binding; access revocation on cache hits; and concurrent capture,
 retention, expiry, and garbage collection. Test restore with the upstream
 unavailable and the disposable cache removed. A policy block must preserve the
-receipt, and an administrative deletion must invalidate completeness.
+receipt, and an administrative deletion must invalidate completeness. Run the
+same backend conformance cases for concurrent retain/expire/collect operations,
+lagging replicas, and database restart. A backend export/import must preserve
+snapshot and receipt digests, membership, expiry, and verified blob availability.
 
 ## Prior Art
 
@@ -238,6 +265,8 @@ receipt, and an administrative deletion must invalidate completeness.
 - How should signed receipts, authority rebinding, and retention references be
   exported between deployments without exporting access rights?
 - What quotas and retention defaults make the storage obligation predictable?
+- What membership indexes and retention/collection coordination meet the shared
+  SQL backend contract without catalog-wide copies or long write transactions?
 
 ---
 Written by an agent (Codex, GPT-6).
