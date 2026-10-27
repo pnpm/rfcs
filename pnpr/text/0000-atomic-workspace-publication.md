@@ -4,16 +4,19 @@
 
 ## Summary
 
-Publish a related set of packages by preparing immutable objects and then
-atomically advancing one hosted catalog reference. A committed catalog
-generation exposes the whole batch, and a failed batch exposes none of it.
+Publish a related set of packages by preparing immutable artifacts and then
+committing their release records, bindings, selections, and outcome in one SQL
+metadata transaction. The transaction advances a hosted catalog generation.
+A committed generation exposes the whole batch. An aborted transaction exposes
+none of it.
 Snapshot-aware readers pin that generation for their operation, so concurrent
 publication cannot give them a mixture of the old and new release.
 
 This strengthens pnpr's existing journaled batch publication. It builds on
-immutable release records and composes with resolution snapshots. An initial
-implementation can restrict batches to one organization and one configured
-hosted catalog; it does not promise transactions across independent servers.
+the [SQL metadata contract](https://github.com/pnpm/rfcs/pull/44) and composes with
+resolution snapshots. An initial implementation can restrict batches to one
+organization and one configured hosted catalog; it does not promise transactions
+across independent servers.
 
 ## Motivation
 
@@ -40,6 +43,12 @@ organization. It has a current reference to an immutable catalog generation.
 Each generation identifies package release records and mutable selections,
 including tags and selected revisions.
 
+The SQL metadata database is the authority for catalog generations, release
+bindings, publication outcomes, and idempotency keys. Archives and large
+evidence bundles stay in the filesystem or object storage. Backend-specific
+queries implement the shared domain contract; publication does not expose a
+Turso-specific API or depend on one vendor's replication behavior.
+
 A transaction may contain new releases and the tag or revision-selection
 changes that should accompany them. All participants must belong to the same
 supported catalog. Reject an unsupported cross-catalog request before commit;
@@ -58,33 +67,50 @@ that mutates a separate authoritative package document would break the guarantee
 ### Prepare and commit
 
 1. Authenticate the publisher and authorize every intended mutation.
-2. Validate all package records, artifact integrities, and requested selections.
-   Stage immutable objects durably without making them discoverable as releases.
-3. Read the current catalog generation and verify name/version conflicts and
-   other mutation preconditions against it.
-4. Build and durably store a new immutable generation referencing the prepared
-   objects and the proposed selections.
-5. Recheck commit authorization against the authoritative policy generation.
-6. Compare-and-swap the current catalog reference from the expected generation
-   to the new generation. This is the publication's commit point.
-7. Return a durable transaction result identifying the committed generation.
+2. Validate package records, artifact integrities, and requested selections.
+   Upload and durably stage artifacts without exposing them as releases.
+   Protect staged objects from garbage collection while commit is pending.
+3. Begin a short authoritative SQL transaction and acquire or recheck the
+   idempotency claim. A previously committed identical request follows the
+   authorized outcome-query path instead of publishing again.
+4. Read the relevant catalog state and validate binding uniqueness, mutation
+   preconditions, and current permissions through the policy conflict gate below.
+5. Insert the immutable release records, versioned bindings, new selections,
+   catalog generation, and durable transaction outcome.
+6. Commit the SQL transaction. This is the publication's commit point. A
+   constraint or policy conflict rolls back the entire transaction. A lost
+   commit acknowledgement requires outcome recovery before claiming success
+   or failure.
+7. Return the committed generation and recorded outcome. Invalidate generated
+   package views through durable generation changes.
 
-Every object referenced by the new generation must be readable and verified
-before the reference can advance. A successful response cannot precede that
-durability boundary. A backend unable to provide the required conditional-write
-and read-after-write guarantees cannot advertise atomic publication support.
+Every artifact referenced by the new generation must be readable and verified
+before SQL commit. A successful response cannot precede that durability
+boundary. Object storage is outside the SQL transaction. A failed metadata
+commit can leave unreferenced uploaded objects for coordinated cleanup; it must
+never leave a visible release referencing an unfinished upload. Archive uploads,
+scanning, and other network work stay outside SQL write transactions.
 
-The commit operation must bind the authorization check to the policy generation
-it checked. A policy change racing the commit causes a retry or rejection;
-rechecking permissions immediately before an unrelated catalog write is not
-sufficient. The coordination mechanism is a ratification requirement.
+Use an authoritative policy epoch for the catalog, updated by every permission
+mutation affecting it. Publication and policy mutation must lock or perform
+conflicting writes on that epoch inside their metadata transactions, with
+authorization evaluated against the protected state. Equivalent serializable
+validation is acceptable when the backend proves the same conflict behavior.
+A policy change that commits first forces publication to re-evaluate or abort;
+one serialized after publication does not undo its completed commit.
+
+SQL transactions alone do not establish this guarantee. Snapshot isolation
+that lets publication read an old permission while writing unrelated rows can
+permit write skew. The exact lock or conditional-update mechanism must be
+specified and tested for each backend before it advertises the capability.
 
 ### Concurrent writers and retries
 
-If another writer advances the catalog first, a stale conditional write fails
-without exposing any part of the losing batch. The server can rebuild against
-the new generation only after revalidating the complete batch and its
-authorization. A conflicting version fails the entire transaction.
+If a concurrent writer invalidates a binding or generation precondition, the
+SQL transaction aborts without exposing part of the batch. The server can retry
+only after revalidating the complete batch and current authorization. Database
+uniqueness constraints enforce version/revision assignments; a conflicting
+version fails the entire transaction.
 
 Existing releases never change their bytes. An identical request retry may
 return its earlier result, but a new transaction cannot quietly adopt another
@@ -126,11 +152,11 @@ claim the stronger guarantees without a protocol-version change.
 
 ### Crash recovery and garbage collection
 
-Before the reference advances, staged objects and candidate generations are
-uncommitted and may eventually be collected. After it advances, publication is
-committed even if the response is lost. Recovery inspects the durable catalog
-and transaction state, rather than treating a local journal's disappearance as
-proof of rollback.
+Before SQL commit, staged artifacts are not published and may eventually be
+collected after their protection expires. After commit, publication is complete
+even if the response is lost. Recovery reads the durable SQL transaction outcome
+and catalog state. The database's commit result, rather than the survival of a
+replica-local journal, determines whether publication became authoritative.
 
 Uncommitted candidates are protected while a transaction can still commit.
 Garbage collection must coordinate with active transactions and retained
@@ -139,8 +165,10 @@ reference needs them. Deleting a tag never makes a retained artifact eligible
 for accidental collection.
 
 Recovery and idempotency information required to decide a committed outcome
-must be in durable shared storage for replicated backends. A replica-local
-journal may assist staging, but cannot be the only evidence of commit.
+must commit in the same SQL transaction as the release bindings and selections.
+A replica-local journal may assist artifact staging. Backend export/import
+must preserve outcomes for the retry period and generation identities, so a
+database replacement cannot duplicate a publication or lose a known result.
 
 ### Authorization and policy
 
@@ -157,13 +185,16 @@ or another organization's reference to identical bytes.
 
 ### Storage and performance
 
-Do not copy every package record for every commit. Use a persistent structure
-that shares unchanged data between generations and supports bounded lookup.
-The structure and commit coordinator must be selected before ratification.
+Store generation membership as versioned SQL bindings or a persistent structure
+that shares unchanged metadata. Do not copy an entire catalog for each commit.
+Index package and generation lookups and batch metadata reads. The schema must
+preserve historical generations without keeping a database transaction open
+for a client's entire install.
 
-The catalog reference is a contention point. Initially scope it to an
-organization and hosted catalog, reuse existing artifact storage, and benchmark
-realistic concurrent publishers before expanding the transaction boundary.
+The catalog and policy epoch can be contention points. Initially scope them to
+an organization and hosted catalog, reuse existing artifact storage, and
+benchmark realistic concurrent publishers before expanding the boundary. Avoid
+a global catalog counter, per-download writes, and long write transactions.
 Partitioning is acceptable only when it preserves the advertised boundary;
 splitting a batch across shards without coordination is not atomic publication.
 
@@ -175,19 +206,22 @@ splitting a batch across shards without coordination is not atomic publication.
 2. **Use a distributed lock around package updates.** Serializes writers but
    does not prevent unlocked readers from seeing intermediate state. Making
    every registry read participate would add coordination to the hot path.
-3. **Use a transactional database.** Can implement the required catalog and
-   authorization commit semantics. It is a valid implementation option, but
-   requires an explicit deployment decision; an object-store-only deployment
-   still needs an equivalent safe commit design or must decline the capability.
+3. **Use an object-store catalog pointer as the commit authority.** A
+   compare-and-swap can publish one immutable generation, but policy checks,
+   idempotency results, retention, and recovery still need coordinated state.
+   SQL is the chosen metadata authority and commits these relationships
+   together. Operating and backing up that database is an explicit deployment
+   cost; object storage continues to hold the large artifacts.
 
 ## Implementation
 
 Target pnpr, with new publishing and snapshot-read support in pnpm v12 only.
 
-1. Define a catalog generation, conditional reference, transaction identity,
-   and durable transaction state in `pnpr-storage`. Specify backend guarantees.
-2. Route all hosted mutations through the same commit path. Reuse existing
-   validation, artifact staging, conditional writes, and immutable revisions.
+1. Define SQL catalog generations, binding constraints, transaction identities,
+   outcomes, and a policy epoch in `pnpr-storage`, under the shared storage
+   contract. Specify the isolation and durability mechanism for each backend.
+2. Route all hosted mutations through the same SQL commit path. Reuse existing
+   validation, artifact staging, and immutable revisions.
 3. Make npm and other ecosystem views read the catalog. Remove any competing
    authoritative update path before advertising support for that ecosystem.
 4. Add idempotent transaction status and capability-negotiated batch semantics.
@@ -201,6 +235,12 @@ cache and journal. Readers pinned to old and new generations must each see a
 complete batch. Garbage collection must never delete an active transaction's
 objects or a retained generation. Test existing clients separately from
 snapshot-aware clients and report their actual consistency guarantees.
+
+Run the same publication conformance suite against each SQL backend, including
+replica lag and policy write skew. Verify that replacing a backend through
+export/import preserves record digests, generations, revision assignments,
+current permissions, and idempotent outcomes. Failures between artifact upload
+and SQL commit must leave no visible release and permit safe staging cleanup.
 
 Benchmark publication latency, contention retries, generation storage growth,
 and cold/warm metadata reads at realistic catalog sizes. This draft makes no
@@ -217,8 +257,8 @@ claim that atomicity is free or faster than the existing publication path.
 
 ## Unresolved Questions and Bikeshedding
 
-- What catalog structure and commit coordinator preserve conditional updates,
-  policy-generation checks, and durable outcomes on each supported backend?
+- What versioned SQL catalog schema and policy-epoch locking or validation
+  strategy preserve the contract on each supported backend?
 - Is one organization and hosted catalog the right initial transaction scope?
 - How should clients name transactions, query outcomes, and pin read generations?
 - How long should idempotency records and unreferenced generations survive?
