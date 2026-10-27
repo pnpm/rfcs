@@ -11,8 +11,10 @@ needed by an approved dependency set durable for a declared period. Current
 authorization and security policy still apply when that set is restored.
 
 This builds on pnpr's server-side resolver and authorization-aware cache.
-The companion immutable release records draft supplies verified package
-records and the SQL metadata storage contract; the atomic publication draft
+The [SQL metadata storage draft](https://github.com/pnpm/rfcs/pull/48)
+supplies the storage contract. Record-backed snapshots also depend on the
+[release records draft](https://github.com/pnpm/rfcs/pull/49); snapshots of
+upstream observations alone do not. The atomic publication draft
 describes consistent hosted release visibility. Snapshot selection and retention
 are separate operations.
 
@@ -50,7 +52,7 @@ reference. Private snapshots and their dependency names are private data.
 
 Store snapshot manifests, observations, receipts, and their memberships in the
 authoritative SQL metadata database under the
-[release-record storage contract](https://github.com/pnpm/rfcs/pull/44).
+[SQL metadata storage contract](https://github.com/pnpm/rfcs/pull/48).
 Membership references shared immutable records; creating a snapshot must not
 copy an entire catalog or duplicate every member's canonical bytes. A SQL read
 transaction can give hosted metadata reads a consistent view. A sealed snapshot
@@ -101,7 +103,7 @@ The resolver produces an immutable receipt binding:
 Pin release-record integrities, their manifest interpretation profiles, captured
 package-index integrities, the per-version observation integrities compared with
 those records, and any archive-authoritative acceptance policy from the
-release-record draft. Package-index captures preserve candidate sets and tags;
+[release records draft](https://github.com/pnpm/rfcs/pull/49). Package-index captures preserve candidate sets and tags;
 per-version observations exclude unrelated index changes and detached evidence.
 A newer profile or a corrected upstream observation cannot reinterpret a sealed
 snapshot or receipt. An unsupported or withdrawn profile is an explicit replay
