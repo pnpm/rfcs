@@ -76,8 +76,11 @@ input bytes and expected derived fields. pnpr and the pnpm v12 client can share
 the Rust implementation, while the fixtures define the behavior.
 
 A later profile that changes derivation does not silently reinterpret existing
-versions. The stored raw input digests let pnpr re-derive and compare under a
-new profile explicitly.
+versions. pnpr re-derives from the stored archive under the new profile and
+stores the result as a new immutable accepted manifest beside the existing one.
+It never overwrites accepted metadata. Which profile a response uses is an
+explicit selection, and a client that does not support it gets a capability
+error.
 
 ### Existing hosted versions
 
