@@ -60,8 +60,7 @@ strawman for review; adopting it is a ratification decision.
 | Interpretation | Versioned rules for parsing and deriving install metadata. |
 | Inputs | Exact byte digests of the archive manifest and shrinkwrap, if present. |
 | Manifest | Install-critical metadata derived from the accepted archive. |
-| Artifacts | Complete algorithm, digest, size, and byte representation of each resource. |
-| Evidence | References to verified source signatures, provenance, and derivations. |
+| Artifact | Complete algorithm, digest, size, and byte representation of the accepted resource. |
 
 The record has a digest over a deterministic, versioned encoding. A signature
 over that digest is an endorsement by a configured signer. Neither knowing the
@@ -106,25 +105,23 @@ registry revision marker:
       "dependencies": { "@example/core": "^2.0.0" },
       "hasInstallScript": false
     },
-    "artifacts": [
-      {
-        "kind": "tgz",
-        "integrity": "sha512-<archive-bytes>",
-        "size": 4231
-      }
-    ],
-    "evidence": []
+    "artifact": {
+      "kind": "tgz",
+      "integrity": "sha512-<archive-bytes>",
+      "size": 4231
+    }
   },
   "recordIntegrity": "sha512-<canonical-record-bytes>",
-  "endorsements": []
+  "endorsements": [],
+  "evidence": []
 }
 ```
 
 Compute `recordIntegrity` as `sha512-` followed by the standard base64 encoding
-of `SHA512(JCS_UTF8(record))`. Hash only the inner `record`; integrity and
-endorsements are outside that input. A detached endorsement must authenticate
-the record integrity under a release-record-specific signing context. The
-signature format, algorithms, and trust-root configuration remain ratification
+of `SHA512(JCS_UTF8(record))`. Hash only the inner `record`; integrity,
+endorsements, and evidence are outside that input. A detached endorsement must
+authenticate the record integrity under a release-record-specific signing
+context. The signature format, algorithms, and trust-root configuration remain ratification
 items. An empty endorsement list supplies no signer authentication.
 
 The JCS input rejects duplicate keys, invalid Unicode, and unsupported numeric
@@ -141,9 +138,25 @@ integrity descriptor; `null` means absent. A revision record adds the existing
 revision number and describes its tar artifact under the revision protocol.
 Source `.tgz` evidence and tar derivations retain distinct subjects.
 
-Evidence attached later lives in separate authenticated envelopes referencing
-the record integrity. Adding an endorsement or later analysis never mutates an
-accepted record's `evidence` array or canonical bytes.
+The inner record is a deterministic function of the declared authority, package
+identity, interpretation profile, and exact accepted artifact bytes. It contains
+no observation times, signature bundles, provenance, verification outcomes,
+transport locations, or other facts that can change independently of that
+artifact. Alternate encodings and source-to-tar mappings are detached derivation
+evidence, not additional mutable artifact descriptors inside the record.
+
+Outer `endorsements` authenticate the release record. Outer `evidence` carries
+or references separately authenticated source signatures, provenance, derivation
+links, and analysis. Preserve each source statement's original artifact subject;
+an authenticated derivation can link it to the record without relabeling it as
+a direct signature over the record or derived tar. An outer list is not itself
+authenticated by `recordIntegrity`; verify each required statement and linkage.
+
+Delayed evidence, upstream re-signing, and signer rotation leave canonical record
+bytes and integrity unchanged. The envelope can change as those detached sets
+change, so its HTTP validator must include its evidence/endorsement generation.
+The record digest alone is not an ETag for the whole envelope. Cache payloads
+and evidence separately and enforce current trust and freshness policy on reads.
 
 ### Versioned manifest interpretation
 
@@ -196,10 +209,21 @@ overlay; it never silently rewrites an accepted manifest.
 
 ### Upstream observations and disagreement policy
 
-For proxied releases, fetching metadata creates an unverified observation.
-Preserve the observed install metadata separately from the archive-derived
-record. Compare them under the same interpretation profile and retain
-comparison evidence keyed by observation integrity and record integrity.
+For proxied releases, fetching metadata creates an unverified package-index
+observation: the captured upstream document, candidate set, tags, and validators.
+Preserve this separately from archive-derived records. A version observation
+contains one version's profile-interpreted install claims and its claimed
+artifact kind and integrity, bound to the authority, package identity, and
+interpretation profile. Its integrity hashes the JCS encoding of those claims.
+It excludes unrelated versions, tags, deprecations, transport URLs, signatures,
+and attestations. Retain the source-document reference separately for audit.
+
+Compare version observations with archive-derived records under the same
+interpretation profile. Key comparison evidence by version-observation integrity
+and record integrity. Publishing an unrelated version, changing a tag, or adding
+source signatures does not invalidate an unchanged version's comparison. Changing
+its install claims or claimed artifact integrity does. Package-index snapshots
+still capture the full candidate and tag state needed for resolution replay.
 A signature on an archive-derived record alone does not attest that an upstream
 observation matched it. Exported comparison evidence needs its own authentication.
 
@@ -215,7 +239,7 @@ Verification-required requests use verify-and-match unless the operator has
 explicitly selected archive-authoritative acceptance for that package, complete
 artifact integrity, and interpretation profile. There is no implicit exemption
 for old publications and no downgrade to compatibility after verification fails.
-The record, policy choice, observation, and disagreement remain inspectable to
+The record, policy choice, observations, and disagreement remain inspectable to
 authorized callers and are bound into resolution receipts.
 Archive-authoritative acceptance never waives archive integrity, package
 identity, archive safety, or source trust requirements.
@@ -234,7 +258,10 @@ verified metadata changes their applicability. Fetching every version in a
 packument is not required, but rejected candidates can require extra downloads.
 Bound verification work, coalesce concurrent fetches, and cache verified
 archive/input/profile derivations. Comparison caches additionally bind the
-observation integrity, so a prior match cannot validate changed upstream claims.
+version-observation integrity, so a prior match cannot validate changed upstream
+claims. A refreshed full upstream document may still require parsing; retaining
+per-version comparisons avoids repeating archive verification because an
+unrelated part of that document changed.
 
 Cold lockfile-only resolution under verification can download archives it would
 otherwise not need. Expose those downloads and the chosen mode in diagnostics
@@ -335,7 +362,8 @@ public registry protocol, not just load the same tables.
 The following logical tables make the key constraints concrete without choosing
 vendor types or a complete production schema. All listed key columns are
 non-null. `package_key` abbreviates `(authority, ecosystem, name)` and is scoped
-to its catalog. `observation_key` is `(catalog, package_key, observation_integrity)`.
+to its catalog. `version_observation_key` expands to the complete primary key
+of `version_observations` below.
 `revision_key` is `ordinary` outside the revision protocol or
 `rN` for an explicit registry revision, including `r0`; it is an internal key,
 not a new version or integrity syntax.
@@ -345,13 +373,21 @@ not a new version or integrity syntax.
 | `release_records` | `record_integrity` | Insert-only canonical bytes and interpretation profile; recompute integrity on acceptance. |
 | `artifact_slots` | `(catalog, package_key, version, revision_key)` | Immutable artifact-integrity assignment. |
 | `record_bindings` | `(catalog, package_key, version, revision_key, profile)` | References an artifact slot and one release record with matching identity, artifact, and profile. |
-| `upstream_observations` | `(catalog, package_key, observation_integrity)` | Immutable observed metadata bytes. |
-| `manifest_comparisons` | `(record_integrity, observation_key)` | Immutable comparison result and field differences; both references remain authorized. |
+| `package_observations` | `(catalog, package_key, index_integrity)` | Immutable source document, candidate set, and tag observation. |
+| `version_observations` | `(catalog, package_key, version, revision_key, profile, observation_integrity)` | Immutable per-version install and artifact claims, excluding mutable evidence and package-index state. |
+| `manifest_comparisons` | `(record_integrity, version_observation_key)` | Immutable comparison result and field differences; both references remain authorized. |
 | `catalog_generations` | `(catalog, generation)` | References its parent and committed changes; policy and current-generation rows belong to this catalog. |
 | `publication_outcomes` | `(catalog, principal, idempotency_key)` | Binds request integrity and committed generation in the publication transaction. |
-| `snapshot_observations` | `(snapshot, package_key)` | References the captured observation for that package. |
+| `snapshot_observations` | `(snapshot, package_key)` | References the captured package-index observation. |
+| `snapshot_version_observations` | `(snapshot, version_observation_key)` | References the per-version claims used by that resolution. |
 | `snapshot_records` | `(snapshot, record_integrity)` | References the profile-specific release records used. |
 | `retention_members` | `(retention_set, resource_integrity)` | References the required durable resource; expiry belongs to its retention set. |
+
+Authenticated evidence and source-document links reference record, artifact,
+or version-observation identities separately. A later source document can link
+to the same version observation without changing that observation's integrity
+or its comparison results. Their physical deduplication remains subject to the
+same namespace and authorization rules.
 
 Tags, selected revisions, and annotations are catalog state with versioned
 changes so older generations can reconstruct their selections. They do not
@@ -402,12 +438,13 @@ eagerly or once on the next read, coalescing concurrent misses for the same view
 Ordinary reads can serve the cached JSON without recomposing every record.
 Give live views bounded freshness and revalidate their generation on expiry or
 startup. A lost invalidation event cannot leave an old view cached indefinitely.
-The upstream acceptance policy and observation binding gate cache hits;
+The upstream acceptance policy and version-observation binding gate cache hits;
 compatibility results never satisfy verification-required requests.
 
 Cache per-version rendered fragments by record integrity, interpretation,
 representation, renderer version, and relevant annotation generation. A tag-only
 change can reuse those fragments and update the package-level selection data.
+Formats carrying detached evidence also key on its evidence/endorsement generation.
 Appending a release renders its new fragment; deprecating one version renders
 the affected fragment. Do not refetch, join, parse, and render every unchanged
 version after each mutation. Stream or assemble the cached fragments under one
@@ -425,49 +462,94 @@ Extend the existing `GET /-/pnpr` capability document with these proposed fields
 ```json
 {
   "records": [1],
+  "recordCandidates": [1],
   "manifestProfiles": ["npm-install-manifest/1"]
 }
 ```
 
 A client opts into an extended metadata representation, proposed as
-`application/vnd.pnpr.install-v1+json`. Its per-version object adds this pointer,
-which is distinct from the archive's `dist.integrity`:
+`application/vnd.pnpr.install-v1+json`. For an accepted version, `pnprRecord`
+contains the complete envelope above, including the inner record, its integrity,
+endorsements, and detached evidence. The client can reconstruct and verify the
+canonical record locally. A pointer-only entry is not sufficient to resolve
+under a record-required policy. Validate that the ordinary version fields and
+the record describe the same accepted manifest and artifact.
+
+Inline envelopes carry the endorsement and evidence set required by the active
+policy, rather than every historical statement. If that required set exceeds
+response limits, return an explicit error; do not truncate required verification
+data and present the result as accepted.
+
+Standard npm metadata remains available with its existing representation. An
+extended package document can include already-accepted records, but requesting
+it does not require verifying every historical archive. Cache variants and
+`Vary: Accept` distinguish it from ordinary full and abbreviated metadata.
+
+For cold client-side resolution, make a bounded candidate lookup directly,
+without first fetching a package document and then fetching each record:
+
+```http
+POST /npm/~local/@example/widgets/-/record-candidates
+```
+
+An illustrative request body is:
 
 ```json
 {
-  "pnprRecord": {
-    "integrity": "sha512-<canonical-record-bytes>",
-    "interpretation": "npm-install-manifest/1"
-  }
+  "spec": "^1.0.0",
+  "manifestProfiles": ["npm-install-manifest/1"],
+  "maxCandidates": 4
 }
 ```
 
-The selected pointer is emitted only after the archive-derived record is
-accepted under the active policy. Standard npm metadata remains available with
-its existing representation. Cache variants and `Vary: Accept` must distinguish
-the extended response from ordinary full and abbreviated metadata.
+The request also carries relevant existing resolution-policy and target settings
+under the versioned lookup schema. The response's `versions` map supplies bounded
+candidate-selection metadata and each returned version's complete `pnprRecord`
+inline. Reuse existing version-nomination and policy primitives, verify only
+the nominated candidates, and enforce server limits on candidate count, bytes,
+and verification work. A policy block remains an explicit refusal. It must not
+be disguised as an empty result or silently skipped to select another artifact.
 
-A proposed retrieval request is:
+Backtracking can request another page. Its cursor binds the captured package
+index, filters, profile, and access context so a tag change cannot silently alter
+the candidate set between pages. Recheck current authorization and policy.
+Candidate POST responses default to private, non-shared HTTP caching; internal
+cache keys include the complete semantic request and existing access descriptor.
+Server-side graph resolution should likewise carry required envelopes inline
+in its versioned response instead of making the client retrieve them separately.
+
+Standalone retrieval remains useful for auditing or checking a known record:
 
 ```http
-GET /npm/~local/-/pnpr/v1/records/sha512/<base64url-digest>?package=%40example%2Fwidgets
+GET /npm/~local/@example/widgets/-/records/sha512/<base64url-digest>
 ```
 
-The path uses the complete digest bytes encoded as unpadded base64url; the
-record itself retains standard SRI. The response is the envelope above. Resolve
-the registry and validate the package name before lookup, then authorize the
-package and verify the record is bound there. A digest is never a global read
-capability. Private responses and conditional requests enforce current access;
-unauthorized requests must not reveal record existence through status, validators,
-or cache behavior. No redirect can rebind the record to another authority.
+Both paths are relative to the effective registry base: append
+`<package-path>/-/record-candidates` or
+`<package-path>/-/records/sha512/<digest>`. Current
+[npm registry bases](https://github.com/pnpm/pnpm/blob/7535582cd7c42df60f61ea6edaaf3cc49d861316/pnpr/docs/endpoints.md)
+are `/npm/` and `/npm/~<name>/`; older registry RFCs write `/~<name>/` as a
+registry-base example.
+This proposal adds no root-level alias. The package is part of the path, not a
+query-string access selector. Scoped names use the existing package decoding
+and validation rules; encoded and literal scoped spellings must receive the
+same routing and authorization checks. Cache keys preserve registry and package
+context for every accepted spelling.
 
-The client checks schema, interpretation support, record integrity, required
-endorsements, package identity, and artifact binding before using the manifest.
-It then resolves from that manifest. Required record support cannot silently
-fall back to ordinary metadata. Cached records and verified receipts can avoid
-repeat requests; choosing this protocol does not impose a new per-package
-lookup on every frozen install. Batch retrieval and resolver responses carrying
-records inline are possible extensions, not part of this initial route strawman.
+The digest path uses complete digest bytes encoded as unpadded base64url; the
+record retains standard SRI. Resolve the registry and validate the package path,
+authorize it, then verify the record is bound there. A digest is never a global
+read capability. Private responses and conditional requests enforce current
+access; unauthorized requests must not reveal existence through status,
+validators, or caches. No redirect can rebind a record to another authority.
+
+Whether inline or standalone, the client checks schema, interpretation support,
+record integrity, required endorsements and evidence, package identity, and
+artifact binding before using the manifest. Required support cannot silently
+fall back to ordinary metadata. Cached records and verified receipts avoid
+repeat lookups. This removes the mandatory metadata-then-record exchange for
+each candidate; it does not remove graph traversal, backtracking, or cold
+archive-verification costs. Frozen installs retain their existing fast path.
 
 ### Authorization and lifecycle
 
@@ -564,6 +646,14 @@ warm full/abbreviated generation, SQL rows read, and rendering work for packages
 with thousands of versions. No corpus compatibility or throughput claim is made
 until those measurements exist.
 
+Validate inline candidate responses without a preliminary package-document or
+standalone-record request, including bounded paging and backtracking. Check that
+tag changes, unrelated version publishes, delayed attestations, and re-signing
+preserve existing record integrities and per-version comparison hits. Changed
+install claims must invalidate the affected comparison; evidence updates must
+change envelope validators without rekeying the record. Test default/named bases,
+scoped-name spellings, and private access on both candidate and record routes.
+
 ## Prior Art
 
 - [Registry mounts and declared namespaces](./0000-pnpr-registry-mounts.md).
@@ -599,8 +689,10 @@ until those measurements exist.
   embedded SQLite and the first shared backend?
 - Which PostgreSQL configuration and Turso engine/deployment mode pass the shared
   conformance, durability, and workload requirements, and which should ship first?
-- Are the proposed record capability, extended metadata pointer, and retrieval
-  route the right initial protocol, and what bounds should apply to its responses?
+- Are the proposed inline envelopes, bounded candidate request/cursor schema,
+  and package-scoped retrieval paths the right initial protocol and limits?
+- What detached evidence envelope and linkage rules authenticate original
+  subjects and keep evidence validators current without changing record identity?
 - What logical export format, cutover procedure, and coordinated metadata/blob
   backup process preserve identities and retained availability?
 
