@@ -49,14 +49,16 @@ upstream observations. It does not introduce a competing revision mechanism.
 
 ### Identity and immutable contents
 
-A release record contains these logical fields. Their wire spelling and
-canonical encoding must be settled before ratification.
+A release record contains these logical fields. The concrete format below is a
+strawman for review; adopting it is a ratification decision.
 
 | Field | Contract |
 | --- | --- |
 | Schema | Identifies the record format and manifest interpretation rules. |
 | Authority | Identifies the configured origin and its namespace. |
 | Package | Ecosystem, validated name, version, and revision when applicable. |
+| Interpretation | Versioned rules for parsing and deriving install metadata. |
+| Inputs | Exact byte digests of the archive manifest and shrinkwrap, if present. |
 | Manifest | Install-critical metadata derived from the accepted archive. |
 | Artifacts | Complete algorithm, digest, size, and byte representation of each resource. |
 | Evidence | References to verified source signatures, provenance, and derivations. |
@@ -75,6 +77,97 @@ proxy hostname need not change the upstream authority. Rebinding an authority
 to a different source requires an explicit operator action and an audit event;
 it cannot follow a redirect or a cache miss.
 
+### Record envelope and canonical encoding strawman
+
+Use [RFC 8785 JCS](https://www.rfc-editor.org/rfc/rfc8785) for canonical record
+bytes and SHA-512 SRI for record integrity. This formatted example uses
+placeholder digests. It describes an ordinary `.tgz` release, so it carries no
+registry revision marker:
+
+```json
+{
+  "record": {
+    "schema": "pnpr-release-record/1",
+    "authority": "example-hosted-npm",
+    "package": {
+      "ecosystem": "npm",
+      "name": "@example/widgets",
+      "version": "1.2.0"
+    },
+    "interpretation": "npm-install-manifest/1",
+    "inputs": {
+      "packageJson": {
+        "path": "package/package.json",
+        "integrity": "sha512-<exact-package-json-bytes>"
+      },
+      "shrinkwrap": null
+    },
+    "manifest": {
+      "dependencies": { "@example/core": "^2.0.0" },
+      "hasInstallScript": false
+    },
+    "artifacts": [
+      {
+        "kind": "tgz",
+        "integrity": "sha512-<archive-bytes>",
+        "size": 4231
+      }
+    ],
+    "evidence": []
+  },
+  "recordIntegrity": "sha512-<canonical-record-bytes>",
+  "endorsements": []
+}
+```
+
+Compute `recordIntegrity` as `sha512-` followed by the standard base64 encoding
+of `SHA512(JCS_UTF8(record))`. Hash only the inner `record`; integrity and
+endorsements are outside that input. A detached endorsement must authenticate
+the record integrity under a release-record-specific signing context. The
+signature format, algorithms, and trust-root configuration remain ratification
+items. An empty endorsement list supplies no signer authentication.
+
+The JCS input rejects duplicate keys, invalid Unicode, and unsupported numeric
+values. Schema integer fields stay within the exact JSON safe-integer range;
+larger values require a future schema or an explicitly specified string field.
+Use JCS's property ordering and number serialization, preserve string contents
+without Unicode normalization, and hash the resulting UTF-8 bytes. A generic
+sorted-key JSON serializer is not sufficient.
+
+The `inputs` digests cover exact file payload bytes before parsing, including
+whitespace and line endings. Paths identify the validated archive entries used
+by the interpretation profile. Present shrinkwrap data has the same path and
+integrity descriptor; `null` means absent. A revision record adds the existing
+revision number and describes its tar artifact under the revision protocol.
+Source `.tgz` evidence and tar derivations retain distinct subjects.
+
+Evidence attached later lives in separate authenticated envelopes referencing
+the record integrity. Adding an endorsement or later analysis never mutates an
+accepted record's `evidence` array or canonical bytes.
+
+### Versioned manifest interpretation
+
+`npm-install-manifest/1` names a protocol contract, not whichever normalization
+behavior the current pnpm release happens to implement. Publish shared fixtures
+for accepted input bytes, derived fields, canonical record bytes, and digests.
+The server and new pnpm v12 client can share Rust implementation code, while
+the fixtures define interoperability independently of implementation language.
+This does not add record support to the maintenance-only pnpm v11 client.
+
+The profile must specify absent versus empty fields, dependency precedence,
+`bin` and `directories.bin`, bundled-dependency aliases, peer metadata,
+platform restrictions, script detection, and shrinkwrap interpretation before
+ratification. Preserve the raw input digests even when normalization makes two
+different input representations equivalent.
+
+A correction that changes an accepted derived manifest creates a new record
+under a new interpretation profile. Keep the previous bytes, digest, and
+profile-specific binding; never rehash or overwrite historical records in
+place. Clients must explicitly support the new profile. An unsupported or
+withdrawn profile produces a policy or capability error rather than an
+unannounced reinterpretation. Artifact revision numbers do not change when
+only the interpretation changes and the archive bytes stay identical.
+
 ### Manifest acceptance
 
 For a hosted npm publication, pnpr:
@@ -83,7 +176,7 @@ For a hosted npm publication, pnpr:
    decoding and entry-count limits.
 2. Reads the manifest that the supported installer would select. Rejects
    duplicate or ambiguous manifest entries and unsafe archive paths.
-3. Applies a versioned normalization rule shared with the pnpm manifest reader.
+3. Applies the named interpretation profile and records its exact input digests.
 4. Compares submitted and archive-derived install-critical fields. A mismatch
    rejects the publication with the package and field named.
 5. Stores the accepted manifest and artifacts in an immutable release record.
@@ -101,12 +194,52 @@ remain mutable annotations. Any dependency correction or replacement artifact
 uses an explicit revision or a separately authenticated, selected policy
 overlay; it never silently rewrites an accepted manifest.
 
-For proxied releases, fetching the metadata alone creates an unverified
-observation, not a verified record. The server can resolve through the existing
-path, but cannot claim manifest-to-artifact verification until it has fetched
-and checked the archive. A policy requiring verified records must perform that
-work before accepting the result. Conflicting observations are recorded and
-refused under that policy; old accepted records are not overwritten.
+### Upstream observations and disagreement policy
+
+For proxied releases, fetching metadata creates an unverified observation.
+Preserve the observed install metadata separately from the archive-derived
+record. Compare them under the same interpretation profile and retain
+comparison evidence keyed by observation integrity and record integrity.
+A signature on an archive-derived record alone does not attest that an upstream
+observation matched it. Exported comparison evidence needs its own authentication.
+
+These are proposed policy meanings, not final configuration names:
+
+| Mode | Resolution contract |
+| --- | --- |
+| Compatibility | Can resolve from observed upstream metadata; reports it as unverified. |
+| Verify and match | Requires a verified archive and matching install-critical metadata; disagreements fail closed. |
+| Archive authoritative | Explicitly accepts the archive-derived manifest despite a recorded upstream disagreement. |
+
+Verification-required requests use verify-and-match unless the operator has
+explicitly selected archive-authoritative acceptance for that package, complete
+artifact integrity, and interpretation profile. There is no implicit exemption
+for old publications and no downgrade to compatibility after verification fails.
+The record, policy choice, observation, and disagreement remain inspectable to
+authorized callers and are bound into resolution receipts.
+Archive-authoritative acceptance never waives archive integrity, package
+identity, archive safety, or source trust requirements.
+
+Archive-authoritative acceptance changes the metadata used to resolve that
+artifact. Re-run affected resolution using the accepted archive manifest, and
+generate both compatibility and native views from that same selection. Never
+resolve with the upstream dependency list and then replace only its checksum or
+manifest after the graph is complete. Old observations, records, and snapshots
+remain unchanged. This is an explicit policy selection, not a silent mutation
+of publisher metadata or an assertion that the upstream agreed.
+
+Verify candidate artifacts before accepting their graph contributions. Range
+selection can use observed metadata to nominate candidates, then backtrack if
+verified metadata changes their applicability. Fetching every version in a
+packument is not required, but rejected candidates can require extra downloads.
+Bound verification work, coalesce concurrent fetches, and cache verified
+archive/input/profile derivations. Comparison caches additionally bind the
+observation integrity, so a prior match cannot validate changed upstream claims.
+
+Cold lockfile-only resolution under verification can download archives it would
+otherwise not need. Expose those downloads and the chosen mode in diagnostics
+and benchmarks. Historical discrepancies are a compatibility case to measure;
+this draft does not claim their prevalence without an upstream corpus study.
 
 ### Compression, revisions, and signatures
 
@@ -168,11 +301,19 @@ Offline or asynchronous replica writes cannot acknowledge publication before
 the authoritative commit. Replica and cache reads are usable only where their
 freshness satisfies the operation's policy and generation requirements.
 
-Embedded SQLite is the initial target for a single-instance deployment. Turso
-is a candidate shared SQL backend, subject to conformance and workload testing.
-The exact engine and replication mode must be evaluated; SQL syntax alone does
-not establish equivalent isolation, durability, or freshness guarantees. Another
-SQL backend can replace it through the same domain operations.
+Embedded SQLite is the initial target for a single-instance deployment.
+PostgreSQL and Turso are first-class candidates for shared deployments, subject
+to the same conformance and workload tests. Evaluate PostgreSQL transactions
+with explicit policy-row locking or serializable validation and full-transaction
+retry. Evaluate Turso's specific engine, remote transaction/session boundaries,
+and replica mode separately. SQL syntax alone does not establish equivalent
+isolation, durability, or freshness guarantees. Another SQL backend can replace
+them through the same domain operations.
+
+All statements in a domain transaction must share one authoritative database
+transaction through a pinned connection or documented session handle. Separate
+HTTP statements cannot be assumed to share that boundary. Serialization failures
+retry the whole metadata transaction, preserving the idempotency contract.
 
 Backend replacement requires a consistent logical export or a quiesced transfer,
 verification of record digests and referenced blobs, and a controlled cutover.
@@ -188,6 +329,45 @@ Keep this contract in this RFC. The
 [publication draft](https://github.com/pnpm/rfcs/pull/46) define their operations
 against it. A backend substitution must preserve those operations and the
 public registry protocol, not just load the same tables.
+
+### Relational keys strawman
+
+The following logical tables make the key constraints concrete without choosing
+vendor types or a complete production schema. All listed key columns are
+non-null. `package_key` abbreviates `(authority, ecosystem, name)` and is scoped
+to its catalog. `observation_key` is `(catalog, package_key, observation_integrity)`.
+`revision_key` is `ordinary` outside the revision protocol or
+`rN` for an explicit registry revision, including `r0`; it is an internal key,
+not a new version or integrity syntax.
+
+| Relation | Primary key | Constraint or reference |
+| --- | --- | --- |
+| `release_records` | `record_integrity` | Insert-only canonical bytes and interpretation profile; recompute integrity on acceptance. |
+| `artifact_slots` | `(catalog, package_key, version, revision_key)` | Immutable artifact-integrity assignment. |
+| `record_bindings` | `(catalog, package_key, version, revision_key, profile)` | References an artifact slot and one release record with matching identity, artifact, and profile. |
+| `upstream_observations` | `(catalog, package_key, observation_integrity)` | Immutable observed metadata bytes. |
+| `manifest_comparisons` | `(record_integrity, observation_key)` | Immutable comparison result and field differences; both references remain authorized. |
+| `catalog_generations` | `(catalog, generation)` | References its parent and committed changes; policy and current-generation rows belong to this catalog. |
+| `publication_outcomes` | `(catalog, principal, idempotency_key)` | Binds request integrity and committed generation in the publication transaction. |
+| `snapshot_observations` | `(snapshot, package_key)` | References the captured observation for that package. |
+| `snapshot_records` | `(snapshot, record_integrity)` | References the profile-specific release records used. |
+| `retention_members` | `(retention_set, resource_integrity)` | References the required durable resource; expiry belongs to its retention set. |
+
+Tags, selected revisions, and annotations are catalog state with versioned
+changes so older generations can reconstruct their selections. They do not
+update `release_records` or an existing profile-specific `record_bindings` row.
+Store generation changes with structural sharing or version intervals; the
+logical relations do not require copying every catalog entry on each commit.
+Snapshots and receipts have their own immutable manifests and digests.
+
+Release-binding foreign keys and transaction-time validation must preserve the
+declared catalog and package boundary. A snapshot can span configured origins,
+but each referenced package still requires authorization. An imported canonical
+row cannot establish a trusted binding by itself. The domain operation checks
+its record identity, artifact slot, authority, and profile before inserting the
+binding. Uniqueness must cover the complete expanded key, including namespace
+and interpretation; nullable revision columns must not weaken duplicate-publication
+protection.
 
 ### Mutable state and compatibility views
 
@@ -222,6 +402,72 @@ eagerly or once on the next read, coalescing concurrent misses for the same view
 Ordinary reads can serve the cached JSON without recomposing every record.
 Give live views bounded freshness and revalidate their generation on expiry or
 startup. A lost invalidation event cannot leave an old view cached indefinitely.
+The upstream acceptance policy and observation binding gate cache hits;
+compatibility results never satisfy verification-required requests.
+
+Cache per-version rendered fragments by record integrity, interpretation,
+representation, renderer version, and relevant annotation generation. A tag-only
+change can reuse those fragments and update the package-level selection data.
+Appending a release renders its new fragment; deprecating one version renders
+the affected fragment. Do not refetch, join, parse, and render every unchanged
+version after each mutation. Stream or assemble the cached fragments under one
+committed package view, and cache the resulting full response. Native record
+reads do not require that full response.
+
+Returning a full packument still requires emitting its bytes. This proposal
+reduces repeated database and rendering work; it does not make the existing
+all-version npm response constant-sized or remove its serialization/copying cost.
+
+### Record discovery and retrieval strawman
+
+Extend the existing `GET /-/pnpr` capability document with these proposed fields:
+
+```json
+{
+  "records": [1],
+  "manifestProfiles": ["npm-install-manifest/1"]
+}
+```
+
+A client opts into an extended metadata representation, proposed as
+`application/vnd.pnpr.install-v1+json`. Its per-version object adds this pointer,
+which is distinct from the archive's `dist.integrity`:
+
+```json
+{
+  "pnprRecord": {
+    "integrity": "sha512-<canonical-record-bytes>",
+    "interpretation": "npm-install-manifest/1"
+  }
+}
+```
+
+The selected pointer is emitted only after the archive-derived record is
+accepted under the active policy. Standard npm metadata remains available with
+its existing representation. Cache variants and `Vary: Accept` must distinguish
+the extended response from ordinary full and abbreviated metadata.
+
+A proposed retrieval request is:
+
+```http
+GET /npm/~local/-/pnpr/v1/records/sha512/<base64url-digest>?package=%40example%2Fwidgets
+```
+
+The path uses the complete digest bytes encoded as unpadded base64url; the
+record itself retains standard SRI. The response is the envelope above. Resolve
+the registry and validate the package name before lookup, then authorize the
+package and verify the record is bound there. A digest is never a global read
+capability. Private responses and conditional requests enforce current access;
+unauthorized requests must not reveal record existence through status, validators,
+or cache behavior. No redirect can rebind the record to another authority.
+
+The client checks schema, interpretation support, record integrity, required
+endorsements, package identity, and artifact binding before using the manifest.
+It then resolves from that manifest. Required record support cannot silently
+fall back to ordinary metadata. Cached records and verified receipts can avoid
+repeat requests; choosing this protocol does not impose a new per-package
+lookup on every frozen install. Batch retrieval and resolver responses carrying
+records inline are possible extensions, not part of this initial route strawman.
 
 ### Authorization and lifecycle
 
@@ -282,7 +528,8 @@ Target pnpr and new client support in pnpm v12. Do not add a feature to pnpm v11
 1. Specify the field set, deterministic encoding, authority mapping, and
    signature trust configuration. Add fixtures for the record contract.
 2. Extend the existing publication staging and archive-reading code to produce
-   verified records. Share normalization with the existing pnpm manifest code.
+   verified records. Reuse the pnpm manifest implementation under the versioned
+   interpretation contract and preserve raw input digests.
 3. Split `pnpr-storage` metadata operations from artifact storage. Add SQL-backed
    immutable records and mutable state behind the domain interface, starting
    with embedded SQLite. Retain existing artifact validation and staging.
@@ -307,6 +554,16 @@ replica lag, cache invalidation loss, and export/import with identical record
 digests. Measure metadata cache misses, ingestion throughput, write contention,
 and retained-history growth before selecting a shared backend.
 
+Add cross-implementation canonicalization fixtures, including Unicode and number
+edge cases, raw-manifest byte changes, shrinkwrap presence, and interpretation
+upgrades over unchanged archives. Validate each upstream policy with matching
+and conflicting metadata; archive-authoritative resolution must use the changed
+dependency graph and old receipts must keep their profile. Verify that a large
+package's tag-only update reuses unchanged version fragments. Measure cold and
+warm full/abbreviated generation, SQL rows read, and rendering work for packages
+with thousands of versions. No corpus compatibility or throughput claim is made
+until those measurements exist.
+
 ## Prior Art
 
 - [Registry mounts and declared namespaces](./0000-pnpr-registry-mounts.md).
@@ -319,11 +576,15 @@ and retained-history growth before selecting a shared backend.
 - [SQLite deployment guidance](https://www.sqlite.org/whentouse.html) and
   [Turso's Rust backend options](https://docs.turso.tech/sdk/rust/reference),
   to evaluate against the required storage contract.
+- [JCS](https://www.rfc-editor.org/rfc/rfc8785), for canonical record encoding.
+- [PostgreSQL transaction isolation](https://www.postgresql.org/docs/current/transaction-iso.html)
+  and [explicit locking](https://www.postgresql.org/docs/current/explicit-locking.html),
+  for the shared-backend conformance evaluation.
 
 ## Unresolved Questions and Bikeshedding
 
-- Which deterministic encoding, digest algorithm, and envelope should the
-  record protocol adopt?
+- Should the draft adopt the JCS/SHA-512 envelope strawman, and which detached
+  endorsement format and signing context should authenticate it?
 - What is the complete install-critical field set, including normalization and
   shrinkwrap treatment?
 - How should operators establish portable authority identities and approve a
@@ -332,11 +593,14 @@ and retained-history growth before selecting a shared backend.
   configured and rotated?
 - Should hosted manifest verification become mandatory immediately, and what
   diagnostics should help publishers repair rejected packages?
-- Which verified-record modes should upstream lockfile-only requests expose?
+- What configuration names and approval flow expose the upstream policy modes,
+  and what does a corpus study show about mismatches and verification downloads?
 - What SQL schema, indexes, and isolation strategy meet the domain contract on
   embedded SQLite and the first shared backend?
-- Which Turso engine and deployment mode, or alternative shared SQL backend,
-  passes the conformance, durability, and workload requirements?
+- Which PostgreSQL configuration and Turso engine/deployment mode pass the shared
+  conformance, durability, and workload requirements, and which should ship first?
+- Are the proposed record capability, extended metadata pointer, and retrieval
+  route the right initial protocol, and what bounds should apply to its responses?
 - What logical export format, cutover procedure, and coordinated metadata/blob
   backup process preserve identities and retained availability?
 
