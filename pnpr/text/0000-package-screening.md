@@ -225,6 +225,48 @@ registries:
   incident-response starting point. pnpr cannot unserve bytes; it can make
   the blast radius knowable.
 
+### Refusal response
+
+A `403` alone is not enough. pnpm keeps only the status of a failed metadata
+or tarball fetch. It discards the body and, for `401`, `403`, and `404`, tells
+the user to check their authorization. Clients also cannot tell a registry
+refusal from an intermediary's page: in npm/cli#8203 (270 👍, 389 comments), a
+CDN firewall rule answered every package path containing "camel" with an
+HTML `403`, and users read it as a registry decision.
+
+A screening refusal is a `403` with
+`Content-Type: application/problem+json`
+([RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)) and a body that uses
+the same fields as the resolver's `violations` frame:
+
+```json
+{
+  "type": "https://pnpm.io/errors/pnpr-screening",
+  "error": "@example/widgets@1.2.0 is blocked by the npmjs screening policy",
+  "code": "ERR_PNPR_SCREENING_BLOCKED",
+  "name": "@example/widgets",
+  "version": "1.2.0",
+  "integrity": "sha512-...",
+  "registry": "npmjs",
+  "verdict": "malicious",
+  "reason": "static analyzer: install script downloads and executes a remote payload"
+}
+```
+
+- `error` keeps npm clients' existing message display working.
+- `code` is one of `ERR_PNPR_SCREENING_BLOCKED`, `ERR_PNPR_SCREENING_HELD`,
+  `ERR_PNPR_SCREENING_COOLDOWN`, or `ERR_PNPR_SCREENING_UNAVAILABLE`. A held or
+  cooldown refusal adds `Retry-After` when the release time is known.
+- `reason` is operator-facing text from the verdict schema, never free text
+  from an AI reviewer or from package content.
+- pnpm reads the body of any `403` that carries this media type and reports the
+  policy refusal with its code. It does not print the authorization hint for
+  it. A `403` without the media type remains an authorization or intermediary
+  error.
+
+The same body shape serves the other refusals pnpr already issues, such as an
+OSV block, so pnpm needs one client change for all of them.
+
 ## Rationale and Alternatives
 
 ### Blocking by `404`
@@ -341,9 +383,9 @@ Tests should cover, at minimum:
 - **Cumulative-diff review** since the last full anchor: required or
   recommended? It roughly doubles incremental review cost while directly
   countering slow-drip payloads.
-- **Blocked-version UX.** Is `403` + reason body enough for pnpm to render a
-  good error today, or does pnpm need a small client change to surface the
-  machine-readable reason nicely?
+- **Blocked-version UX.** Answered under [Refusal response](#refusal-response):
+  pnpm needs a client change, because it discards error bodies today. Open:
+  the exact `type` URI, and whether `451` suits a takedown better than `403`.
 - **Verdict subject granularity.** Tarball integrity is the natural key, but
   should verdicts also record the unpacked content digest so repacked-but-
   identical artifacts share analysis?
