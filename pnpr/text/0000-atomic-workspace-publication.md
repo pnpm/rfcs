@@ -34,6 +34,40 @@ Those are documented limits, not an absence of batch support. This proposal
 removes the partial-publication outcome for supported batches and gives
 snapshot-aware readers a consistent release view.
 
+### Evidence
+
+On the npm registry, publication is one request per package and a lost
+response has no recovery path. 78 npm/npm and npm/cli issues report "cannot
+publish over previously published version" or `EPUBLISHCONFLICT`, many for a
+version nobody can see.
+
+| Report | Year | 👍/comments | What happened |
+| --- | --- | --- | --- |
+| [npm/cli#10078](https://github.com/npm/cli/issues/10078) | 2026 | 0/0 | A lerna release retried a publish that had succeeded. "22 of 23 packages published and one missing, so the release ended up half-done." |
+| [npm/cli#9889](https://github.com/npm/cli/issues/9889) | 2026 | 3/4 | `pnpm publish -r` of platform bindings. "The first publish that triggered this reported success." One package is wedged and the rest are live. |
+| [npm/cli#9313](https://github.com/npm/cli/issues/9313) | 2026 | 0/1 | Workspace publish rate-limited partway. "many packages publish successfully, but a few later packages fail repeatedly with 429". |
+| [npm/cli#7907](https://github.com/npm/cli/issues/7907) | 2024 | 0/6 | `npm publish -ws` stops at the first version that already exists, so later packages are never published. |
+| [npm/cli#5058](https://github.com/npm/cli/issues/5058) | 2022 | 0/16 | "ran `npm version major` enough times until I got past those ghost versions". |
+| [npm/npm#4922](https://github.com/npm/npm/issues/4922) | 2014 | 0/39 | The document `PUT` returned 201 and the attachment `PUT` returned 409. Every later version also conflicted. |
+| [npm/rfcs#778](https://github.com/npm/rfcs/issues/778) | 2024 | 0/5 | One OTP prompt per package in a workspace publish. |
+| [npm/npm#13](https://github.com/npm/npm/issues/13) | 2010 | 0/4 | Transactional publishing requested in npm's 13th issue. |
+
+### Current pnpr gaps this must close
+
+- **A byte-identical retry is a conflict.** `check_publishable_versions` in
+  `pnpr/crates/pnpr/src/server/publishing/manifest.rs` returns
+  `VersionAlreadyPublished` whenever a tarball arrives for an existing version,
+  even when the bytes match. A client whose response was lost cannot learn
+  that it succeeded.
+- **One request body carries every archive.** The batch body is base64 JSON
+  under the router-wide 100 MiB limit (`MAX_PUBLISH_BODY_BYTES` in
+  `pnpr/crates/pnpr/src/server.rs`), so batch size is bounded by one body.
+- **Keyless CI cannot use it.** An OIDC workload credential may only
+  `PUT /npm/~<registry>/<package>` (`check_workload_request` in
+  `pnpr/crates/pnpr/src/server/oidc.rs`). It cannot call the batch endpoint or
+  move a dist-tag, so the CI release path, which most needs atomicity, cannot
+  use it.
+
 ## Detailed Explanation
 
 ### Transaction boundary
@@ -91,6 +125,14 @@ commit can leave unreferenced uploaded objects for coordinated cleanup; it must
 never leave a visible release referencing an unfinished upload. Archive uploads,
 scanning, and other network work stay outside SQL write transactions.
 
+Archives are uploaded one at a time, addressed by their integrity, before the
+commit request. The commit body references archives by integrity and carries
+no archive bytes, so batch size is not bounded by one request body. An upload
+of bytes that are already stored is a no-op, which makes a resumed release
+upload only what is missing. pnpr's shared-artifact blob endpoints
+(`PUT` and `HEAD /-/pnpr/v0/artifacts/blob?integrity=...`) already have this
+shape, and its OCI blob upload handles large chunked bodies.
+
 Use an authoritative policy epoch for the catalog, updated by every permission
 mutation affecting it. Publication and policy mutation must lock or perform
 conflicting writes on that epoch inside their metadata transactions, with
@@ -120,6 +162,13 @@ Clients supply an idempotency key scoped to the organization and publisher
 identity. Bind that key to a digest of the complete request. Reusing it with a
 different request is a conflict. The request identity is scoped to a stable
 principal, not a bearer-token string that changes during token rotation.
+
+Existing npm clients send no idempotency key, and npm, pnpm, and lerna retry
+a timed-out publish. For a single-package publication without a key, the
+request's content is the key: a publication of `name@version` whose archive
+integrity and accepted manifest equal the committed release returns the
+recorded success, not a conflict. A different archive for the same version
+is still a conflict.
 
 A timed-out commit has an unknown outcome to the client. The client queries or
 retries the same transaction to learn its durable state. Idempotency results
@@ -182,6 +231,15 @@ security policy. A new block can refuse a package in an older generation.
 Authorized diagnostics should distinguish a policy refusal from an absent
 release. Read authorization must not be satisfied by publication permissions
 or another organization's reference to identical bytes.
+
+OIDC workload principals can submit transactions. Each member package and
+each tag or revision selection is authorized against the workload binding,
+the same as a single publication. A binding grants a package list and a set of
+actions, such as publish and tag, rather than one `PUT` route.
+
+Staged publication can hold a whole transaction. Approval commits the held
+transaction as one generation, so a reviewed release is never promoted one
+package at a time.
 
 ### Storage and performance
 
@@ -262,6 +320,8 @@ claim that atomicity is free or faster than the existing publication path.
 - Is one organization and hosted catalog the right initial transaction scope?
 - How should clients name transactions, query outcomes, and pin read generations?
 - How long should idempotency records and unreferenced generations survive?
+- Should content-keyed idempotency for keyless clients also cover batches,
+  where the batch digest is the key?
 - Should the first implementation cover npm only, or every ecosystem whose
   hosted mutation paths can share the catalog authority?
 - What contention and storage measurements should gate making this the default
