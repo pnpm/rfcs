@@ -28,6 +28,24 @@ declares another, and a lifecycle script that metadata-based policy never saw.
 pnpr controls publication for its hosted registries, so it can close this gap
 for every package it hosts without any client or protocol change.
 
+### Evidence
+
+The npm trackers report the symptom rather than the term:
+
+| Report | Year | 👍/comments | What disagreed |
+| --- | --- | --- | --- |
+| [npm/cli#626](https://github.com/npm/cli/issues/626) | 2019 | 6/1 | `fsevents@1.2.11`: metadata lists `node-pre-gyp` in `dependencies`; the archive lists it only in `bundledDependencies`. |
+| [npm/feedback#797](https://github.com/npm/feedback/discussions/797) | 2022 | 2/1 | `node-rdkafka@2.14.0`: the archive's `package.json` says version `v2.14.2-1.HEAD`. "Allowing mismatches could lead to a security issue if e.g. `scripts` is mismatched." |
+| [npm/feedback#1057](https://github.com/npm/feedback/discussions/1057) | 2023 | 1/2 | `esbuild@0.19.10`: metadata copies every `optionalDependencies` entry into `dependencies`. |
+| [npm/cli#8714](https://github.com/npm/cli/issues/8714) | 2025 | 1/1 | `fsevents@2.3.3`: metadata has `"install": "node-gyp rebuild"`; the archive has no install script and no `binding.gyp`, so npm runs a build that fails. |
+| [npm/feedback#804](https://github.com/npm/feedback/discussions/804) | 2022 | 1/0 | "npm registry should not add install scripts into package.json". |
+| [npm/cli#2606](https://github.com/npm/cli/issues/2606) | 2021 | 30/23 | `hasInstallScript` missing, so `npm ci` skips a `postinstall`. |
+| [npm/cli#4583](https://github.com/npm/cli/issues/4583) | 2022 | 8/5 | `_hasShrinkwrap` missing on third-party registries, so the shrinkwrap is ignored. |
+| [npm/cli#9837](https://github.com/npm/cli/issues/9837) | 2026 | 1/2 | `better-sqlite3` sets `gypfile: false`; npm still reports `install: node-gyp rebuild`. |
+
+Most of these mismatches are produced by the publishing client, not by an
+attacker; see [Publisher-side normalization](#publisher-side-normalization).
+
 ## Detailed Explanation
 
 ### Acceptance
@@ -39,8 +57,11 @@ For a hosted npm publication, pnpr:
 2. Reads the manifest that the supported installer would select. Rejects
    duplicate or ambiguous manifest entries and unsafe archive paths.
 3. Derives install-critical fields under a named interpretation profile.
-4. Compares the submitted and archive-derived install-critical fields. A
-   mismatch rejects the publication with the package and differing fields named.
+4. Normalizes both the submitted manifest and the archive manifest under the
+   profile, then compares their install-critical fields. A mismatch rejects
+   the publication with the package and differing fields named, except for
+   the one benign direction defined under
+   [Publisher-side normalization](#publisher-side-normalization).
 5. Stores the archive-derived manifest as the accepted metadata for the
    version, together with the exact byte digests of the archive manifest and
    shrinkwrap, if present.
@@ -52,16 +73,69 @@ archive-derived manifest, not from the submitted document.
 
 Install-critical fields include:
 
+- `name` and `version`. A mismatch places the package in the wrong slot
+  ([npm/feedback#797](https://github.com/npm/feedback/discussions/797)).
 - `dependencies`, `optionalDependencies`, `peerDependencies`, and
   `peerDependenciesMeta`.
 - `bundleDependencies` / `bundledDependencies`.
 - `os`, `cpu`, `libc`, and `engines`.
 - `bin` and `directories.bin`.
-- Lifecycle-script presence (`hasInstallScript`) and the scripts that imply it.
+- Lifecycle-script presence (`hasInstallScript`): `preinstall`, `install`, or
+  `postinstall`, or a root `binding.gyp` in the archive without those scripts
+  and without `gypfile: false`. pnpr's `dist.pnpr.requiresBuild` already
+  derives this from the verified archive.
 - Shrinkwrap presence and contents.
 
 The exact field set, and how absent and empty values compare, must be fixed
 before ratification.
+
+Generated metadata always carries the derived `hasInstallScript` and
+`_hasShrinkwrap`. A registry that omits them makes clients skip scripts or
+shrinkwraps ([npm/cli#2606](https://github.com/npm/cli/issues/2606),
+[npm/cli#4583](https://github.com/npm/cli/issues/4583)).
+
+### Publisher-side normalization
+
+`npm publish` does not upload the raw `package.json`. It uploads the output of
+[`@npmcli/package-json`'s `prepare()`](https://github.com/npm/package-json/blob/main/lib/normalize.js),
+while the archive keeps the raw file. A strict comparison would reject ordinary
+`npm publish` uploads. The steps that change install-critical fields:
+
+| Step | Submitted manifest | Archive `package.json` |
+| --- | --- | --- |
+| `binRefs`, `binDir` | `"bin": {"c8": "bin/c8.js"}` | `"bin": "./bin/c8.js"` |
+| `gypfile` | `scripts.install: "node-gyp rebuild"`, `gypfile: true`, set when any `*.gyp` file is in the source directory, even if `files` excludes it | no install script |
+| `bundleDependencies` | `true` expanded to the names in `dependencies` | `true` |
+| `normalizeData` | `version` cleaned, for example `v1.2.3` to `1.2.3`; `name` trimmed | as written |
+
+npm 9 and earlier ran `normalize-package-data`, whose
+[`addOptionalDepsToDeps`](https://github.com/npm/normalize-package-data/blob/main/lib/fixer.js)
+copied every `optionalDependencies` entry into `dependencies`. Metadata
+published that way still exists, so a profile that reads historical versions
+must treat a name present in both maps with the same range as optional.
+
+The profile defines each of these as a normalization, applied to both sides
+before comparison. The `gypfile` step is the one case where the normalized
+sides still differ: the submitted manifest claims a build that the archive
+cannot run. That direction is benign. pnpr accepts it, serves the
+archive-derived verdict, and reports the difference to the publisher. The
+reverse direction, where the archive declares a script or dependency that the
+submitted manifest omits, is the attack and is always rejected.
+
+A survey of the 1,674 registry packages in pnpm/pnpm's lockfile (published by
+npm 1 through npm 12 and by lerna) compared each version's registry metadata
+with its archive's `package.json`:
+
+| Difference | Packages |
+| --- | --- |
+| `bin` syntax only (`./` prefix, string versus object) | 43 |
+| `optionalDependencies` copied into `dependencies` | 3 |
+| `gypfile` and `node-gyp rebuild` with no `binding.gyp` in the archive (`fsevents@2.3.3`) | 1 |
+| `engines: {"node": "*"}` added (`nopt@1.0.10`, npm 1.0) | 1 |
+| Anything else | 0 |
+
+Packages published with current npm (10 to 12) still differ in `bin` syntax,
+for example `c8@12.0.0`, `eslint@10.13.0`, and `cross-env@10.1.0`.
 
 Registry-generated data such as the publisher identity, `dist.tarball`, and
 `_`-prefixed fields is not publisher-authored and is not compared. Deprecation
@@ -115,7 +189,9 @@ Target pnpr. Do not add a feature to pnpm v11.
 
 Tests must cover mismatched dependencies, a script present only in the
 archive, ambiguous archive manifests, unsafe paths, bounded decoding, and
-shrinkwrap presence.
+shrinkwrap presence. They must also cover each normalization above, using
+publish documents produced by `npm publish`, `pnpm publish`, and lerna, so an
+ordinary publication from a supported client is never rejected.
 
 ## Prior Art
 
@@ -124,12 +200,19 @@ shrinkwrap presence.
 - [npm publication implementation](https://github.com/npm/cli/blob/latest/workspaces/libnpmpublish/lib/publish.js).
 - [Integrity-addressed patch revisions](./0000-integrity-addressed-patch-revisions.md),
   which already keeps revision-specific manifests.
+- [PEP 658](https://peps.python.org/pep-0658/): PyPI serves the `METADATA`
+  file extracted from the wheel, so the served metadata is the artifact's own.
+- crates.io generates index entries from the uploaded `.crate`'s `Cargo.toml`.
 
 ## Unresolved Questions and Bikeshedding
 
 - What is the complete install-critical field set, including absent-versus-empty
   rules and shrinkwrap treatment?
 - Should verification be mandatory immediately, or opt-in per hosted registry
-  for an initial period?
+  for an initial period? The survey above found no difference outside the
+  listed normalizations, which argues for mandatory once they are in the
+  profile.
+- Does the installer-selected build file stay `binding.gyp`, while npm's
+  `gypfile` step matches any `*.gyp`?
 - What diagnostics help publishers repair a rejected package?
 - How should operators handle existing hosted versions that fail re-derivation?
