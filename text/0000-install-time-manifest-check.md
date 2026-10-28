@@ -50,6 +50,40 @@ the source of the decision they affect. The derivation and comparison rules
 follow the same versioned interpretation as the pnpr draft, so both sides use
 one definition and share test fixtures.
 
+### Normalizations and direction
+
+Registry metadata for the public npm registry is the output of the publishing
+client's normalization, while the archive keeps the raw `package.json`. The
+interpretation applies the same normalizations to both sides before comparing.
+The pnpr draft lists them under
+[publisher-side normalization](https://github.com/pnpm/rfcs/pull/47).
+
+A survey of the 1,674 registry packages in pnpm/pnpm's lockfile, published by
+npm 1 through npm 12 and by lerna, compared each version's registry metadata
+with its archive's `package.json`:
+
+| Difference | Packages | Examples |
+| --- | --- | --- |
+| `bin` syntax only (`./` prefix, string versus object) | 43 | `eslint@10.13.0`, `glob@11.1.0`, `c8@12.0.0` |
+| `optionalDependencies` copied into `dependencies` (npm 9 and earlier, lerna) | 3 | `jest-haste-map@29.7.0`, `jsonfile@4.0.0` |
+| `gypfile` and `node-gyp rebuild` in metadata, no `binding.gyp` in the archive | 1 | `fsevents@2.3.3` ([npm/cli#8714](https://github.com/npm/cli/issues/8714)) |
+| `engines: {"node": "*"}` added | 1 | `nopt@1.0.10` |
+| Anything else | 0 | |
+
+Without normalization, 46 of 1,674 packages (2.7%) would fail, among them
+`eslint`, `glob`, and `fsevents`. With the normalizations, none fail.
+
+The direction of a difference matters:
+
+- **The archive declares more than the metadata**: a dependency, a lifecycle
+  script, or a `binding.gyp` that resolution did not see. This is the attack.
+  The install fails.
+- **The metadata declares more than the archive**: `fsevents@2.3.3` claims a
+  `node-gyp rebuild` that its archive cannot run. Nothing hidden executes.
+  pnpm follows the archive and does not fail. A dependency that resolution
+  added but the archive does not declare is extra, not hidden. pnpm reports
+  it as a warning.
+
 ### When it runs
 
 The check runs after a package's contents are available and before any
@@ -61,7 +95,8 @@ alongside the store entry.
 
 ### On mismatch
 
-The install fails, naming the package, version, and differing fields. An
+For a difference in the failing direction, the install fails, naming the
+package, version, and differing fields. An
 explicit per-package allowance accepts a known mismatch. It binds the package
 name, version, and artifact integrity, and resolution then uses the
 archive-derived fields. It never patches the resolved graph after the fact.
@@ -95,8 +130,10 @@ Target pnpm v12. Do not add a feature to pnpm v11.
 
 Tests must cover a dependency present only in the archive, a script present
 only in the archive, mismatched platform fields, store hits, and frozen
-installs. Measure how often mismatches appear across a sample of popular
-packages before choosing the default.
+installs. Each normalization needs a fixture taken from a real package in the
+survey, and `fsevents@2.3.3` must install. Repeat the survey on a larger
+sample, such as the most-downloaded packages and a random sample of all
+versions, before choosing the default.
 
 ## Prior Art
 
@@ -107,7 +144,9 @@ packages before choosing the default.
 ## Unresolved Questions and Bikeshedding
 
 - Should a mismatch fail by default, given that historical mismatches exist on
-  the public npm registry? A corpus measurement should decide this.
+  the public npm registry? The first survey found no difference outside the
+  listed normalizations, which supports failing by default. A larger sample
+  should confirm it.
 - What is the setting name and shape for the per-package allowance?
 - Which install-critical fields does the lockfile need to record so frozen
   installs can compare all of them?
