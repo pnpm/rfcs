@@ -38,6 +38,21 @@ who can produce an endorsement and who verifies it:
 - Records help third parties that receive data from a mirror, cache, or export
   and need to verify it without contacting the authority.
 - Records give snapshots and receipts a stable identity to pin.
+- Against a stolen publisher credential, records add nothing by themselves.
+  This is the attack seen in practice: eslint-scope in 2018
+  ([npm/npm#21202](https://github.com/npm/npm/issues/21202)) and axios in 2026
+  ([npm/rfcs#860](https://github.com/npm/rfcs/issues/860),
+  [npm/cli#9242](https://github.com/npm/cli/issues/9242), 68 👍). The
+  attacker publishes a well-formed archive whose metadata matches it. What
+  catches it is how the version was published: axios had been publishing
+  with provenance attestations, and the malicious versions were published
+  manually from the maintainer's account without them. See
+  [Publication evidence](#publication-evidence).
+
+npm's registry signatures sign only `${name}@${version}:${integrity}`. They
+bind the archive bytes but not the dependencies, scripts, or publisher that
+clients resolve from. A record binds the archive-derived manifest, which closes
+the first gap; publication evidence addresses the second.
 
 The draft should state which of these it targets and size the mechanism to
 match. For a signer separate from the serving registry, it must specify:
@@ -129,6 +144,32 @@ so the envelope's HTTP validator includes its evidence generation.
 A registry endorsement means the registry accepted the manifest-to-archive
 binding. It is not publisher provenance and does not prove a package is benign.
 
+### Publication evidence
+
+At acceptance, the registry writes a publication statement as detached
+evidence for the record. Only the registry produces it; publisher-supplied
+fields with the same names are stripped. It names:
+
+- The principal kind: a user token, an interactive session, or an OIDC
+  workload.
+- For a workload, the issuer, subject, and the claims the workload binding
+  matched, such as repository and workflow.
+- Whether the version was staged, and the principal that approved it.
+- The acceptance time.
+
+Clients evaluating `trustPolicy` read this statement instead of inferring trust
+from `_npmUser`. npm overloaded `_npmUser` when it added staged publishing, so
+the approver replaced the workload and tools lost the trusted-publishing signal
+([npm/cli#9397](https://github.com/npm/cli/issues/9397)).
+
+pnpr records no such evidence today. A workload credential resolves to an
+ordinary user identity named by the binding's `username`, and publication
+writes only `_npmUser.name`. A keyless workload publish is therefore
+indistinguishable from a token publish by the same name, and `trustPolicy`
+cannot protect pnpr-hosted packages. The npm-compatible view should also carry
+`_npmUser.trustedPublisher` for workload publications, so existing clients
+work.
+
 ### Interpretation profiles
 
 A correction to derivation creates new records under a new profile; historical
@@ -167,6 +208,17 @@ observed metadata, but each selected candidate's archive must be fetched before
 its graph contribution is accepted, and rejected candidates can require more
 fetches. Lockfile-only resolution becomes much more expensive. A corpus study
 of upstream mismatches should precede choosing defaults.
+
+A first survey covered the 1,674 registry packages in pnpm/pnpm's lockfile.
+Before normalization, 46 differ between registry metadata and the archive's
+`package.json`. All 46 are explained by the publishing client's normalization:
+`bin` syntax (43), `optionalDependencies` copied into `dependencies` (3), the
+`gypfile` install-script injection (1), and an added `engines` default (1).
+No other differences were found. Once the profile defines those
+normalizations
+([pnpm/rfcs#47](https://github.com/pnpm/rfcs/pull/47)), "verify and match" is
+viable without frequent failures, and its cost is the archive downloads rather
+than operator overrides.
 
 ### Client protocol
 
@@ -256,6 +308,11 @@ private records cannot be read through digest paths.
 - Which signatures should clients require, and how are trust roots configured
   and rotated?
 - What does a corpus study show about upstream mismatches and verification
-  downloads, and which upstream mode should be the default?
+  downloads, and which upstream mode should be the default? The first survey
+  above found only normalization differences. Download cost still needs
+  measuring.
+- Should publication evidence be its own RFC, together with a package-level
+  publish policy that the registry enforces at acceptance, such as "only OIDC
+  from this repository"?
 - Are the inline envelopes, candidate request and cursor schema, and retrieval
   paths the right initial protocol?
