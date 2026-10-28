@@ -25,6 +25,21 @@ publication outcomes after a lost response, and the snapshot and publication
 features drafted in [pnpm/rfcs#45](https://github.com/pnpm/rfcs/pull/45) and
 [pnpm/rfcs#46](https://github.com/pnpm/rfcs/pull/46).
 
+The npm registry shows what the single-document model costs at scale:
+
+| Report | Year | 👍/comments | Cost |
+| --- | --- | --- | --- |
+| [npm/feedback#831](https://github.com/npm/feedback/discussions/831) | 2022 | 2/2 | The `typescript` package document is 17.9 MB, 6.0 MB abbreviated. |
+| [npm/cli#9876](https://github.com/npm/cli/issues/9876) | 2026 | 2/0 | `npm install vite` fetches the `playwright` (16.6 MB) and `@types/node` (11 MB) documents for optional peers it never installs. |
+| [npm/cli#6513](https://github.com/npm/cli/issues/6513) | 2023 | 0/10 | `npm deprecate` took about 7 minutes because it rewrites every version, so two OTPs expired. |
+| [npm/cli#9795](https://github.com/npm/cli/issues/9795) | 2026 | 1/0 | Deprecation returned E422 although the registry applied it. |
+| [npm/npm#7016](https://github.com/npm/npm/issues/7016) | 2014 | 9/38 | The README lives in the package document and changes only with a publish. |
+| [npm/cli#4513](https://github.com/npm/cli/issues/4513) | 2022 | 12/11 | `ETARGET` for a version just published. "may then fail for up to 5 minutes". |
+| [npm/npm#20809](https://github.com/npm/npm/issues/20809) | 2018 | 17/9 | The full and abbreviated views disagree, so install fails while `npm view` works. |
+| [npm/npm#11852](https://github.com/npm/npm/issues/11852) | 2016 | 1/8 | `latest` points to a version missing from `versions`. |
+
+The last three come from caching two representations of one mutable document
+separately. Rendering both from one committed generation removes that class.
 ## Detailed Explanation
 
 ### Storage split
@@ -82,7 +97,9 @@ revision, including `r0`; it is an internal key, not new version syntax.
 | `versions` | `(package_key, version, revision_key)` | Insert-only artifact integrity assignment. |
 | `accepted_manifests` | `(package_key, version, revision_key, profile)` | Insert-only archive-derived manifest and raw input digests. |
 | `tags` | `(package_key, tag)` | Points to a version; changes are versioned. |
+| `tag_history` | `(package_key, tag, generation)` | Insert-only: previous and new target, principal, and time. Release-age and downgrade policies can then see when a tag moved, not only where it points. |
 | `annotations` | `(package_key, version)` | Deprecations and other mutable annotations. |
+| `readmes` | `(package_key, version)` | Kept out of version fragments, so a README never inflates resolution metadata. |
 | `publication_outcomes` | `(registry, principal, idempotency_key)` | Request integrity and committed result. |
 
 All key columns are non-null, so a nullable revision column cannot weaken
@@ -106,6 +123,17 @@ versions and mutable state.
   cache contract requires. Coalesce concurrent misses.
 - Give cached views bounded freshness and revalidate their generation on
   expiry or startup, so a lost invalidation cannot pin an old view forever.
+
+### Read-after-write
+
+Every committed mutation advances the package generation. Package responses
+carry it in a response header, and a publication or tag change returns the
+generation it committed. A client that has just published can send the
+generation as a minimum. A cache holding an older view revalidates
+instead of answering, so a version the client just published is never reported
+as missing. pnpm can then drop its post-publish polling
+(`--publish-wait-timeout`) against a server that advertises this capability.
+Header and capability names are open.
 
 Returning a full package document still costs its emitted bytes. This reduces
 repeated database reads and rendering work; it does not make large documents
@@ -160,5 +188,8 @@ update reuses unchanged fragments.
 - What schema, indexes, and isolation strategy meet the domain contract on
   SQLite and the first shared backend?
 - Which shared backend ships first, and in which deployment mode?
+- Should the per-version fragments themselves become a client-facing read
+  path, so a resolver fetches only the versions a range can match? This would
+  extend the cache split above into the protocol.
 - What logical export format and coordinated metadata/blob backup process
   should operators use?
