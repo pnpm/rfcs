@@ -122,20 +122,45 @@ archive-derived verdict, and reports the difference to the publisher. The
 reverse direction, where the archive declares a script or dependency that the
 submitted manifest omits, is the attack and is always rejected.
 
-A survey of the 1,674 registry packages in pnpm/pnpm's lockfile (published by
-npm 1 through npm 12 and by lerna) compared each version's registry metadata
-with its archive's `package.json`:
+A survey compared each version's registry metadata with its archive's
+`package.json` in three samples: the 1,674 registry packages in pnpm/pnpm's
+lockfile, the latest version of the 5,000 most-downloaded packages (from
+[`npm-high-impact`](https://www.npmjs.com/package/npm-high-impact); 4 were no
+longer on the registry), and one randomly chosen older version of each of the
+top 2,000 (1,950 had one). Publishers range from npm 1 to npm 12 and lerna.
 
-| Difference | Packages |
-| --- | --- |
-| `bin` syntax only (`./` prefix, string versus object) | 43 |
-| `optionalDependencies` copied into `dependencies` | 3 |
-| `gypfile` and `node-gyp rebuild` with no `binding.gyp` in the archive (`fsevents@2.3.3`) | 1 |
-| `engines: {"node": "*"}` added (`nopt@1.0.10`, npm 1.0) | 1 |
-| Anything else | 0 |
+| Difference | Lockfile (1,674) | Top 5,000, latest (4,996) | Top 2,000, older (1,950) |
+| --- | --- | --- | --- |
+| `bin` syntax only (`./` prefix, string versus object) | 43 | 130 | 37 |
+| `optionalDependencies` copied into `dependencies` | 3 | 10 | 15 |
+| Empty map versus absent field | 0 | 5 | 14 |
+| `version` build metadata stripped (lerna canary builds) | 0 | 0 | 10 |
+| `engines: {"node": "*"}` added | 1 | 2 | 6 |
+| `directories.bin` expanded into `bin` | 0 | 3 | 0 |
+| `gypfile` install script added | 1 | 1 | 2 |
+| Git shorthand expanded to `github:` | 0 | 0 | 1 |
+| Anything else | 0 | 0 | 0 |
+| Packages that differ | 46 (2.7%) | 146 (2.9%) | 81 (4.2%) |
+
+The `gypfile` row is benign in two of its cases (`sharp@0.17.1`,
+`environment@0.0.1`): the archive contains `binding.gyp`, so the added script
+is what an installer runs anyway. The only version whose metadata claims a
+build its archive cannot run is `fsevents@2.3.3`, which appears in two
+samples.
 
 Packages published with current npm (10 to 12) still differ in `bin` syntax,
 for example `c8@12.0.0`, `eslint@10.13.0`, and `cross-env@10.1.0`.
+
+The profile therefore also normalizes:
+
+- An empty dependency map or `bin` object equals an absent field.
+- `directories.bin` expands into `bin` entries.
+- `version` compares without semver build metadata, which npm's version
+  cleaning drops. pnpm already reserves `+rN` build metadata for
+  [registry revisions](./0000-integrity-addressed-patch-revisions.md), so
+  whether pnpr should accept a publisher's build metadata at all is an open
+  question.
+- A hosted-git shorthand dependency equals its `github:` form.
 
 Registry-generated data such as the publisher identity, `dist.tarball`, and
 `_`-prefixed fields is not publisher-authored and is not compared. Deprecation
@@ -210,8 +235,8 @@ ordinary publication from a supported client is never rejected.
   rules and shrinkwrap treatment?
 - Should verification be mandatory immediately, or opt-in per hosted registry
   for an initial period? The survey above found no difference outside the
-  listed normalizations, which argues for mandatory once they are in the
-  profile.
+  listed normalizations across 8,620 versions, which argues for mandatory once
+  they are in the profile.
 - Does the installer-selected build file stay `binding.gyp`, while npm's
   `gypfile` step matches any `*.gyp`?
 - What diagnostics help publishers repair a rejected package?
