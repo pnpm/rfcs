@@ -209,12 +209,14 @@ its graph contribution is accepted, and rejected candidates can require more
 fetches. Lockfile-only resolution becomes much more expensive. A corpus study
 of upstream mismatches should precede choosing defaults.
 
-A first survey covered the 1,674 registry packages in pnpm/pnpm's lockfile.
-Before normalization, 46 differ between registry metadata and the archive's
-`package.json`. All 46 are explained by the publishing client's normalization:
-`bin` syntax (43), `optionalDependencies` copied into `dependencies` (3), the
-`gypfile` install-script injection (1), and an added `engines` default (1).
-No other differences were found. Once the profile defines those
+A survey compared registry metadata with the archive's `package.json` for
+8,620 versions: the 1,674 registry packages in pnpm/pnpm's lockfile, the latest
+version of the 5,000 most-downloaded packages, and a random older version of
+each of the top 2,000. Before normalization, 273 differ (about 3%). All 273
+are explained by the publishing client's normalization, mostly `bin` syntax
+and `optionalDependencies` copied into `dependencies`. The full table is in
+[pnpm/rfcs#47](https://github.com/pnpm/rfcs/pull/47). No other differences
+were found. Once the profile defines those
 normalizations
 ([pnpm/rfcs#47](https://github.com/pnpm/rfcs/pull/47)), "verify and match" is
 viable without frequent failures, and its cost is the archive downloads rather
@@ -308,9 +310,9 @@ private records cannot be read through digest paths.
 - Which signatures should clients require, and how are trust roots configured
   and rotated?
 - What does a corpus study show about upstream mismatches and verification
-  downloads, and which upstream mode should be the default? The first survey
-  above found only normalization differences. Download cost still needs
-  measuring.
+  downloads, and which upstream mode should be the default? The survey above
+  found only normalization differences across 8,620 versions. Download cost
+  still needs measuring.
 - Should publication evidence be its own RFC, together with a package-level
   publish policy that the registry enforces at acceptance, such as "only OIDC
   from this repository"?
