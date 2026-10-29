@@ -58,20 +58,29 @@ interpretation applies the same normalizations to both sides before comparing.
 The pnpr draft lists them under
 [publisher-side normalization](https://github.com/pnpm/rfcs/pull/47).
 
-A survey of the 1,674 registry packages in pnpm/pnpm's lockfile, published by
-npm 1 through npm 12 and by lerna, compared each version's registry metadata
-with its archive's `package.json`:
+A survey compared each version's registry metadata with its archive's
+`package.json` in three samples: the 1,674 registry packages in pnpm/pnpm's
+lockfile, the latest version of the 5,000 most-downloaded packages (from
+[`npm-high-impact`](https://www.npmjs.com/package/npm-high-impact); 4 were no
+longer on the registry), and one randomly chosen older version of each of the
+top 2,000 (1,950 had one). Publishers range from npm 1 to npm 12 and lerna.
 
-| Difference | Packages | Examples |
-| --- | --- | --- |
-| `bin` syntax only (`./` prefix, string versus object) | 43 | `eslint@10.13.0`, `glob@11.1.0`, `c8@12.0.0` |
-| `optionalDependencies` copied into `dependencies` (npm 9 and earlier, lerna) | 3 | `jest-haste-map@29.7.0`, `jsonfile@4.0.0` |
-| `gypfile` and `node-gyp rebuild` in metadata, no `binding.gyp` in the archive | 1 | `fsevents@2.3.3` ([npm/cli#8714](https://github.com/npm/cli/issues/8714)) |
-| `engines: {"node": "*"}` added | 1 | `nopt@1.0.10` |
-| Anything else | 0 | |
+| Difference | Lockfile (1,674) | Top 5,000, latest (4,996) | Top 2,000, older (1,950) | Examples |
+| --- | --- | --- | --- | --- |
+| `bin` syntax only (`./` prefix, string versus object) | 43 | 130 | 37 | `eslint@10.13.0`, `glob@11.1.0` |
+| `optionalDependencies` copied into `dependencies` | 3 | 10 | 15 | `jest-haste-map@29.7.0` |
+| Empty map versus absent field | 0 | 5 | 14 | `assert-plus@latest` |
+| `version` build metadata stripped | 0 | 0 | 10 | lerna canary builds |
+| `engines: {"node": "*"}` added | 1 | 2 | 6 | `nopt@1.0.10` |
+| `directories.bin` expanded into `bin` | 0 | 3 | 0 | `esbuild-wasm@latest` |
+| `gypfile` install script added | 1 | 1 | 2 | `fsevents@2.3.3` ([npm/cli#8714](https://github.com/npm/cli/issues/8714)) |
+| Git shorthand expanded to `github:` | 0 | 0 | 1 | `table@2.1.0` |
+| Anything else | 0 | 0 | 0 | |
+| Packages that differ | 46 (2.7%) | 146 (2.9%) | 81 (4.2%) | |
 
-Without normalization, 46 of 1,674 packages (2.7%) would fail, among them
-`eslint`, `glob`, and `fsevents`. With the normalizations, none fail.
+Without normalization, about 3% of packages would fail, among them `eslint`,
+`glob`, and `fsevents`. With the normalizations, none of the 8,620 versions
+fail.
 
 The direction of a difference matters:
 
@@ -131,9 +140,7 @@ Target pnpm v12. Do not add a feature to pnpm v11.
 Tests must cover a dependency present only in the archive, a script present
 only in the archive, mismatched platform fields, store hits, and frozen
 installs. Each normalization needs a fixture taken from a real package in the
-survey, and `fsevents@2.3.3` must install. Repeat the survey on a larger
-sample, such as the most-downloaded packages and a random sample of all
-versions, before choosing the default.
+survey, and `fsevents@2.3.3` must install.
 
 ## Prior Art
 
@@ -144,9 +151,9 @@ versions, before choosing the default.
 ## Unresolved Questions and Bikeshedding
 
 - Should a mismatch fail by default, given that historical mismatches exist on
-  the public npm registry? The first survey found no difference outside the
-  listed normalizations, which supports failing by default. A larger sample
-  should confirm it.
+  the public npm registry? The survey found no difference outside the listed
+  normalizations across 8,620 versions, including the most-downloaded
+  packages and older versions of them, which supports failing by default.
 - What is the setting name and shape for the per-package allowance?
 - Which install-critical fields does the lockfile need to record so frozen
   installs can compare all of them?
