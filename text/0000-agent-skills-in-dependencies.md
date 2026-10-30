@@ -154,35 +154,25 @@ The scan avoids creating directories because the absence of one carries no instr
 
 Paths are relative to the workspace root.
 
-Skill discovery in these directories is one level deep, so entries are flat and named:
+Skill discovery in these directories is one level deep, so entries are flat. Each is named after the skill's directory in the package:
 
 ```
-pnpm-<package>-<skill>
+<skill>
 ```
 
-The package segment is escaped the way pnpm already escapes one for the virtual store, so `@supabase/supabase-js` becomes `@supabase+supabase-js` — `dep_path_to_filename` is the existing implementation. Without it, `@supabase/supabase-js` with a skill `auth` and a package `supabase` with a skill `supabase-js-auth` would flatten to the same name, and which link survived would depend on installation order.
+The [Agent Skills specification](https://agentskills.io/specification) requires a skill's directory to match the `name` in its `SKILL.md`, and limits names to `a-z`, `0-9` and `-`. Agents differ in which of the two they show: Cursor and VS Code use the directory, Copilot CLI uses `name`, and Cursor warns when they disagree. Any prefix pnpm adds breaks that rule, so the link takes the skill's own name and nothing else. pnpm still does not read `SKILL.md`: a package that follows the specification has already named the directory after the skill.
 
-Escaping removes the scoped case but not every one: two unscoped packages can still collide across the package-skill boundary. pnpm therefore also detects a collision before writing and fails, rather than letting one approved skill silently replace another.
+pnpm does not check a directory name against the specification, so `skills/foo_bar/` is linked as `foo_bar`. The name is the package author's, and no other name pnpm could choose would conform while still matching `SKILL.md`. Whether to load such a skill is the agent's decision. Failing the install instead would block the package's other skills over its naming. pnpm skips only the names it cannot link safely, described below.
 
-The package segment comes from whichever part of the source's identity is actually unique.
+A package-qualified name, `pnpm-<package>-<skill>`, was what pnpm 12.11 shipped. It was stable and traceable, and it separated two vendors' skills of the same name, but every link it produced violated the specification. skills-npm reached the same conclusion and moved from `npm-<package>-<skill>` to bare names in its second major version.
 
-- **A registry package** uses its package name. npm guarantees these are unique, so nothing further is needed.
-- **A git-hosted package** uses its package name too, which is what its manifest declares, or `@owner/repo` when it has no manifest. Both are unique, so nothing further is needed here either. This relies on the git naming change described below.
-- **Anything else** — a tarball URL, a `file:` dependency — uses the dependency key the project declared, since these have no short unique identity to derive one from.
+Two approved packages can ship a skill of the same name. pnpm detects that before writing and fails, rather than letting one approved skill silently replace another, and the error points at denying one of them in `permissions`. The same check covers two sources of one package name whose versions are not comparable, such as a fork pinned by git in one project and the registry copy in another: different skills both link, and a skill of the same name fails.
 
-The pkgId is never used: `pnpm-foo@https+++codeload.github.com+user+repo+abc123-migrations` is a directory name nobody can read, and the link is a label rather than an identity. The collision check above remains as a backstop for whatever this scheme still fails to separate.
+An entry already in the way that pnpm did not create, such as a hand-authored skill or one installed by another tool, also fails the install rather than being replaced.
 
-Two properties are worth the extra rule. The names are **stable** — adding a second vendor never renames the first vendor's links, which a disambiguate-only-on-collision scheme could not promise, and an agent's skill directory changing underneath it is worse than a long name. And they are **traceable**: `pnpm-vercel-labs-agent-skills-composition-patterns` says where the skill came from, which a bare `agent-skills` does not.
+A skill directory whose name is hidden or contains a control character is skipped, because it cannot be listed safely in the ignore file described below.
 
-Deriving from the declared key everywhere was considered and rejected. A key is unique within one `package.json`, so it separates two vendors inside a single project, but it says nothing across a workspace: two projects may each declare `agent-skills` for different repositories, and the collision would return. Keying on names that merely *look* like skill collections — matching `skills` as a substring — was also rejected: it would catch `my-skills-helper` and miss `agent-kit`, and it makes the naming rule depend on what a repository happens to be called.
-
-That leaves one case the version rule cannot arbitrate. Two sources can supply the same package name — a fork pinned by git in one project and the registry copy in another — and their versions are not comparable, since two git refs can each declare `1.0.0`. "Highest version wins" has no meaning across them, so neither is preferred and both materialise.
-
-This needs no rule of its own: it resolves through the collision check above, which compares generated link names rather than package names. Two sources shipping different skills produce different names and both link. Two shipping a skill of the same name produce the same link name and fail, which is the same failure any other collision produces.
-
-The prefix is pnpm's own, not the `npm-` that skills-npm writes. Sharing that prefix would have made the two tools produce the same name for the same skill, which is a collision rather than coexistence, and would have left pnpm unable to tell its own entries from another tool's when pruning.
-
-The prefix marks intent, but it cannot establish ownership on its own, because an entry is not always a symlink: the Windows fallback produces a junction or a copy, and a copy carries no target to inspect. pnpm therefore records the entries it materialises in `.modules.yaml`, and prunes exactly those. Anything it did not record is left alone whatever its name or type, so a hand-authored skill, or one written by another tool, is never replaced or deleted.
+Without a prefix, the name no longer marks ownership. pnpm records the entries it materialises in `.modules.yaml` and prunes only those. Because that file is not trusted to name only pnpm's entries, a recorded entry is removed only when it is a relative path within the target directory and a link whose target is a `skills/<name>` directory under a `node_modules`. Anything else is left alone whatever its name or type, so a hand-authored skill is never deleted. Links named by the earlier scheme satisfy the same test, so they are replaced on the next install that syncs skills.
 
 Links point at the skill **directory**, never at `SKILL.md`, because a skill's supporting files are referenced relatively.
 
@@ -190,14 +180,17 @@ Every install reconciles the recorded entries against the directories currently 
 
 ### Git
 
-A symlink into `node_modules` dangles on a fresh clone, so these entries cannot be committed. Because hand-authored skills live in the same directory and generally *are* committed, the exclusion has to be per entry rather than per directory. pnpm writes a nested ignore file, merging rather than overwriting:
+A symlink into `node_modules` dangles on a fresh clone, so these entries cannot be committed. Because hand-authored skills live in the same directory and generally *are* committed, the exclusion has to be per entry rather than per directory. pnpm keeps a nested ignore file with a block that lists each entry it links there, anchored to the directory and with pattern characters escaped:
 
 ```
 # .claude/skills/.gitignore
-pnpm-*
+# pnpm
+/auth
+/composition-patterns
+# pnpm end
 ```
 
-This keeps pnpm out of the root `.gitignore`, and the `pnpm-` prefix serves three purposes at once: staying clear of other tools' entries, marking ownership for pruning, and giving the ignore rule one stable pattern.
+The markers are the ones `pnpm setup` already uses in shell rc files. pnpm rebuilds the block from the current links whenever it links or prunes skills, on install and on approval, so its correctness does not depend on the record in `.modules.yaml`: a rule for a skill that is gone is removed even after `node_modules` was deleted. Lines outside the block belong to the user and are never touched, even one that repeats a rule pnpm writes. When nothing is linked the block is removed, and so is a file left empty. This keeps pnpm out of the root `.gitignore`.
 
 ### What pnpm deliberately does not do
 
@@ -267,7 +260,7 @@ A changeset targets `pacquet`.
 
 ## Prior Art
 
-- **skills-npm** (antfu) — globs `node_modules/**/skills/*/SKILL.md` and symlinks into agent directories as `npm-<package>-<skill>`. Deliberately defines no manifest field. Requires a `prepare` script the user opts into. This RFC adopts its directory convention, but not its link naming: a shared prefix would collide on the same skill and would make the two tools' entries indistinguishable when pruning.
+- **skills-npm** (antfu) — globs `node_modules/**/skills/*/SKILL.md` and symlinks into agent directories as `npm-<package>-<skill>`. Deliberately defines no manifest field. Requires a `prepare` script the user opts into. Its second major version names links after the skill, as the specification requires, and identifies its own links by their target. This RFC adopts its directory convention and the same naming.
 - **agentskills/agentskills#81** and **npm-agentskills** (onmax) — proposed an `agentskills` field with an exporter to `.claude/skills/` and `.github/skills/`. Closed as not planned.
 - **node-agent-skill-coordinator** (netresearch) — writes discovered skills into `AGENTS.md` from a `postinstall` hook, which pnpm users must allowlist.
 - **skills** (vercel-labs) — installs skills from git repositories into agent directories. Solves installation rather than discovery, and is version-decoupled from the package a skill documents.
@@ -284,4 +277,4 @@ A changeset targets `pacquet`.
 - **How many agents to recognise.** The environment table maps a variable to a directory, which is narrower than knowing whether some agent is running, but it still has to be maintained. How many entries are worth carrying before the explicit setting is the better answer is an open question.
 - **Global and `dlx` installs.** Whether globally installed packages should link into `~/.claude/skills/`, and whether `pnpm dlx` should participate at all.
 - **Reporting wording** is settled in the permissions RFC, which replaces `Ignored build scripts:` with one section covering every pending capability.
-- **Interaction with `npx skills`.** Distinct prefixes keep the two tools from overwriting or pruning each other, at the cost of a skill installed by both routes appearing twice under different names.
+- **Interaction with `npx skills` and skills-npm.** All three tools now link a skill under its own name. pnpm never replaces an entry it did not create, so a skill already installed by another tool fails the install until one of the two is removed. Whether pnpm should instead skip such an entry, as skills-npm does, is open.
