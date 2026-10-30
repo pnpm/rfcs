@@ -49,6 +49,14 @@ The pattern has costs beyond lockfile churn:
 - **Loader shims.** The main package must `try`/`catch` its way through
   `require` calls to find the installed variant, and CLIs need a JavaScript
   `bin` shim that spawns the real executable.
+- **Install scripts anyway.** Of 32 popular packages that use the pattern
+  (October 2026, see [Migration](#migration)), 14 still ship an install
+  script: esbuild, `@swc/core`, deno, bun, `@anthropic-ai/claude-code`,
+  workerd, dprint, `@ast-grep/cli`, `@bufbuild/buf`, `@sentry/cli`,
+  `unrs-resolver`, `@parcel/watcher`, lmdb, and `msgpackr-extract`. Most of
+  them replace the JavaScript `bin` shim with the native executable, or
+  install the platform package that npm dropped. Each one asks for an
+  `allowBuilds` entry in pnpm.
 
 **Install-script downloads.** node-pre-gyp, prebuild-install, sharp before
 0.33, puppeteer, and electron download binaries in an install script. Those
@@ -74,7 +82,28 @@ A version has:
 - one **primary** archive, installed when no variant matches. It can contain a
   portable implementation (JavaScript or wasm), a source build, or only an error
   that names the supported platforms;
-- zero or more **variants**, each an archive plus a **platform tag**.
+- zero or more **variants**, each an archive, a **tag** that names it, and the
+  list of **platforms** it runs on.
+
+A variant usually has one platform. It lists several when one build serves
+several hosts:
+
+- A statically linked Linux executable runs on glibc and musl hosts. Go tools
+  (esbuild, `@typescript/native-preview`, `@bufbuild/buf`, gh, golangci-lint)
+  ship one Linux build per CPU, and typst and ripgrep ship only musl builds
+  for x64, which glibc hosts use too.
+- A macOS universal binary, such as protoc's and CMake's, serves `x64` and
+  `arm64`.
+- `turbo` and `@sentry/cli` already declare one Linux build for `linux` and
+  `android` (and `freebsd`) in their `os` field.
+
+A version with variants may omit the primary. That fits tools with no portable
+implementation, such as a Go or Rust CLI. pnpm then fails on a host that no
+variant matches, with an error that lists the published platforms, and skips
+the package when it is an optional dependency. npm clients get a primary that
+pnpr generates: a `package.json` with the version's name, version, and the
+union of the variants' `os` and `cpu`, so npm reports an unsupported platform
+instead of installing an empty package.
 
 A variant archive is a complete package for its platform, not an overlay on
 the primary. Its `package.json` has the same `name` and `version` as the
@@ -92,14 +121,29 @@ rejects the version unless:
 
 - every variant's `name` and `version` equal the primary's;
 - every variant's dependency fields (`dependencies`, `optionalDependencies`,
-  `peerDependencies`, `peerDependenciesMeta`, `bundleDependencies`) equal the
-  primary's, so the dependency graph does not depend on the platform;
+  `peerDependencies`, `peerDependenciesMeta`) equal the primary's, after
+  removing from each archive the names it bundles (`bundleDependencies`), so
+  the dependency graph does not depend on the platform;
 - no variant requires a build (`dist.pnpr.requiresBuild` is false), so a
   variant never needs an `allowBuilds` entry;
-- no two variants have the same platform tag.
+- every variant's `os`, `cpu`, and `libc` fields, if present, include each of
+  its platforms;
+- no two variants have the same tag, and no two variants list the same
+  platform with the same floors, so no host can tie between them.
 
-A variant may differ from the primary in its files, `bin`, `main`, `exports`,
-and `engines`.
+A variant may differ from the primary in its files, bundled dependencies,
+`bin`, `main`, `exports`, and `engines`. The primary may require a build: a
+source build is a fallback, and it needs an `allowBuilds` entry only on hosts
+that link the primary.
+
+Bundling is how a fallback tier carries a runtime the other tiers do not need.
+napi-rs `wasm32-wasi` packages depend on `@napi-rs/wasm-runtime` and `@emnapi/*`
+(about 4 MB unpacked); `@tailwindcss/oxide-wasm32-wasi` already bundles them,
+while `@rspack/binding-wasm32-wasi` and `@unrs/resolver-binding-wasm32-wasi`
+declare them as dependencies. sass-embedded's fallback depends on the
+pure-JavaScript `sass` (6 MB). Declared as dependencies of every archive, those
+would be installed on every host. Bundled into the `wasm32` variant or the
+primary, they are installed only where that archive is linked.
 
 ### Platform tags
 
@@ -122,6 +166,21 @@ Examples: `linux-x64`, `linux-x64-musl`, `linux-x64-manylinux_2_28`,
 `darwin-arm64`, `win32-x64`. The string form of the floors and ABI fields is
 an unresolved question.
 
+A variant's tag is its name in routes and the lockfile. For a variant with one
+platform it is that platform's tag; for one with several, the publisher picks a
+name in the same character set, such as `linux-x64-static` or
+`darwin-universal`.
+
+`process.arch` reports `arm` for both ARMv6 and ARMv7. napi-rs builds `arm`
+as ARMv7 (`gnueabihf`, `musleabihf`), and the vocabulary keeps that meaning. gh,
+golangci-lint, and gitleaks also publish ARMv6 builds, which would need an
+`armVersion` floor added to the vocabulary later.
+
+`nodeAbi` is matched against the runtime the addon loads into, not the Node.js
+that runs pnpm. An Electron app sets that runtime and version in its
+configuration, as `@electron/rebuild` takes them today. Without it, the host
+Node.js is used.
+
 The vocabulary is versioned. A tag with a field the client does not know is
 not selectable, so an older client falls back to the primary archive instead
 of guessing. pnpr's [shared side-effects cache](https://pnpm.io/pnpr/shared-side-effects-cache#platform-compatibility)
@@ -130,14 +189,15 @@ should be one specification with shared test vectors.
 
 ### Selection
 
-For a host, the client keeps the variants whose every field matches, then
-picks one in this order:
+For a host, the client keeps the variants with a platform whose every field
+matches, then picks one in this order, comparing each variant by its best
+matching platform:
 
 1. Variants with more matched fields, without `wasm32`.
 2. Among those, the highest `libcVersion`, then the highest `osVersion`, then
    the highest `napi`.
 3. A `wasm32` variant.
-4. The primary archive.
+4. The primary archive, if the version has one.
 
 If two variants still tie, publication should have rejected the version. The
 client fails rather than pick one.
@@ -159,11 +219,25 @@ publisher-supplied `dist.pnpr` fields, as it does today:
       "requiresBuild": false,
       "variants": [
         {
-          "platform": { "os": "linux", "cpu": "x64", "libc": "glibc", "libcVersion": "2.17", "napi": 8 },
           "tag": "linux-x64-manylinux_2_17",
+          "platforms": [
+            { "os": "linux", "cpu": "x64", "libc": "glibc", "libcVersion": "2.17", "napi": 8 }
+          ],
           "integrity": "sha512-<variant tar digest>",
           "tarball": "https://registry.example/fast-thing@1.4.0/variants/linux-x64-manylinux_2_17",
           "unpackedSize": 9123456,
+          "fileCount": 4,
+          "bins": { "fast-thing": { "path": "bin/fast-thing" } }
+        },
+        {
+          "tag": "darwin-universal",
+          "platforms": [
+            { "os": "darwin", "cpu": "x64", "osVersion": "11.0" },
+            { "os": "darwin", "cpu": "arm64", "osVersion": "11.0" }
+          ],
+          "integrity": "sha512-<variant tar digest>",
+          "tarball": "https://registry.example/fast-thing@1.4.0/variants/darwin-universal",
+          "unpackedSize": 18234567,
           "fileCount": 4,
           "bins": { "fast-thing": { "path": "bin/fast-thing" } }
         }
@@ -175,7 +249,18 @@ publisher-supplied `dist.pnpr` fields, as it does today:
 
 The full and abbreviated documents both carry `dist.pnpr.variants`, so
 resolution needs one document per package. `integrity` is the digest of the
-uncompressed tar, as for every pnpr archive.
+uncompressed tar, as for every pnpr archive. The abbreviated document omits
+`tarball`, which the client derives from the route below.
+
+The package's own document grows by what the variant documents carried for
+the same versions, minus their repeated names and manifests. Rebuilding
+today's data in this shape, gzipped: `esbuild` gains about 0.2 MB in place of
+1.0 MB across 26 documents, `@swc/core` 0.6 MB in place of 2.8 MB across 12,
+and rollup 0.3 MB in place of 0.9 MB across 27.
+
+A package with per-ABI addons multiplies that. better-sqlite3 12.x attached 145
+prebuilds to each GitHub release (105 for Electron ABIs, 40 for Node.js). Such
+a package should move to N-API before it moves to variants.
 
 ### Archive routes
 
@@ -201,18 +286,28 @@ packages:
     resolution:
       type: variations
       variants:
-        - resolution:
+        - tag: linux-x64-musl
+          resolution:
             integrity: sha512-<linux-x64 musl digest>
           targets:
             - os: linux
               cpu: x64
               libc: musl
-        - resolution:
+        - tag: linux-x64-manylinux_2_17
+          resolution:
             integrity: sha512-<linux-x64 glibc digest>
           targets:
             - os: linux
               cpu: x64
               libcVersion: '2.17'
+        - tag: darwin-universal
+          resolution:
+            integrity: sha512-<darwin universal digest>
+          targets:
+            - os: darwin
+              cpu: x64
+            - os: darwin
+              cpu: arm64
       fallback:
         integrity: sha512-<primary digest>
 ```
@@ -220,12 +315,16 @@ packages:
 The lockfile is the same on every machine. No optional node exists for an
 installer to drop, and a frozen install on a new platform needs no
 resolution. The archive route is rebuilt from the package key and the
-target's tag, so entries stay integrity-only like other registry entries.
+variant's `tag`, so entries stay integrity-only like other registry entries.
+A target without `libc` on Linux means glibc, as in the existing type; a
+static build lists a glibc target and a musl target.
 
-Two changes to the existing type are needed:
+Three changes to the existing type are needed:
 
+- A variant gains `tag`.
 - `targets` gain the floor and ABI fields from the tag table.
-- A `fallback` resolution holds the primary archive.
+- A `fallback` resolution holds the primary archive. It is absent when the
+  version has no primary.
 
 `VariationsResolution` and its targets reject unknown fields today, so
 pnpm v12 releases that predate this RFC fail to parse such a lockfile instead
@@ -241,6 +340,17 @@ of installing the wrong archive.
   linked under a package's name. The linked one is the host's, or, if
   `supportedArchitectures` lists exactly one platform and omits `current`,
   that platform's.
+- The linked variant depends on the host, so the virtual store directory of a
+  package with variants is keyed by the selected archive's integrity, not only
+  by name and version. A global virtual store shared by an arm64 Node.js and an
+  x64 Node.js under Rosetta, or by two Node.js versions that select different
+  `nodeAbi` variants, then keeps both. A change of host Node.js relinks
+  packages whose selection depends on `napi` or `nodeAbi`.
+- Some tools need another platform's build next to the host's: Prisma's
+  `binaryTargets`, electron-builder packaging for another OS, a Lambda bundle
+  built on macOS. They can read the variants fetched for
+  `supportedArchitectures` from the store through an API that this RFC leaves
+  open; they are not linked under the package's name.
 - Server-side resolution through pnpr already produces platform-neutral
   lockfiles. It writes `variations` entries without change to its protocol.
 
@@ -265,6 +375,13 @@ Command names are placeholders. Approval runs the invariants above against
 the complete set, so a missing or mismatched variant fails the release before
 anything is visible.
 
+Each archive carries its own provenance statement, from the job that built it.
+Approval rejects the set unless every statement names the same source
+repository and commit, so a matrix job cannot attach a build of other source.
+The trust level of the version is the weakest among its archives, as the
+[`tool:` protocol](../../text/0000-tool-protocol.md) defines for tools that
+ship as platform archives.
+
 ### Clients that do not read variants
 
 npm, Yarn, and Bun ignore `dist.pnpr` and install the primary archive. A
@@ -277,6 +394,57 @@ then needs the loader that esbuild-style packages ship today. pnpm ignores
 the generated entries when it reads `dist.pnpr.variants`.
 
 This view is optional and can ship after the rest.
+
+## Migration
+
+Popular packages, checked against their October 2026 releases on npm:
+
+| Package | Today | As variants |
+| --- | --- | --- |
+| esbuild, `@biomejs/biome`, oxlint, dprint, `@ast-grep/cli`, `@typescript/native-preview`, `@tauri-apps/cli`, `@openai/codex`, deno, bun, workerd | 6–26 platform packages and a `bin` shim; several have a postinstall that swaps the shim for the executable | Variants whose `bin` is the executable. The postinstall goes away. The JavaScript is under 3 MB, so each variant can carry it. |
+| `@swc/core`, lightningcss, oxc-parser, `@rspack/binding`, `@napi-rs/canvas`, `@parcel/watcher` | napi-rs or prebuild addon packages; a `try`/`catch` loader | Variants with the addon, selected by `napi`. The `wasm32-wasi` packages of `@rspack/binding` and `unrs-resolver` must bundle their wasm runtime. |
+| rollup, rolldown, `@tailwindcss/oxide` | Addon packages, plus a separate `@rollup/wasm-node` or a `wasm32-wasi` package | Variants. rollup's JavaScript (3.0 MB) is larger than its addon (2.7 MB), so a separate binding package with variants avoids doubling each download. |
+| next | `@next/swc-*`, up to 110 MB each, under a 192 MB package | Variants of a `@next/swc` package that next depends on. next itself stays one archive. |
+| sharp | `@img/sharp-*` addons, each depending on `@img/sharp-libvips-*`, plus `wasm32` packages | Two packages with variants: sharp, and a libvips package with an empty primary, so libvips keeps its separate license and release cadence. The `wasm32` variant bundles `@emnapi/runtime`. |
+| esbuild, `@bufbuild/buf`, `@vscode/ripgrep`, turbo, `@sentry/cli` | Linux packages without `libc`, which npm installs on musl too | One variant listing a glibc and a musl platform, plus `android` for turbo. |
+| sass-embedded | Platform packages, and fallback packages selected by negated `os` and `cpu` that depend on `sass` | Variants, and a primary that bundles `sass`. |
+| better-sqlite3 12.x, canvas, sqlite3, bcrypt, re2, node-pty | prebuild-install or node-gyp-build downloads or bundles, with a source build as fallback | Variants by `napi`, or by `nodeAbi` for packages not on N-API; the primary keeps the source build behind `allowBuilds`. |
+| onnxruntime-node | One 307 MB archive with every platform, plus a postinstall for GPU providers | CPU builds as variants, so a host downloads only its own. GPU providers do not fit; see below. |
+| electron | A platform build downloaded outside the package | Variants of the platform build. Packaging for another OS needs the store API above. |
+
+Some do not fit, and should keep separate packages:
+
+- **Builds for the same platform that differ in features.** node-llama-cpp
+  ships CPU, CUDA, Vulkan, and Metal builds for one OS and CPU, and picks at
+  run time. Hugo ships standard and `extended` builds. The vocabulary has no
+  accelerator dimension, and a variant cannot be chosen at run time.
+- **Assets versioned apart from the package.** Puppeteer's Chrome and
+  Playwright's browsers are pinned by browser build, shared across projects in
+  a user cache, and hundreds of megabytes each. A browser could be its own
+  package with variants, but that is a change in those tools, not a migration.
+
+### Tools outside npm
+
+Executables now distributed only as GitHub release archives match the model:
+gh, uv, ruff, golangci-lint, shellcheck, actionlint, jq, ripgrep, fd,
+protoc, helm, typst, hugo, gitleaks, trivy, k6, hadolint, and shfmt. Each
+release has one archive per platform, built by a CI matrix. Publishing to pnpr
+would replace the per-tool definitions of the
+[`tool:` protocol](../../text/0000-tool-protocol.md), and give them one
+publication, integrity in the lockfile, provenance, and a proxy.
+
+What they need from this RFC:
+
+- variants with several platforms, since most of their Linux builds are static
+  and protoc and CMake ship macOS universal binaries;
+- versions with no primary;
+- a variant archive with only an executable and a generated `package.json`,
+  since these projects do not maintain one. The repackaging from `.zip`,
+  `.tar.xz`, or a bare executable belongs in the publisher command.
+
+Two limits remain. Versions must be semver, so tools such as jq (`jq-1.8.2`)
+need a mapping. And several tools ship no Windows or macOS arm64 build, so
+those hosts would need emulation, which is an unresolved question below.
 
 ## Rationale and Alternatives
 
@@ -299,7 +467,9 @@ This view is optional and can ship after the rest.
    download by more than ten.
 4. **Variants as overlays on the primary archive.** It saves duplicating the
    JavaScript in each variant, but makes extraction a merge with conflict rules.
-   Duplicated JavaScript costs little next to the native binary.
+   Duplicated JavaScript costs little next to the native binary, and where it
+   does not, as in next and rollup, the native code can move to its own
+   package with variants.
 
 ## Implementation
 
@@ -321,8 +491,12 @@ Target pnpr and pnpm v12. Do not add a feature to pnpm v11.
 Tests must cover selection order with floors and `wasm32`, an unknown tag
 field falling back to the primary, a frozen install on a platform that did not
 resolve the lockfile, a variant whose dependencies differ from the primary's
-(rejected), a variant that requires a build (rejected), a stage approved with a
-missing variant, and variants under a registry revision.
+(rejected), a `wasm32` variant whose extra dependencies are bundled
+(accepted), a variant that requires a build (rejected), a static Linux variant
+selected on a musl host, a version without a primary on an unmatched host, two
+variants that list the same platform (rejected), a stage approved with a
+missing variant or with provenance from another commit, and variants under a
+registry revision.
 
 ## Prior Art
 
@@ -343,9 +517,17 @@ missing variant, and variants under a registry revision.
 
 - The string form of floors and ABI fields in tags, for example
   `darwin-arm64-macos_11_0` or `linux-x64-manylinux_2_17-napi8`.
-- Should a variant be allowed extra dependencies, such as sharp's separate
-  `libvips` packages, or must every native library be inside the variant
-  archive or be its own package with variants?
+- Should a variant be allowed extra dependencies? Every case in
+  [Migration](#migration) is covered by bundling or by a separate package with
+  variants (sharp's libvips), but a package whose native library is shared by
+  several dependents would install it on every platform.
+- Should a host select a variant for an emulated CPU, such as an `x64`
+  executable on macOS `arm64` under Rosetta or on Windows `arm64`? It works for
+  executables but never for addons, which load into the host's Node.js
+  process, so the variant would have to declare that it is an executable.
+- Should the vocabulary gain an accelerator dimension (CUDA, ROCm, Vulkan,
+  Metal), as Python's WheelNext wheel variants proposal does? Such a
+  dimension cannot be detected as reliably as the OS and CPU.
 - Can a variant be added to a published version for a platform not yet
   covered, for example a new Electron ABI, without a revision? It would need
   the same publisher identity and a lockfile refresh rule.
