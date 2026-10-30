@@ -328,7 +328,12 @@ Three changes to the existing type are needed:
 
 `VariationsResolution` and its targets reject unknown fields today, so
 pnpm v12 releases that predate this RFC fail to parse such a lockfile instead
-of installing the wrong archive.
+of installing the wrong archive. That holds only under `--frozen-lockfile`.
+Without it, those releases report the lockfile as broken, resolve again, link
+the primary, and write the lockfile back without variants, so one teammate on
+an older pnpm silently removes every variant from the repository. The
+lockfile must carry a marker that older releases reject in every mode, such
+as a new `lockfileVersion`.
 
 ### Install
 
@@ -336,7 +341,9 @@ of installing the wrong archive.
   it as the package. `bin` entries point directly at the variant's executable,
   so CLIs need no spawning shim.
 - `supportedArchitectures` decides which variants are fetched into the store,
-  for `pnpm fetch`, Docker images, and Lambda bundles. Only one variant can be
+  for `pnpm fetch`, Docker images, and Lambda bundles: every variant that
+  matches a platform in its cross product of `os`, `cpu`, and `libc`, and the
+  primary when one of those platforms matches none. Only one variant can be
   linked under a package's name. The linked one is the host's, or, if
   `supportedArchitectures` lists exactly one platform and omits `current`,
   that platform's.
@@ -344,8 +351,16 @@ of installing the wrong archive.
   package with variants is keyed by the selected archive's integrity, not only
   by name and version. A global virtual store shared by an arm64 Node.js and an
   x64 Node.js under Rosetta, or by two Node.js versions that select different
-  `nodeAbi` variants, then keeps both. A change of host Node.js relinks
-  packages whose selection depends on `napi` or `nodeAbi`.
+  `nodeAbi` variants, then keeps both.
+- The installer records which archive it linked for each package with
+  variants, and relinks the package when the selection changes: a change to
+  `supportedArchitectures`, a `node_modules` mounted into a musl container,
+  or a new host Node.js for a selection that depends on `napi` or `nodeAbi`.
+  The lockfile and the package key do not change in any of these cases, so
+  nothing else tells the installer that the linked archive is stale.
+- The primary's `dist.pnpr` facts, such as `requiresBuild`, `bins`, and its
+  sizes, describe only the primary. A client uses each variant's own entry
+  for the archive it links.
 - Some tools need another platform's build next to the host's: Prisma's
   `binaryTargets`, electron-builder packaging for another OS, a Lambda bundle
   built on macOS. They can read the variants fetched for
@@ -356,7 +371,8 @@ of installing the wrong archive.
 
 ### Publication
 
-All archives of a version are published in one transaction: the
+Each archive is uploaded in its own request and recorded in a stage, and all
+archives of a version become visible in one transaction: the
 [journaled batch publish](https://pnpm.io/pnpr/ecosystems#one-publish-for-a-workspace-that-spans-ecosystems)
 today, and the [atomic workspace publication](https://github.com/pnpm/rfcs/pull/46)
 transaction when it lands. Variants are usually built by separate CI matrix
@@ -375,6 +391,10 @@ Command names are placeholders. Approval runs the invariants above against
 the complete set, so a missing or mismatched variant fails the release before
 anything is visible.
 
+One request cannot carry a whole release. esbuild's 26 variants are about 140 MB
+once base64-encoded in an npm publish body, over a 100 MB limit, and biome's 10
+are 310 MB before encoding. Limits apply to each archive, not to the release.
+
 Each archive carries its own provenance statement, from the job that built it.
 Approval rejects the set unless every statement names the same source
 repository and commit, so a matrix job cannot attach a build of other source.
@@ -384,16 +404,19 @@ ship as platform archives.
 
 ### Clients that do not read variants
 
-npm, Yarn, and Bun ignore `dist.pnpr` and install the primary archive. A
-publisher that wants those clients to get native code can ask pnpr for a
-generated compatibility view: the primary version's npm-visible
+npm, Yarn, and Bun ignore `dist.pnpr` and install the primary archive. For
+esbuild or biome that primary has no binary, so those users get a package
+that fails when it runs. A publisher whose users are not all on pnpm needs
+either a primary that works everywhere, such as a wasm build, or a generated
+compatibility view: the primary version's npm-visible
 `optionalDependencies` lists one reserved name per variant, and each reserved
 name serves a single version with the variant's `os`, `cpu`, `libc`, and
 archive. Reserved names cannot be published directly. The primary archive
 then needs the loader that esbuild-style packages ship today. pnpm ignores
 the generated entries when it reads `dist.pnpr.variants`.
 
-This view is optional and can ship after the rest.
+A publisher that needs the view cannot migrate until pnpr serves it, so it
+ships with the rest, not after it.
 
 ## Migration
 
@@ -446,6 +469,41 @@ Two limits remain. Versions must be semver, so tools such as jq (`jq-1.8.2`)
 need a mapping. And several tools ship no Windows or macOS arm64 build, so
 those hosts would need emulation, which is an unresolved question below.
 
+## Prototype
+
+A prototype implemented the pnpr publication checks, `dist.pnpr.variants`, the
+variant route, and the pnpm resolution, lockfile, and install parts, without
+staged publishing, the floor and ABI fields, `wasm32`, or the compatibility
+view. Real packages from npm were converted into a primary and variants and
+published to a local pnpr, then installed by real projects:
+
+| Scenario | Result |
+| --- | --- |
+| esbuild 0.28.2 (26 variants), `@biomejs/biome` 2.6.4 (10), typst 0.15.1 from GitHub releases (5) | `bin` links the native executable directly. The JavaScript shims, platform packages, and esbuild's postinstall are gone. |
+| A Vite 8 app (rolldown with 15 variants, lightningcss) and a Tailwind 4 CLI app (`@tailwindcss/oxide`, lightningcss) | Both build. The napi-rs loaders of rolldown, oxide, and lightningcss already try a local `.node` file first, so their variants needed no JavaScript change. esbuild needed one line. |
+| The same lockfile, frozen, with `supportedArchitectures` set to glibc, musl, darwin-arm64, win32-x64, freebsd-x64, and an unknown OS | Each gets its variant; the unknown OS gets the primary. The lockfile does not change. |
+| Resolution with a different `supportedArchitectures`, and resolution by pnpr's server-side resolver | The lockfile is byte-identical to a local resolution on the host. |
+| The musl variants and the static Linux variants in Alpine containers | biome, typst, esbuild, and the Tailwind build run. typst's musl-only build serves the glibc host through one variant with two platforms. |
+| `@tailwindcss/oxide` with its `wasm32-wasi` build as the primary and the wasm runtime bundled | An unmatched host scans through the wasm build. Native hosts install none of the runtime packages. |
+| Publishing variants that break each invariant | Each is rejected with a reason. A bundled extra dependency is accepted. A variant added to a published version is rejected. |
+
+The prototype found these problems, now addressed above:
+
+- Two projects that selected different variants of one version shared one
+  global virtual store slot, so the darwin project got the Linux binary. The
+  slot hash now includes the selected archive's integrity.
+- A frozen install after a change to `supportedArchitectures` kept the
+  previously linked variant in a local virtual store.
+- A pnpm release that predates the lockfile change rewrote the lockfile
+  without variants on a non-frozen install.
+- npm installed the primary, and esbuild and biome failed at run time.
+- `pnpm fetch` with two platforms fetched only the host's variant, so an
+  offline install for the other platform failed.
+- A single publish request carrying every variant exceeded the body limit,
+  and biome's timed out.
+- The primary's `dist.pnpr.bins` and `requiresBuild` would have been applied
+  to the variant on a fresh install.
+
 ## Rationale and Alternatives
 
 1. **Lock every optional variant (the status quo in pnpm).** It fixes the
@@ -486,7 +544,10 @@ Target pnpr and pnpm v12. Do not add a feature to pnpm v11.
    target fields and `fallback`, select at install, and fetch variants for
    `supportedArchitectures`.
 5. pnpm: publisher commands to pack a variant and attach it to a stage.
-6. Later: the compatibility view for other clients.
+6. pnpr: the compatibility view for other clients, before any package whose
+   users are not all on pnpm migrates.
+7. pnpm: a lockfile marker that older releases reject without
+   `--frozen-lockfile` too.
 
 Tests must cover selection order with floors and `wasm32`, an unknown tag
 field falling back to the primary, a frozen install on a platform that did not
