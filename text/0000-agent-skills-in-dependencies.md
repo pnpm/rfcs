@@ -178,15 +178,17 @@ Every install reconciles the recorded entries against the directories currently 
 
 ### Git
 
-A symlink into `node_modules` dangles on a fresh clone, so these entries cannot be committed. Because hand-authored skills live in the same directory and generally *are* committed, the exclusion has to be per entry rather than per directory. pnpm keeps a nested ignore file that lists each entry it links there, anchored to the directory and with pattern characters escaped:
+A symlink into `node_modules` dangles on a fresh clone, so these entries cannot be committed. Because hand-authored skills live in the same directory and generally *are* committed, the exclusion has to be per entry rather than per directory. pnpm keeps a nested ignore file with a block that lists each entry it links there, anchored to the directory and with pattern characters escaped:
 
 ```
 # .claude/skills/.gitignore
+# pnpm
 /auth
 /composition-patterns
+# pnpm end
 ```
 
-pnpm adds the rules of the entries it links and removes the rules of the entries it prunes. Other lines are kept, and a file left empty is removed. This keeps pnpm out of the root `.gitignore`.
+The markers are the ones `pnpm setup` already uses in shell rc files. pnpm rebuilds the block from the current links on every install, so its correctness does not depend on the record in `.modules.yaml`: a rule for a skill that is gone is removed even after `node_modules` was deleted. Lines outside the block belong to the user and are never touched, even one that repeats a rule pnpm writes. When nothing is linked the block is removed, and so is a file left empty. This keeps pnpm out of the root `.gitignore`.
 
 ### What pnpm deliberately does not do
 
