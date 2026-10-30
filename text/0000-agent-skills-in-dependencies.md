@@ -168,7 +168,7 @@ A package-qualified name, `pnpm-<package>-<skill>`, was what pnpm 12.11 shipped.
 
 Two approved packages can ship a skill of the same name. pnpm detects that before writing and fails, rather than letting one approved skill silently replace another, and the error points at denying one of them in `permissions`. The same check covers two sources of one package name whose versions are not comparable, such as a fork pinned by git in one project and the registry copy in another: different skills both link, and a skill of the same name fails.
 
-An entry already in the way that pnpm did not create, such as a hand-authored skill or one installed by another tool, also fails the install rather than being replaced.
+An entry that pnpm did not create, such as a hand-authored skill or one installed by another tool, also fails the install when it holds the name of an approved skill. pnpm does not replace it. pnpm does not skip such an entry, as skills-npm does. A skip would leave an approved skill unlinked, which the rule that an approved skill is always materialised forbids. Removing either the entry or the approval resolves the failure.
 
 A skill directory whose name is hidden or contains a control character is skipped, because it cannot be listed safely in the ignore file described below.
 
@@ -277,4 +277,3 @@ A changeset targets `pacquet`.
 - **How many agents to recognise.** The environment table maps a variable to a directory, which is narrower than knowing whether some agent is running, but it still has to be maintained. How many entries are worth carrying before the explicit setting is the better answer is an open question.
 - **Global and `dlx` installs.** Whether globally installed packages should link into `~/.claude/skills/`, and whether `pnpm dlx` should participate at all.
 - **Reporting wording** is settled in the permissions RFC, which replaces `Ignored build scripts:` with one section covering every pending capability.
-- **Interaction with `npx skills` and skills-npm.** All three tools now link a skill under its own name. pnpm never replaces an entry it did not create, so a skill already installed by another tool fails the install until one of the two is removed. Whether pnpm should instead skip such an entry, as skills-npm does, is open.
