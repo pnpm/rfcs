@@ -391,9 +391,10 @@ Command names are placeholders. Approval runs the invariants above against
 the complete set, so a missing or mismatched variant fails the release before
 anything is visible.
 
-One request cannot carry a whole release. esbuild's 26 variants are about 140 MB
-once base64-encoded in an npm publish body, over a 100 MB limit, and biome's 10
-are 310 MB before encoding. Limits apply to each archive, not to the release.
+One request cannot carry a whole release. esbuild's 26 variants are about
+140 MB once base64-encoded in an npm publish body, over a 100 MB limit, and
+biome's 10 are 310 MB before encoding. Limits apply to each archive, not to
+the release.
 
 Each archive carries its own provenance statement, from the job that built it.
 Approval rejects the set unless every statement names the same source
