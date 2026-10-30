@@ -190,7 +190,7 @@ A symlink into `node_modules` dangles on a fresh clone, so these entries cannot 
 # pnpm end
 ```
 
-The markers are the ones `pnpm setup` already uses in shell rc files. pnpm rebuilds the block from the current links on every install, so its correctness does not depend on the record in `.modules.yaml`: a rule for a skill that is gone is removed even after `node_modules` was deleted. Lines outside the block belong to the user and are never touched, even one that repeats a rule pnpm writes. When nothing is linked the block is removed, and so is a file left empty. This keeps pnpm out of the root `.gitignore`.
+The markers are the ones `pnpm setup` already uses in shell rc files. pnpm rebuilds the block from the current links whenever it links or prunes skills, on install and on approval, so its correctness does not depend on the record in `.modules.yaml`: a rule for a skill that is gone is removed even after `node_modules` was deleted. Lines outside the block belong to the user and are never touched, even one that repeats a rule pnpm writes. When nothing is linked the block is removed, and so is a file left empty. This keeps pnpm out of the root `.gitignore`.
 
 ### What pnpm deliberately does not do
 
