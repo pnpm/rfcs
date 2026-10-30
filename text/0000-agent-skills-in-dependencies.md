@@ -168,7 +168,7 @@ A package-qualified name, `pnpm-<package>-<skill>`, was what pnpm 12.11 shipped.
 
 Two approved packages can ship a skill of the same name. pnpm detects that before writing and fails, rather than letting one approved skill silently replace another, and the error points at denying one of them in `permissions`. The same check covers two sources of one package name whose versions are not comparable, such as a fork pinned by git in one project and the registry copy in another: different skills both link, and a skill of the same name fails.
 
-An entry already in the way that pnpm did not create, such as a hand-authored skill or one installed by another tool, also fails the install rather than being replaced. pnpm does not skip such an entry, as skills-npm does. A skip would leave an approved skill unlinked, which the rule that an approved skill is always materialised forbids. Removing either the entry or the approval resolves the failure.
+An entry that pnpm did not create, such as a hand-authored skill or one installed by another tool, also fails the install when it holds the name of an approved skill. pnpm does not replace it. pnpm does not skip such an entry, as skills-npm does. A skip would leave an approved skill unlinked, which the rule that an approved skill is always materialised forbids. Removing either the entry or the approval resolves the failure.
 
 A skill directory whose name is hidden or contains a control character is skipped, because it cannot be listed safely in the ignore file described below.
 
