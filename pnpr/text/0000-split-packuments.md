@@ -164,8 +164,9 @@ A version's release record is served at
 (`<registry-base>/@scope%2fname/<version>+r<revision>` for a scoped name),
 next to the tarball's `<name>@<version>+r<revision>` route. It is the
 abbreviated version object of that revision without what may change after
-publication or what [immutable release records](https://github.com/pnpm/rfcs/pull/44)
-keep as separate evidence: no `deprecated`, no `_npmUser`, and no
+publication or what
+[release records](https://github.com/pnpm/rfcs/pull/49) keep as separate
+evidence: no `deprecated`, no `_npmUser`, and no
 `dist.signatures` or `dist.attestations`. What remains never changes, so
 pnpr serves it with `Cache-Control: public, max-age=31536000, immutable`.
 
@@ -249,23 +250,22 @@ a URL of its own for the split form; see
 
 ### Relation to other RFCs
 
-- [Immutable release records](https://github.com/pnpm/rfcs/pull/44) store
-  each release as an immutable record and keep tags, revision selections,
-  and deprecations as mutable state beside it. The split form exposes that
-  division to clients: the release record is the record, rendered, and the
-  external entries are the mutable state.
-- [SQL metadata storage](https://github.com/pnpm/rfcs/pull/48): a release
-  record is one of its per-version fragments, rendered, and the split
-  document is its package view with the large fragments cut down. Its open
+- [SQL metadata storage](https://github.com/pnpm/rfcs/pull/48) keeps
+  accepted manifests insert-only and stores tags, revision selections, and
+  deprecations as mutable state beside them. The split form exposes that
+  division to clients: a release record is one of its per-version fragments,
+  rendered, and the external entries are the mutable state. Its open
   question, whether fragments become a client-facing read path, is answered
   here with a narrow yes.
 - [Platform variants](https://github.com/pnpm/rfcs/pull/51) relies on this RFC
   to keep variant archives out of large documents. Variant selection happens
   after a version is picked, so the variants move with the rest of the
   version.
-- [Release records and upstream verification](https://github.com/pnpm/rfcs/pull/49):
-  the signed record and the served one describe the same release; the
-  served one is the cacheable read path.
+- [Release records and upstream verification](https://github.com/pnpm/rfcs/pull/49)
+  keeps endorsements and evidence apart from the immutable record, as the
+  release record here leaves out signatures and attestations. Its signed
+  record and the one served here describe the same release; the one served
+  here is the cacheable read path.
 - [Server-side resolution](https://github.com/pnpm/rfcs/pull/9) does not need
   this: the server reads its own storage, and the client receives a lockfile.
 
