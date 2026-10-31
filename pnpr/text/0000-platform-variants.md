@@ -5,8 +5,10 @@
 ## Summary
 
 Let one package version carry a primary archive plus platform-specific variant
-archives, published together and described in the version's metadata. pnpm
-locks every variant in a platform-neutral lockfile entry and links the variant
+archives, published together and described in pnpr's own
+[package document format](https://github.com/pnpm/rfcs/blob/main/pnpr/text/0000-split-packuments.md).
+npm's documents do not list variants, so npm clients see only the primary
+archive. pnpm locks every variant in a platform-neutral lockfile entry and links the variant
 that matches the host *as* the package itself. Native packages then no longer
 need one separately named package per platform wired through
 `optionalDependencies`, and no longer need install scripts that download
@@ -111,8 +113,8 @@ pnpr generates: a `package.json` with the version's name, version, and the
 union of the variants' `os` and `cpu`, so npm reports an unsupported platform
 instead of installing an empty package. Those fields match every combination
 of their values, so a host whose OS and CPU each appear in some variant, but
-not together, still gets the empty package; the
-[compatibility view](#clients-that-do-not-read-variants) avoids that.
+not together, still gets the empty package (see
+[Clients that do not read variants](#clients-that-do-not-read-variants)).
 
 A variant archive is a complete package for its platform, not an overlay on
 the primary. Its `package.json` has the same `name` and `version` as the
@@ -246,75 +248,78 @@ client fails rather than pick one.
 
 ### Metadata
 
-Each version object carries its variants under the pnpr namespace that npm
-clients ignore. pnpr computes every field from the verified archive and strips
+Variants are described only in pnpr's own package document,
+`application/vnd.pnpr.install-v2+json`, which pnpm asks for and npm clients
+never do. npm's abbreviated, full, and version documents describe the version
+as npm clients read it, without variants. That keeps npm's documents the size
+they are today and leaves the variant metadata free to follow pnpr's format
+alone.
+
+In pnpr's document, the variants are in the version's manifest, which is also
+the version's release record at `<registry-base>/<name>/<version>+r<revision>`.
+pnpr computes every field from the verified archives and strips
 publisher-supplied `dist.pnpr` fields, as it does today:
 
 ```json
 {
-  "name": "fast-thing",
-  "version": "1.4.0",
-  "dist": {
-    "integrity": "sha512-<primary tar digest>",
-    "tarball": "https://registry.example/fast-thing@1.4.0",
-    "pnpr": {
-      "requiresBuild": false,
-      "variants": [
-        {
-          "tag": "linux-x64-manylinux_2_17",
-          "platforms": [
-            { "os": "linux", "cpu": "x64", "libc": "glibc", "libcVersion": "2.17", "napi": 8 }
-          ],
-          "integrity": "sha512-<variant tar digest>",
-          "tarball": "https://registry.example/fast-thing@1.4.0/variants/linux-x64-manylinux_2_17",
-          "unpackedSize": 9123456,
-          "fileCount": 4,
-          "bins": { "fast-thing": { "path": "bin/fast-thing" } }
-        },
-        {
-          "tag": "darwin-universal",
-          "platforms": [
-            { "os": "darwin", "cpu": "x64", "osVersion": "11.0" },
-            { "os": "darwin", "cpu": "arm64", "osVersion": "11.0" }
-          ],
-          "integrity": "sha512-<variant tar digest>",
-          "tarball": "https://registry.example/fast-thing@1.4.0/variants/darwin-universal",
-          "unpackedSize": 18234567,
-          "fileCount": 4,
-          "bins": { "fast-thing": { "path": "bin/fast-thing" } }
+  "versions": {
+    "1.4.0": {
+      "trust": "provenance",
+      "manifest": {
+        "bin": { "fast-thing": "bin/fast-thing.js" },
+        "dist": {
+          "integrity": "sha512-<primary tar digest>",
+          "pnpr": {
+            "requiresBuild": false,
+            "variants": [
+              {
+                "tag": "linux-x64-manylinux_2_17",
+                "platforms": [
+                  { "os": "linux", "cpu": "x64", "libc": "glibc", "libcVersion": "2.17", "napi": 8 }
+                ],
+                "integrity": "sha512-<variant tar digest>",
+                "unpackedSize": 9123456,
+                "fileCount": 4,
+                "bins": { "fast-thing": { "path": "bin/fast-thing" } }
+              },
+              {
+                "tag": "darwin-universal",
+                "platforms": [
+                  { "os": "darwin", "cpu": "x64", "osVersion": "11.0" },
+                  { "os": "darwin", "cpu": "arm64", "osVersion": "11.0" }
+                ],
+                "integrity": "sha512-<variant tar digest>",
+                "unpackedSize": 18234567,
+                "fileCount": 4,
+                "bins": { "fast-thing": { "path": "bin/fast-thing" } }
+              }
+            ]
+          }
         }
-      ]
+      }
     }
   }
 }
 ```
 
-The full and abbreviated documents both carry `dist.pnpr.variants`, so
-resolution needs no document per variant. `integrity` is the digest of the
-uncompressed tar, as for every pnpr archive. The abbreviated document omits
-`tarball`, which the client derives from the route below.
+`integrity` is the digest of the uncompressed tar, as for every pnpr archive.
+There is no `tarball`: the client derives each archive's URL from the routes
+below.
 
 A variant entry carries `dependencies` and `optionalDependencies` when the
 variant's differ from the version's, which describe the primary. pnpr copies
 them from the variant's verified manifest. A resolver therefore sees every
-archive's dependencies in the one document it already fetches.
+archive's dependencies in the one manifest it already reads.
 
-The package's own document grows by what the variant documents carried for
-the same versions, minus their repeated names and manifests. Rebuilding
-today's data in this shape, gzipped: `esbuild` gains about 0.3 MB in place of
-1.0 MB across 26 documents, `@swc/core` 0.6 MB in place of 2.8 MB across 12,
-and rollup 0.3 MB in place of 0.9 MB across 27. That is still a smaller
-download for pnpm, which fetches every platform package's document today, but
-it multiplies the document for every client that only reads the version list:
-`esbuild`'s grows from 90 KB to 361 KB gzipped (in the form pnpr serves today,
-without npm's legacy `npm-signature`), `@swc/core`'s from 190 KB to 764 KB.
-The variant integrities cause nearly all of it: a digest does not compress,
-while tags and platforms repeat from version to version.
+Inline, the variants would make a package's document several times larger.
+Rebuilt from today's platform packages, `esbuild`'s document would grow from
+90 KB to 361 KB gzipped and `@swc/core`'s from 190 KB to 764 KB. The variant
+integrities cause nearly all of it: a digest does not compress, while tags
+and platforms repeat from version to version.
 
-So pnpr serves large documents split, in a format of its own under a media
-type that clients opt into, as proposed for all packages in
-[the split packuments RFC](https://github.com/pnpm/rfcs/blob/main/pnpr/text/0000-split-packuments.md). Every
-version has a short entry with its deprecation, trust rank, selected
+pnpr's format leaves them out of large documents, as
+[the split packuments RFC](https://github.com/pnpm/rfcs/blob/main/pnpr/text/0000-split-packuments.md)
+does for all packages. Every version has a short entry with its deprecation, trust rank, selected
 revision, and its publish time if that is recent, and the likely picks,
 every dist-tag target and the highest release of each major (of each minor
 below 1.0), also carry their manifest. For every other version, its
@@ -524,23 +529,19 @@ ship as platform archives.
 
 ### Clients that do not read variants
 
-npm, Yarn, and Bun ignore `dist.pnpr` and install the primary archive. For
-esbuild or biome that primary has no binary, so those users get a package
-that fails when it runs. A publisher whose users are not all on pnpm needs
-either a primary that works everywhere, such as a wasm build, or a generated
-compatibility view: the primary version's npm-visible
-`optionalDependencies` lists reserved names, and each reserved name serves a
-single version with a variant's `os`, `cpu`, `libc`, dependencies, and
-archive, which is the layout those clients read today. A variant gets one
-reserved name when every combination of its platforms' OS, CPU, and C library
-is one of its platforms, such as `darwin-universal`, and one per platform
-otherwise, so the `os`, `cpu`, and `libc` arrays never claim a platform the
-variant does not serve. Reserved names cannot be published directly. The
-primary archive then needs the loader that esbuild-style packages ship today.
-pnpm ignores the generated entries when it reads `dist.pnpr.variants`.
+npm, Yarn, and Bun read npm's documents, which list no variants, and install
+the primary archive. So does pnpm with a registry that does not serve pnpr's
+format. For esbuild or biome that primary has no binary, so those users get a
+package that fails when it runs. Until something else exists, a publisher
+whose users are not all on pnpm and pnpr needs a primary that works
+everywhere, such as a wasm or JavaScript build, or keeps publishing separate
+platform packages.
 
-A publisher that needs the view cannot migrate until pnpr serves it, so it
-ships with the rest, not after it.
+A compatibility view for those clients is out of scope for now. It could
+come later without changing pnpr's format: npm's documents would list
+generated platform packages under reserved names in the primary's
+`optionalDependencies`, each serving one variant's archive with its `os`,
+`cpu`, and `libc`, the layout npm clients read today.
 
 ## Migration
 
@@ -595,11 +596,11 @@ those hosts would need emulation, which is an unresolved question below.
 
 ## Prototype
 
-A prototype implemented the pnpr publication checks, `dist.pnpr.variants`, the
-variant route, and the pnpm resolution, lockfile, and install parts, without
-staged publishing, the floor and ABI fields, `wasm32`, the compatibility
-view, or dependencies that differ between archives: it enforced an earlier,
-stricter rule that every archive declares the same dependencies. It also took
+A prototype implemented the pnpr publication checks, `dist.pnpr.variants` in
+pnpr's package document and release records, the variant route, and the pnpm
+resolution, lockfile, and install parts, without staged publishing, the floor
+and ABI fields, `wasm32`, or dependencies that differ between archives: it
+enforced an earlier, stricter rule that every archive declares the same dependencies. It also took
 each variant's tag and platforms from the publish request rather than from
 `platformVariant`, and checked the variant's `os`, `cpu`, and `libc` against
 them. Real packages from npm were converted into a primary and variants and
@@ -613,7 +614,8 @@ published to a local pnpr, then installed by real projects:
 | Resolution with a different `supportedArchitectures`, and resolution by pnpr's server-side resolver | The lockfile is byte-identical to a local resolution on the host. |
 | The musl variants and the static Linux variants in Alpine containers | biome, typst, esbuild, and the Tailwind build run. typst's musl-only build serves the glibc host through one variant with two platforms. |
 | `@tailwindcss/oxide` with its `wasm32-wasi` build as the primary and the wasm runtime bundled | An unmatched host scans through the wasm build. Native hosts install none of the runtime packages. |
-| Split packuments, resolving a 787-package app with an empty cache | 72% to 81% faster resolution, and the same lockfile; see [Metadata](#metadata). |
+| esbuild, biome, typst, the Tailwind app, and server-side resolution through pnpr's package document, with only large documents split and with every document split | Each installs, builds, and runs with the same lockfile, and the darwin-arm64 frozen install gets its variant. With every document split, the variants come from 16 release records. npm's documents list no variants, so pnpm without pnpr's format links the primary. |
+| Split packuments, resolving a 787-package app with an empty cache | 73% to 89% faster resolution, and the same lockfile; see [Metadata](#metadata). |
 | Publishing variants that break each invariant | Each is rejected with a reason, including a variant with an extra dependency under the earlier rule. A bundled extra dependency is accepted. A variant added to a published version is rejected. |
 
 The prototype found these problems, now addressed above:
@@ -666,17 +668,16 @@ Target pnpr and pnpm v12. Do not add a feature to pnpm v11.
 1. Write the platform tag specification with test vectors, shared with the
    shared side-effects cache.
 2. pnpr: store variants with the version, enforce the invariants, compute
-   `dist.pnpr.variants`, and serve the variant routes, including under
-   revisions.
+   `dist.pnpr.variants` in its own package document and release records,
+   and serve the variant routes, including under revisions.
 3. pnpr: accept variants in batch publish and staged publishing, and add the
    attach-to-stage operation.
-4. pnpm: read `dist.pnpr.variants`, write `variations` entries with the new
+4. pnpm: read `dist.pnpr.variants` from pnpr's package document, write
+   `variations` entries with the new
    target fields and `fallback`, select at install, and fetch variants for
    `supportedArchitectures`.
 5. pnpm: publisher commands to pack a variant and attach it to a stage.
-6. pnpr: the compatibility view for other clients, before any package whose
-   users are not all on pnpm migrates.
-7. pnpm: a lockfile marker that older releases reject without
+6. pnpm: a lockfile marker that older releases reject without
    `--frozen-lockfile` too.
 
 Tests must cover selection order with floors and `wasm32`, an unknown tag field
@@ -685,8 +686,8 @@ the lockfile, a variant with a dependency the primary lacks (linked only where
 that variant is selected), a name declared with two specifiers by two archives
 (rejected), a variant whose peer dependencies differ (rejected), a variant that
 requires a build (rejected), a variant without `platformVariant` or with an
-`os`, `cpu`, or `libc` field (rejected), a variant whose platforms are not a
-full cross product served to npm through the compatibility view, a static Linux
+`os`, `cpu`, or `libc` field (rejected), npm's documents of a version with
+variants (no variants listed, the primary installed), a static Linux
 variant selected on a musl host, a version without a primary on an unmatched
 host, two variants that list the same platform (rejected), a stage approved with
 a missing variant or with provenance from another commit, and variants under a
