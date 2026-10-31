@@ -7,11 +7,13 @@ it. The versions a fresh resolution almost always picks stay whole in
 `versions`. Every other version is a short entry in `pnpr.otherVersions`
 with what picking a version reads and what may change after publication:
 its deprecation notice, trust rank, and selected revision where it has any,
-and its publish time if it is recent. The rest of the version is its release record, an
-immutable document at `<registry-base>/<name>/<version>+r<revision>`, which
-the client fetches only for a version it picks. Every response stays a plain
-GET that a CDN caches for everyone. Small documents, and clients that do not
-opt in, get today's abbreviated document unchanged.
+and its publish time if it is recent. The rest of the version is its
+release record, an immutable document at
+`<registry-base>/<name>/<version>+r<revision>`, which the client fetches
+only for a version it picks. Every response stays a plain
+GET, which a CDN caches for everyone when the package is public. Small
+documents, and clients that do not opt in, get today's abbreviated document
+unchanged.
 
 ## Motivation
 
@@ -66,9 +68,12 @@ abbreviated one:
 Accept: application/vnd.pnpr.install-v2+json; q=1.0, application/vnd.npm.install-v1+json; q=0.9, application/json; q=0.8, */*
 ```
 
-pnpr answers with `Content-Type: application/vnd.pnpr.install-v2+json` and
-`Vary: Accept`. npm, Yarn, Bun, and older pnpm releases do not send the type
-and get today's abbreviated or full document, so nothing changes for them.
+pnpr answers with `Content-Type: application/vnd.pnpr.install-v2+json`.
+Every representation of a package document carries `Vary: Accept`, the split
+form and the abbreviated and full documents alike, so a cache never hands one
+client the form another asked for. npm, Yarn, Bun, and older pnpm releases do
+not send the type and get today's abbreviated or full document, so nothing
+changes for them.
 
 A document served under the new type may be whole. A client reads
 `pnpr.otherVersions`, not the media type, to know whether some versions
@@ -111,7 +116,10 @@ An entry is an object with any of these fields:
 
 - `time`: the publish time, only when the version was published at or after
   `pnpr.timesSince` (see [Publish times](#publish-times)), or `null` when the
-  registry has none.
+  registry has none. A `null` time is unknown, not old: the client handles
+  it as it handles a registry without publish times today, which pnpm
+  decides with `minimumReleaseAgeIgnoreMissingTime`. Only an entry without a
+  `time` field is known to be older than `timesSince`.
 - `deprecated`: the deprecation message. pnpm skips a deprecated version when
   a range also matches one that is not, and shows the message when it does
   install one. A deprecation can be added or changed after publication, so it
@@ -196,7 +204,13 @@ publication or what
 [release records](https://github.com/pnpm/rfcs/pull/49) keep as separate
 evidence: no `deprecated`, no `_npmUser`, and no
 `dist.signatures` or `dist.attestations`. What remains never changes, so
-pnpr serves it with `Cache-Control: public, max-age=31536000, immutable`.
+pnpr serves it with `Cache-Control: public, max-age=31536000, immutable`
+when anyone may read the package. A package closed to anonymous callers gets
+the headers of every caller-gated response
+([registry mounts](https://github.com/pnpm/rfcs/blob/main/pnpr/text/0000-pnpr-registry-mounts.md)):
+`Cache-Control: private, no-store` and `Vary: Authorization`, for its
+release records and its package document alike. The client still caches
+the records on disk for the caller that fetched them.
 
 The address carries the revision because `<name>/<version>` does not name
 fixed content: it is the registry's currently selected revision, and
@@ -267,9 +281,10 @@ cached and failed.
 
 Every response is a GET addressed by its URL and the `Accept` header. There
 are no range queries, `?since=` cursors, or POST lookups, because each of
-those makes a cache key of its own, or none. The split document is cached for
-everyone who sends the new type, and a release record for everyone who picks
-that version.
+those makes a cache key of its own, or none. For a package anyone may read,
+the split document is cached for everyone who sends the new type, and a
+release record for everyone who picks that version. A caller-gated package
+stays out of shared caches, as today.
 
 A CDN keys the package document by `Accept` through `Vary: Accept`. CDNs that
 do not honor `Vary` need the `Accept` header normalized into the cache key, or
@@ -384,8 +399,11 @@ one function every pick goes through.
 5. pnpm: when the user points pnpm at a registry that does not serve the type,
    nothing changes, since it answers with the abbreviated document.
 
-Tests must cover an other version with and without flags, with a time
-inside the window, without one, and with a `null` one, a version
+Tests must cover an other version with and without flags; one with a time
+inside the window (filtered by it), one without a time (passes any minimum
+release age), and one with a `null` time (handled as a missing time, passing
+or failing with `minimumReleaseAgeIgnoreMissingTime`); a caller-gated package
+(its records and document are `private, no-store`); a version
 deprecated after its record was cached (the new message shows), a selected
 patch revision (its record is fetched, not the original's), a version without
 `integrity` in `versions` (computed while fetching the tarball, as today), a
