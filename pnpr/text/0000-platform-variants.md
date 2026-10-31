@@ -311,27 +311,28 @@ without npm's legacy `npm-signature`), `@swc/core`'s from 190 KB to 764 KB.
 The variant integrities cause nearly all of it: a digest does not compress,
 while tags and platforms repeat from version to version.
 
-So pnpr serves large documents split, under a media type that clients opt
-into, as proposed for all packages in
-[the split packuments RFC](https://github.com/pnpm/rfcs/pull/54). The
-likely picks, every dist-tag target and the highest release of each major
-(of each minor below 1.0), stay whole in `versions`. Every other version
-moves to `pnpr.otherVersions` with its deprecation, trust rank, selected
-revision, and its publish time if that is recent. Its dependencies, its variants, and every
-integrity are in its immutable release record
-`<registry-base>/<name>/<version>+r<revision>`, which the resolver fetches
-for the versions it picks. Variant selection happens after a version is
-picked, so the variants move with the rest of the version. Split,
-`esbuild`'s document with variants is 32 KB gzipped, most of it the 29
-versions it keeps whole, one per 0.x minor, and `@swc/core`'s is 7 KB, both smaller than today's 90 KB and 190 KB without variants.
+So pnpr serves large documents split, in a format of its own under a media
+type that clients opt into, as proposed for all packages in
+[the split packuments RFC](https://github.com/pnpm/rfcs/pull/54). Every
+version has a short entry with its deprecation, trust rank, selected
+revision, and its publish time if that is recent, and the likely picks,
+every dist-tag target and the highest release of each major (of each minor
+below 1.0), also carry their manifest. For every other version, its
+dependencies, its variants, and every integrity are in its immutable release
+record `<registry-base>/<name>/<version>+r<revision>`, which the resolver
+fetches for the versions it picks. Variant selection happens after a version
+is picked, so the variants move with the rest of the version. Split,
+`esbuild`'s document with variants is 29 KB gzipped, most of it the 29
+manifests it keeps inline, one per 0.x minor, and `@swc/core`'s is 7 KB,
+both smaller than today's 90 KB and 190 KB without variants.
 
 The prototype measured this on an app of 787 packages proxied from npmjs,
 through a proxy that gzips and caches like a CDN, with an empty pnpm cache in
-every run. Resolution took 0.32 s instead of 1.36 s at 10 ms and 200 Mbit/s,
-1.01 s instead of 5.05 s at 40 ms and 50 Mbit/s, and 4.0 s instead of
-24.7 s at 100 ms and 10 Mbit/s. Packuments shrank from 30.3 MB to 4.3 MB
-gzipped, and 22 release records were fetched. A full install at 40 ms and
-50 Mbit/s took 24.3 s instead of 28.5 s, as tarballs dominate it.
+every run. Resolution took 0.36 s instead of 1.35 s at 10 ms and 200 Mbit/s,
+0.79 s instead of 5.07 s at 40 ms and 50 Mbit/s, and 2.6 s instead of
+24.7 s at 100 ms and 10 Mbit/s. Package documents shrank from 30.3 MB to
+2.5 MB gzipped, and 22 release records were fetched. A full install at
+40 ms and 50 Mbit/s took 24.0 s instead of 28.5 s, as tarballs dominate it.
 
 A [release record](https://github.com/pnpm/rfcs/pull/49) of a version with
 variants covers every archive of the version, the primary and each variant,
