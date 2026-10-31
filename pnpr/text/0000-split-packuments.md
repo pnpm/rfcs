@@ -296,22 +296,22 @@ with `serverType: pnpr`, so pnpm reads optional dependencies from abbreviated
 documents too. Every split form keeps the likely picks whole. Medians of 3
 runs:
 
-| Network | Whole | Only `dist` moved | Versions marked in `versions` | External map |
+| Network | Whole | Only `dist` moved | Map, every time | Map, 30-day times |
 | --- | --- | --- | --- | --- |
-| 10 ms, 200 Mbit/s, resolve | 1.34 s | 0.46 s | 0.43 s | 0.37 s |
-| 40 ms, 50 Mbit/s, resolve | 5.06 s | 1.51 s | 1.41 s | 1.13 s |
-| 100 ms, 10 Mbit/s, resolve | 24.70 s | 6.73 s | 5.86 s | 4.80 s |
-| 40 ms, 50 Mbit/s, full install | 28.44 s | 24.82 s | 24.65 s | 24.43 s |
-| Packument bytes (gzip) | 30.3 MB | 7.6 MB | 6.6 MB | 5.3 MB |
-| Release records | 0 | 22 (7 KB) | 22 (12 KB) | 22 (7 KB) |
+| 10 ms, 200 Mbit/s, resolve | 1.36 s | 0.45 s | 0.37 s | 0.32 s |
+| 40 ms, 50 Mbit/s, resolve | 5.05 s | 1.51 s | 1.13 s | 1.01 s |
+| 100 ms, 10 Mbit/s, resolve | 24.66 s | 6.67 s | 4.80 s | 4.03 s |
+| 40 ms, 50 Mbit/s, full install | 28.48 s | 24.82 s | 24.43 s | 24.27 s |
+| Packument bytes (gzip) | 30.3 MB | 7.6 MB | 5.3 MB | 4.3 MB |
+| Release records | 0 | 22 (7 KB) | 22 (7 KB) | 22 (7 KB) |
 
-The third column, an earlier draft that kept external versions in
-`versions` with a marker, comes from a separate run of the same benchmark.
-With the external map, resolution is 72% to 81% faster than with whole
-documents, and a full install 14% faster, as tarballs dominate it. Every
-form produces the same lockfile.
+The fourth column, an earlier draft with a publish time in every entry,
+comes from a separate run of the same benchmark. With the map as proposed,
+resolution is 76% to 84% faster than with whole documents, and a full
+install 15% faster, as tarballs dominate it. Every form produces the same
+lockfile.
 
-About 3 MB of the remaining 5.3 MB is in documents under the threshold,
+About 3 MB of the remaining 4.3 MB is in documents under the threshold,
 which are not split.
 
 The prototype found the cache-sharing problem described in
