@@ -11,7 +11,7 @@ needed by an approved dependency set durable for a declared period. Current
 authorization and security policy still apply when that set is restored.
 
 This builds on pnpr's server-side resolver and authorization-aware cache.
-The [SQL metadata storage draft](https://github.com/pnpm/rfcs/pull/48)
+The [SQL metadata storage RFC](https://github.com/pnpm/rfcs/blob/main/pnpr/text/0000-sql-metadata-storage.md)
 supplies the storage contract. Record-backed snapshots also depend on the
 [release records draft](https://github.com/pnpm/rfcs/pull/49); snapshots of
 upstream observations alone do not. The atomic publication draft
@@ -50,13 +50,30 @@ origin and package it binds:
 A snapshot has an algorithm-qualified digest and a separately authorized
 reference. Private snapshots and their dependency names are private data.
 
+Snapshot manifests and receipts use the encoding the
+[release records draft](https://github.com/pnpm/rfcs/pull/49) defines for
+records: the digest is `sha512-` + base64(`SHA512(JCS_UTF8(object))`) over the
+[RFC 8785 JCS](https://www.rfc-editor.org/rfc/rfc8785) encoding, which fixes
+key order and number formatting and rejects duplicate keys and invalid Unicode.
+Each object carries a `type` (`snapshot` or `receipt`) and a format `version`
+inside the hashed bytes, so a digest of one kind can never be accepted as the
+other, and an absent optional field is omitted rather than written as `null`.
+pnpr stores and transmits the encoded bytes unchanged, and verifiers hash the
+bytes they receive.
+
 Store snapshot manifests, observations, receipts, and their memberships in the
 authoritative SQL metadata database under the
-[SQL metadata storage contract](https://github.com/pnpm/rfcs/pull/48).
+[SQL metadata storage contract](https://github.com/pnpm/rfcs/blob/main/pnpr/text/0000-sql-metadata-storage.md).
 Membership references shared immutable records; creating a snapshot must not
 copy an entire catalog or duplicate every member's canonical bytes. A SQL read
 transaction can give hosted metadata reads a consistent view. A sealed snapshot
-requires persisted membership to remain readable after that transaction ends.
+requires persisted membership to remain readable after that transaction ends,
+so membership is a reference that garbage collection honors: no observation or
+release record a snapshot names is collected while the snapshot exists.
+Deleting or expiring a snapshot removes its membership in one transaction,
+after which members no other snapshot, receipt, or retention references become
+collectable. This protects snapshot metadata only; artifact bytes are protected
+by [explicit retention](#explicit-retention).
 
 The scope is finite and declared. Initial support should capture the packages
 observed while resolving a request, rather than mirror every upstream version
@@ -100,10 +117,16 @@ The resolver produces an immutable receipt binding:
 | Policy digest and evaluation time | Fixes the eligibility rules used for this decision. |
 | Output lockfile digest and artifact references | Identifies the accepted result. |
 
-Pin release-record integrities, their manifest interpretation profiles, captured
-package-index integrities, the per-version observation integrities compared with
-those records, and any archive-authoritative acceptance policy from the
-[release records draft](https://github.com/pnpm/rfcs/pull/49). Package-index captures preserve candidate sets and tags;
+Pin captured package-index integrities and per-version observation
+integrities for every member. Where a member has a verified release record, also
+pin its record integrity, its manifest interpretation profile, and any
+archive-authoritative acceptance policy from the
+[release records draft](https://github.com/pnpm/rfcs/pull/49). A receipt over
+a snapshot with observation-only members says so for each of them: their
+metadata is what pnpr observed upstream, not archive-verified, and replay uses
+those same observations. Retaining such a set verifies each archive against its
+observation, and a mismatch makes the retention incomplete rather than
+rewriting the receipt. Package-index captures preserve candidate sets and tags;
 per-version observations exclude unrelated index changes and detached evidence.
 A newer profile or a corrected upstream observation cannot reinterpret a sealed
 snapshot or receipt. An unsupported or withdrawn profile is an explicit replay
@@ -118,7 +141,16 @@ The receipt can explain selected versions and rejected candidates using
 structured reason codes. It must not serialize upstream credentials. Returned
 reason details and private footprints remain subject to package authorization.
 A receipt signature authenticates the server's decision, not a proof that an
-arbitrary remote resolver executed correctly. Clients retain artifact integrity
+arbitrary remote resolver executed correctly. Within one deployment, a
+retention request names a receipt by digest, and pnpr reads it from its own
+metadata database under current authorization; no signature is involved. A
+signature matters only when a receipt leaves the deployment. An importing
+deployment then accepts a receipt only from an issuer key it is configured to
+trust, and how such keys are distributed, rotated, and revoked follows the
+trust-root rules of the
+[release records draft](https://github.com/pnpm/rfcs/pull/49). An imported
+receipt is retained under the importer's own authorization; it carries no
+access rights from the issuer. Clients retain artifact integrity
 verification, and the protocol must define which metadata bindings they verify.
 
 Resolution replay with the recorded implementation and inputs should produce
@@ -169,9 +201,18 @@ Restore checks current authorization even when another organization retains
 identical bytes. Physical deduplication does not share retention permissions.
 
 Download, verify, and durably stage artifacts outside SQL write transactions.
-Protect staging from garbage collection while acceptance is pending. Commit
+Protect staging from garbage collection while acceptance is pending with a
+staging claim: a SQL row naming the retention request, the staged objects, and
+an expiry, committed before the first upload. The request renews the expiry
+while it works. Garbage collection skips every object named by an unexpired
+claim. If the uploader, the database connection, or the object store fails,
+the claim expires, and its objects become unreferenced staged blobs, collected
+after the grace period of the
+[SQL metadata storage contract](https://github.com/pnpm/rfcs/blob/main/pnpr/text/0000-sql-metadata-storage.md)
+unless a retry claims them again. Commit
 retention membership and completeness in one metadata transaction only after
-every required object is durable. Object storage does not participate in that
+every required object is durable; the same transaction replaces the staging
+claim with retention references. Object storage does not participate in that
 SQL transaction: a failed commit leaves protected staging for retry or later
 cleanup, and never a complete set referencing an unfinished upload. Retention
 expiry and collection coordinate through the same authoritative references.
