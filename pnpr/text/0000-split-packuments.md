@@ -92,14 +92,14 @@ document's tarball URLs, as such proxies do for npm's documents.
     "1.4.0": {},
     "1.4.1": { "deprecated": "1.x is no longer maintained" },
     "1.5.0": { "trust": "provenance", "revision": 2 },
-    "1.9.3": { "manifest": { "...": "..." } },
+    "1.9.3": { "integrity": "sha512-...", "manifest": { "...": "..." } },
     "2.1.0": {
       "time": "2026-10-01T10:00Z",
       "trust": "trustedPublisher",
-      "manifest": {
-        "dependencies": { "detect-libc": "^2.0.0" },
-        "dist": { "integrity": "sha512-<primary tar digest>", "pnpr": { "variants": ["..."] } }
-      }
+      "integrity": "sha512-<primary tar digest>",
+      "requiresBuild": false,
+      "variants": ["..."],
+      "manifest": { "dependencies": { "detect-libc": "^2.0.0" } }
     }
   }
 }
@@ -128,18 +128,33 @@ changed. Each version's entry is an object with any of these fields:
   [registry revision](https://github.com/pnpm/rfcs/blob/main/pnpr/text/0000-integrity-addressed-patch-revisions.md),
   when it is not the original (`0`). Selecting a patched revision changes
   which release record the version is.
-- `manifest`: the version's release record (see
-  [The release record](#the-release-record)) without its `name` and
-  `version`, which the entry's key gives.
+- `integrity`, `fileCount`, and `unpackedSize`: the archive's digest, file
+  count, and unpacked size, which npm's documents give in `dist`.
+- `requiresBuild` and `bins`: whether the archive needs a build, and its
+  executables with their interpreters, which pnpr derives from the verified
+  archive.
+- `variants`: the version's
+  [platform variants](https://github.com/pnpm/rfcs/pull/51), if it has any.
+- `manifest`: the publisher's manifest, as
+  [manifest verification](https://github.com/pnpm/rfcs/blob/main/pnpr/text/0000-publish-manifest-verification.md)
+  derives it, in its abbreviated form, without `dist`, `name`, and
+  `version`, and without what may change after publication.
 
-Every entry has a `manifest` while the document is under the threshold (see
-[Threshold](#threshold)). Above it, only the likely picks do (see
-[Likely picks](#likely-picks)), and every other version's manifest is its
+The entry keeps the publisher's manifest apart from what pnpr writes: the
+mutable state (`deprecated`, `trust`, `revision`), the publish time, and the
+facts pnpr derives from the archives sit at the entry's top level. A field
+name there is pnpr's alone, so there is no `dist` and no `pnpr` namespace.
+
+The facts about the archives and the `manifest` are the version's release
+record (see [The release record](#the-release-record)), and an entry either
+has all of them or none. Every entry has them while the document is under
+the threshold (see [Threshold](#threshold)). Above it, only the likely picks
+do (see [Likely picks](#likely-picks)), and every other version's are in its
 release record, fetched when the version is picked. Dependencies, engines,
-platform fields, bins, and the whole `dist` with its integrity and platform
-variants are all read only after a version is picked, and a picked version
-needs its manifest for the integrity anyway, so leaving it out costs no
-extra request.
+platform fields, bins, the integrity, and the platform variants are all read
+only after a version is picked, and a picked version needs its integrity
+anyway, so leaving them out costs no extra request. A complete entry is told
+by its `manifest`, not by its `integrity`.
 
 ### Publish times
 
@@ -192,7 +207,13 @@ versions to a map of their own, so that a client that did not know the split
 saw only complete versions; with the type as the only way in, that client
 does not exist.
 
-A missing `integrity` in a manifest keeps its meaning: a version whose
+npm's documents served by pnpr carry none of pnpr's facts: no `dist.pnpr`,
+no variants. A pnpm release that read `dist.pnpr.requiresBuild` and
+`dist.pnpr.bins` from them falls back to what it does with any registry,
+reading both from the archive after it fetches it. pnpr is experimental, so
+its documents and clients change together.
+
+A missing `integrity` in a complete entry keeps its meaning: a version whose
 integrity the client computes while it fetches the tarball, as pnpm does
 today for registries that omit it.
 
@@ -201,18 +222,29 @@ today for registries that omit it.
 A version's release record is served at
 `<registry-base>/<name>/<version>+r<revision>`
 (`<registry-base>/@scope%2fname/<version>+r<revision>` for a scoped name),
-and it is the `manifest` of the version's entry, with `name` and `version`.
+and it holds the facts about the archives and the `manifest` of the
+version's entry, with the version's `name` and `version`:
+
+```json
+{
+  "name": "fast-thing",
+  "version": "1.5.0",
+  "integrity": "sha512-<primary tar digest>",
+  "requiresBuild": false,
+  "manifest": { "dependencies": { "detect-libc": "^2.0.0" } }
+}
+```
+
 It is a metadata endpoint, separate from the revision route of
 [integrity-addressed patch revisions](https://github.com/pnpm/rfcs/blob/main/pnpr/text/0000-integrity-addressed-patch-revisions.md),
 `<name>@<version>+r<revision>`, which serves the revision's tar. The record
 extends the version-document route `<name>/<version>`, which pnpr and npm
 already serve, with the same `+r<revision>` suffix, so a scoped name keeps
-the same escaping on both routes. It is the
-abbreviated version object of that revision without what may change after
-publication or what
+the same escaping on both routes. It leaves out what may change after
+publication and what
 [release records](https://github.com/pnpm/rfcs/pull/49) keep as separate
-evidence: no `deprecated`, no `_npmUser`, and no
-`dist.signatures` or `dist.attestations`. What remains never changes, so
+evidence: no `deprecated`, no `_npmUser`, no `tarball`, and no registry
+signatures or attestations. What remains never changes, so
 pnpr serves it with `Cache-Control: public, max-age=31536000, immutable`
 when anyone may read the package. A package closed to anonymous callers gets
 the headers of every caller-gated response
@@ -430,7 +462,8 @@ one function every pick goes through.
    publish-time window of at least 30 days (30 by default), and record that a
    package is split.
 2. pnpr: serve release records at `<name>/<version>+r<revision>` for every
-   accepted revision, with immutable caching.
+   accepted revision, with immutable caching, and remove `dist.pnpr` from
+   npm's documents.
 3. pnpm: send the new media type, read the format, fetch the release
    records of picked versions without a manifest, cache them on disk, and
    keep these documents in a metadata cache directory of their own.
@@ -438,7 +471,8 @@ one function every pick goes through.
 5. pnpm: when the user points pnpm at a registry that does not serve the type,
    nothing changes, since it answers with the abbreviated document.
 
-Tests must cover an entry without a manifest, with and without flags; one with a time
+Tests must cover an entry without a manifest, with and without flags; npm's
+documents of the same package (no pnpr facts); one with a time
 inside the window (filtered by it), one without a time (passes any minimum
 release age), and one with a `null` time (handled as a missing time, passing
 or failing with `minimumReleaseAgeIgnoreMissingTime`); a caller-gated package
