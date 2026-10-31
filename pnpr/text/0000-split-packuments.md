@@ -4,10 +4,10 @@
 
 pnpr serves a large package document in a split form to clients that ask for
 it. The versions a fresh resolution almost always picks stay whole in
-`versions`. Every other version is a short entry in `pnpr.externalVersions`:
-its publish time and, where it has any, its deprecation notice, trust rank,
-and selected revision, which is what picking a version reads and what may
-change after publication. The rest of the version is its release record, an
+`versions`. Every other version is a short entry in `pnpr.otherVersions`
+with what picking a version reads and what may change after publication:
+its deprecation notice, trust rank, and selected revision where it has any,
+and its publish time if it is recent. The rest of the version is its release record, an
 immutable document at `<registry-base>/<name>/<version>+r<revision>`, which
 the client fetches only for a version it picks. Every response stays a plain
 GET that a CDN caches for everyone. Small documents, and clients that do not
@@ -71,14 +71,14 @@ pnpr answers with `Content-Type: application/vnd.pnpr.install-v2+json` and
 and get today's abbreviated or full document, so nothing changes for them.
 
 A document served under the new type may be whole. A client reads
-`pnpr.externalVersions`, not the media type, to know whether some versions
+`pnpr.otherVersions`, not the media type, to know whether some versions
 are elsewhere.
 
 ### The split document
 
 When the abbreviated document is larger than the threshold (see
 [Threshold](#threshold)), only the likely picks stay in `versions` and
-`time`, and every other version moves to `pnpr.externalVersions`:
+`time`, and every other version moves to `pnpr.otherVersions`:
 
 ```json
 {
@@ -96,18 +96,22 @@ When the abbreviated document is larger than the threshold (see
     }
   },
   "pnpr": {
-    "externalVersions": {
-      "1.4.0": "2025-03-02T10:00Z",
-      "1.4.1": ["2025-03-09T16:40Z", { "deprecated": "1.x is no longer maintained" }],
-      "1.5.0": ["2025-05-20T08:00Z", { "trust": "provenance", "revision": 2 }]
+    "timesSince": "2026-09-01T10:00Z",
+    "otherVersions": {
+      "1.4.0": {},
+      "1.4.1": { "deprecated": "1.x is no longer maintained" },
+      "1.5.0": { "trust": "provenance", "revision": 2 },
+      "2.2.0-rc.0": { "time": "2026-09-20T08:00Z" }
     }
   }
 }
 ```
 
-An entry is the version's publish time, or `[time, flags]` when it has any
-of these flags:
+An entry is an object with any of these fields:
 
+- `time`: the publish time, only when the version was published at or after
+  `pnpr.timesSince` (see [Publish times](#publish-times)), or `null` when the
+  registry has none.
 - `deprecated`: the deprecation message. pnpm skips a deprecated version when
   a range also matches one that is not, and shows the message when it does
   install one. A deprecation can be added or changed after publication, so it
@@ -123,35 +127,46 @@ of these flags:
   when it is not the original (`0`). Selecting a patched revision changes
   which release record the version is.
 
-The publish time is there because a minimum release age and time-based
-resolution filter versions by it before they pick one. It is `null` when the
-registry has no publish time for the version.
-
 Everything else, dependencies, engines, platform fields, bins, and the whole
 `dist` with its integrity and platform variants, is in the release record.
-All of it is read only after a version is picked, and a picked external
+All of it is read only after a version is picked, and a picked other
 version needs its record for the integrity anyway, so moving it costs no
 extra request.
 
-I measured the external entries of 16 popular packages in other shapes,
-gzipped. Entries kept inside `versions` with `name`, `version`, the
-`_npmUser` flags, `dist.attestations`, and a per-version marker took 157 KB.
-The flags alone, in a map of their own, took 68 KB. Dropping the deprecation
-text in favor of a flag would save another 1 KB, since messages repeat across
-versions. Merging the entries with the publish times, so each version string
-appears once, matters more: for 8 of those packages the publish times alone
-take 83.8 KB, the publish times and a separate map of entries 126.1 KB, and
+### Publish times
+
+A minimum release age filters versions by their publish time before it
+picks one, but it only needs to know whether a version is younger than the
+cutoff. So an entry carries its time only if the version was published within
+30 days of the package's last publish, and `pnpr.timesSince` says where that
+window starts. An entry without `time` was published before `timesSince`.
+
+pnpm accepts a minimum release age of at most 30 days. The window ends at
+the last publish, which is never later than now, so `timesSince` is at least
+30 days ago and every version without a time is old enough for any cutoff
+pnpm accepts. Counting the window from the last publish rather than from the
+current time keeps the document unchanged until the next publish, so it
+caches as well as today's.
+
+The times are most of the map's size. For 8 popular packages (react,
+typescript, `@types/node`, next, eslint, webpack, lodash, and `@babel/core`),
+the map took 105.2 KB gzipped with a time in every entry and 49.4 KB with
+the window, and the whole split document 198.6 KB and 142.8 KB. An object in
+every entry costs nothing measurable over a bare value, since most entries
+are `{}`. Merging the flags with the times, so each version string appears
+once, mattered too: in an earlier draft with a time for every version, the
+times alone took 83.8 KB, the times and a separate map of flags 126.1 KB, and
 the merged map 87.6 KB.
 
 ### Why a map of its own
 
-The external versions are not in `versions`, so a client that does not know
+The other versions are not in `versions`, so a client that does not know
 the split form, such as an older pnpm sharing a cache or a tool sent the
 media type, sees only complete versions. A version in `versions` without its
 dependencies would look valid to such a client, which would write a lockfile
 without that package's dependencies. With a map of its own, the worst such a
 client does is not find a version, or, when a range matches an older version
-held by a dist-tag and a newer external one, pick the tagged one.
+held by a dist-tag and a newer one in the map, pick the tagged one.
 
 A missing `integrity` keeps its meaning too: a version whose integrity the
 client computes while it fetches the tarball, as pnpm does today for
@@ -216,10 +231,10 @@ on every publish, for no saving. pnpr records the decision with the package.
 
 A client that opts in:
 
-1. Reads `pnpr.externalVersions` into its list of versions, with their
-   publish times, deprecations, and trust ranks, and picks a version as
-   today.
-2. If the picked version is external, fetches its release record, once per
+1. Reads `pnpr.otherVersions` into its list of versions, with their
+   deprecations and trust ranks, and picks a version as today. A version
+   without a time passes the minimum release age.
+2. If the picked version is one of the other versions, fetches its release record, once per
    URL per install, sharing an in-flight request between the resolutions that
    need it, and reads the version from it, dependencies included.
 3. Writes the lockfile exactly as today. The lockfile records the integrity,
@@ -250,13 +265,13 @@ a URL of its own for the split form; see
 
 ### Relation to other RFCs
 
-- [SQL metadata storage](https://github.com/pnpm/rfcs/pull/48) keeps
+- [SQL metadata storage](https://github.com/pnpm/rfcs/blob/main/pnpr/text/0000-sql-metadata-storage.md) keeps
   accepted manifests insert-only and stores tags, revision selections, and
   deprecations as mutable state beside them. The split form exposes that
   division to clients: a release record is one of its per-version fragments,
-  rendered, and the external entries are the mutable state. Its open
-  question, whether fragments become a client-facing read path, is answered
-  here with a narrow yes.
+  rendered, and the entries of the other versions are the mutable state. Its
+  open question, whether fragments become a client-facing read path, is
+  answered here with a narrow yes, and this RFC removes it from there.
 - [Platform variants](https://github.com/pnpm/rfcs/pull/51) relies on this RFC
   to keep variant archives out of large documents. Variant selection happens
   after a version is picked, so the variants move with the rest of the
@@ -322,14 +337,17 @@ one function every pick goes through.
 4. **Move only each version's `dist`**, keeping dependencies, engines, and
    variant platforms inline. An earlier draft did this, so that a resolver
    could walk a picked version's dependencies while its integrity was still
-   on the way. But the external versions are rare picks, and dependency
+   on the way. But the other versions are rare picks, and dependency
    lists pinned to the package's own version do not compress: next stays at
    379 KB gzipped, against 21 KB with whole versions moved. See
    [Prototype](#prototype) for both forms measured.
-5. **Keep external versions in `versions` with a marker** such as
+5. **Keep the other versions in `versions` with a marker** such as
    `dist.pnpr.details: "external"`, as an earlier draft did. A client that
    does not read the marker would take such a version for one without
-   dependencies; see [Why a map of its own](#why-a-map-of-its-own). Marking
+   dependencies; see [Why a map of its own](#why-a-map-of-its-own). It is
+   larger too: for 16 popular packages, such entries, with `name`,
+   `version`, the `_npmUser` flags, `dist.attestations`, and the marker,
+   took 157 KB gzipped, against 68 KB for the flags in a map of their own. Marking
    them by a missing `integrity` is worse still, since that is already a
    valid state with another meaning.
 6. **Incremental updates of the document**, sending only what changed since the
@@ -345,19 +363,21 @@ one function every pick goes through.
    package is split.
 2. pnpr: serve release records at `<name>/<version>+r<revision>` for every
    accepted revision, with immutable caching.
-3. pnpm: send the new media type, read `pnpr.externalVersions`, fetch the
-   release records of picked external versions, cache them on disk, and keep
+3. pnpm: send the new media type, read `pnpr.otherVersions`, fetch the
+   release records of picked other versions, cache them on disk, and keep
    split documents in a metadata cache directory of their own.
-4. pnpm: when the user points pnpm at a registry that does not serve the type,
+4. pnpm: reject a `minimumReleaseAge` above 30 days (43200 minutes).
+5. pnpm: when the user points pnpm at a registry that does not serve the type,
    nothing changes, since it answers with the abbreviated document.
 
-Tests must cover an external version with and without flags, a version
+Tests must cover an other version with and without flags, with a time
+inside the window, without one, and with a `null` one, a version
 deprecated after its record was cached (the new message shows), a selected
 patch revision (its record is fetched, not the original's), a version without
 `integrity` in `versions` (computed while fetching the tarball, as today), a
 pick of a likely pick (no second request), a pick under `overrides` and under
 time-based resolution (one request), a trust downgrade detected across
-external versions, an older pnpm sharing the home directory, and a frozen
+other versions, an older pnpm sharing the home directory, and a frozen
 install that reads no metadata.
 
 ## Prior Art
@@ -382,10 +402,13 @@ install that reads no metadata.
 
 - The threshold: it should be chosen from the size distribution of the
   registry, and measured on gzipped size rather than serialized JSON.
-- The `time` map is now a large part of a split document. A minimum release
-  age needs only whether a version is older than the cutoff, so coarser
-  timestamps, or none for versions older than any reasonable cutoff, would
-  shrink it.
+- [Time-based resolution](https://pnpm.io/settings#resolutionmode) picks a
+  subdependency published before the newest of the direct dependencies, so
+  it needs publish times older than the window. It could read them from the
+  full document, or treat a version without a time as published at
+  `timesSince`, which holds for any cutoff after it.
+- Should the window be fixed at 30 days, or should `timesSince` be free for
+  a registry to choose, with the client checking it against its cutoff?
 - A media type or a URL of its own (`/-/v2/<name>`, for example)? A URL needs
   no `Vary` and works with every CDN, but forks the routes; the media type
   keeps one URL per package.
