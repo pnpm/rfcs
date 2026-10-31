@@ -290,7 +290,7 @@ publisher-supplied `dist.pnpr` fields, as it does today:
 ```
 
 The full and abbreviated documents both carry `dist.pnpr.variants`, so
-resolution needs one document per package. `integrity` is the digest of the
+resolution needs no document per variant. `integrity` is the digest of the
 uncompressed tar, as for every pnpr archive. The abbreviated document omits
 `tarball`, which the client derives from the route below.
 
@@ -301,13 +301,50 @@ archive's dependencies in the one document it already fetches.
 
 The package's own document grows by what the variant documents carried for
 the same versions, minus their repeated names and manifests. Rebuilding
-today's data in this shape, gzipped: `esbuild` gains about 0.2 MB in place of
+today's data in this shape, gzipped: `esbuild` gains about 0.3 MB in place of
 1.0 MB across 26 documents, `@swc/core` 0.6 MB in place of 2.8 MB across 12,
-and rollup 0.3 MB in place of 0.9 MB across 27.
+and rollup 0.3 MB in place of 0.9 MB across 27. That is still a smaller
+download for pnpm, which fetches every platform package's document today, but
+it multiplies the document for every client that only reads the version list:
+`esbuild`'s grows from 90 KB to 361 KB gzipped (in the form pnpr serves today,
+without npm's legacy `npm-signature`), `@swc/core`'s from 190 KB to 764 KB.
+The variant integrities cause nearly all of it: a digest does not compress,
+while tags and platforms repeat from version to version.
 
-A package with per-ABI addons multiplies that. better-sqlite3 12.x attached 145
-prebuilds to each GitHub release (105 for Electron ABIs, 40 for Node.js). Such
-a package should move to N-API before it moves to variants.
+So pnpr serves large documents split, under a media type that clients opt
+into, as proposed for all packages in
+[the SQL metadata storage RFC](https://github.com/pnpm/rfcs/pull/48). A
+version's entry keeps each variant's `tag`, `platforms`, and differing
+dependencies, which is all resolution reads, and marks the version
+`dist.pnpr.details: "external"`. The integrities, sizes, `bins`, and the
+primary's own `dist` facts are in the immutable version document
+`<registry-base>/<name>/<version>`, which the resolver fetches for the
+versions it locks. A missing `integrity` cannot be the marker, because it
+already means the client computes the integrity while fetching the tarball.
+Split, `esbuild`'s document is 21 KB gzipped and `@swc/core`'s 50 KB, smaller
+than today's 90 KB and 190 KB without variants, because the primary's digest
+and npm's registry signatures leave too. Small documents stay whole, so a
+small package costs no extra request. The versions a fresh resolution almost
+always picks keep their `dist` inline too: every dist-tag target and the
+highest release of each major (of each minor below 1.0). Most picks then need
+no second request.
+
+The prototype measured this on an app of 787 packages proxied from npmjs,
+through a proxy that gzips and caches like a CDN, with an empty pnpm cache in
+every run. Resolution took 1.21 s instead of 1.71 s at 10 ms and 200 Mbit/s,
+3.98 s instead of 6.67 s at 40 ms and 50 Mbit/s, and 19.0 s instead of
+31.9 s at 100 ms and 10 Mbit/s. Packuments shrank from 39.2 MB to 23.0 MB
+gzipped, and only 14 version documents were fetched. A full install at
+40 ms and 50 Mbit/s took 27.4 s instead of 29.9 s, as tarballs dominate it.
+
+A [release record](https://github.com/pnpm/rfcs/pull/49) of a version with
+variants covers every archive of the version, the primary and each variant,
+so the record, like the version document, describes the version as one
+release.
+
+A package with per-ABI addons multiplies the variant count. better-sqlite3
+12.x attached 145 prebuilds to each GitHub release (105 for Electron ABIs, 40
+for Node.js). Such a package should move to N-API before it moves to variants.
 
 ### Archive routes
 
@@ -579,6 +616,7 @@ published to a local pnpr, then installed by real projects:
 | Resolution with a different `supportedArchitectures`, and resolution by pnpr's server-side resolver | The lockfile is byte-identical to a local resolution on the host. |
 | The musl variants and the static Linux variants in Alpine containers | biome, typst, esbuild, and the Tailwind build run. typst's musl-only build serves the glibc host through one variant with two platforms. |
 | `@tailwindcss/oxide` with its `wasm32-wasi` build as the primary and the wasm runtime bundled | An unmatched host scans through the wasm build. Native hosts install none of the runtime packages. |
+| Split packuments, resolving a 787-package app with an empty cache | 29% to 40% faster resolution; see [Metadata](#metadata). |
 | Publishing variants that break each invariant | Each is rejected with a reason, including a variant with an extra dependency under the earlier rule. A bundled extra dependency is accepted. A variant added to a published version is rejected. |
 
 The prototype found these problems, now addressed above:
