@@ -313,7 +313,7 @@ while tags and platforms repeat from version to version.
 
 So pnpr serves large documents split, in a format of its own under a media
 type that clients opt into, as proposed for all packages in
-[the split packuments RFC](https://github.com/pnpm/rfcs/pull/54). Every
+[the split packuments RFC](https://github.com/pnpm/rfcs/blob/main/pnpr/text/0000-split-packuments.md). Every
 version has a short entry with its deprecation, trust rank, selected
 revision, and its publish time if that is recent, and the likely picks,
 every dist-tag target and the highest release of each major (of each minor
