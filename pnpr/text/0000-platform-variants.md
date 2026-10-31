@@ -313,7 +313,7 @@ while tags and platforms repeat from version to version.
 
 So pnpr serves large documents split, under a media type that clients opt
 into, as proposed for all packages in
-[the SQL metadata storage RFC](https://github.com/pnpm/rfcs/pull/48). A
+[the split packuments RFC](https://github.com/pnpm/rfcs/pull/54). A
 version's entry keeps each variant's `tag`, `platforms`, and differing
 dependencies, which is all resolution reads, and marks the version
 `dist.pnpr.details: "external"`. The integrities, sizes, `bins`, and the
