@@ -54,7 +54,10 @@ separately. Rendering both from one committed generation removes that class.
 
 Accepted version manifests are insert-only. Tags, revision selections,
 deprecations, and access rules change independently and never update an
-accepted manifest row.
+accepted manifest row. Archives and evidence bundles are durably written and
+verified before the SQL transaction that references them commits; a rolled-back
+transaction leaves only unreferenced staged blobs for garbage collection after
+a grace period.
 
 ### Domain operations
 
@@ -96,10 +99,11 @@ revision, including `r0`; it is an internal key, not new version syntax.
 | --- | --- | --- |
 | `versions` | `(package_key, version, revision_key)` | Insert-only artifact integrity assignment. |
 | `accepted_manifests` | `(package_key, version, revision_key, profile)` | Insert-only archive-derived manifest and raw input digests. |
+| `selected_revisions` | `(package_key, version)` | Points to the active `revision_key` when patch revisions exist. |
 | `tags` | `(package_key, tag)` | Points to a version; changes are versioned. |
 | `tag_history` | `(package_key, tag, generation)` | Insert-only: previous and new target, principal, and time. Release-age and downgrade policies can then see when a tag moved, not only where it points. |
 | `annotations` | `(package_key, version)` | Deprecations and other mutable annotations. |
-| `readmes` | `(package_key, version)` | Kept out of version fragments, so a README never inflates resolution metadata. |
+| `readmes` | `(package_key, version, revision_key)` | Kept out of version fragments, so a README never inflates resolution metadata. |
 | `publication_outcomes` | `(registry, principal, idempotency_key)` | Request integrity and committed result. |
 
 All key columns are non-null, so a nullable revision column cannot weaken
@@ -126,14 +130,15 @@ versions and mutable state.
 
 ### Read-after-write
 
-Every committed mutation advances the package generation. Package responses
-carry it in a response header, and a publication or tag change returns the
-generation it committed. A client that has just published can send the
-generation as a minimum. A cache holding an older view revalidates
-instead of answering, so a version the client just published is never reported
-as missing. pnpm can then drop its post-publish polling
-(`--publish-wait-timeout`) against a server that advertises this capability.
-Header and capability names are open.
+Every committed mutation advances a monotonic registry generation and records
+it as the affected package's generation (or across all packages in a
+multi-package transaction). Package responses carry it in a response header,
+and a publication or tag change returns the generation it committed. A client
+that has just published can send the generation as a minimum. A cache holding
+an older view revalidates instead of answering, so a version the client just
+published is never reported as missing. pnpm can then drop its post-publish
+polling (`--publish-wait-timeout`) against a server that advertises this
+capability. Header and capability names are open.
 
 Returning a full package document still costs its emitted bytes. This reduces
 repeated database reads and rendering work; it does not make large documents
@@ -190,6 +195,7 @@ update reuses unchanged fragments.
 - Which shared backend ships first, and in which deployment mode?
 - Should the per-version fragments themselves become a client-facing read
   path, so a resolver fetches only the versions a range can match? This would
-  extend the cache split above into the protocol.
+  extend the cache split above into the protocol (drafted in
+  [pnpm/rfcs#54](https://github.com/pnpm/rfcs/pull/54)).
 - What logical export format and coordinated metadata/blob backup process
   should operators use?
