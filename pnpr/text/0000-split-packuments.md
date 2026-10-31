@@ -140,6 +140,12 @@ changed. Each version's entry is an object with any of these fields:
   derives it, in its abbreviated form, without `dist`, `name`, and
   `version`, and without what may change after publication.
 
+Each fact about the archives is left out when it does not apply or is not
+known: `bins` when the archive has no executables, `variants` when the
+version has none, `fileCount`, `unpackedSize`, and `requiresBuild` when pnpr
+has not derived them, and `integrity` as described below. The examples here
+show only some of them.
+
 The entry keeps the publisher's manifest apart from what pnpr writes: the
 mutable state (`deprecated`, `trust`, `revision`), the publish time, and the
 facts pnpr derives from the archives sit at the entry's top level. A field
@@ -462,7 +468,8 @@ one function every pick goes through.
    publish-time window of at least 30 days (30 by default), and record that a
    package is split.
 2. pnpr: serve release records at `<name>/<version>+r<revision>` for every
-   accepted revision, with immutable caching, and remove `dist.pnpr` from
+   accepted revision, with immutable caching, and remove `dist.pnpr`,
+   `variants`, and any variant declarations pnpr stores with a version from
    npm's documents.
 3. pnpm: send the new media type, read the format, fetch the release
    records of picked versions without a manifest, cache them on disk, and
