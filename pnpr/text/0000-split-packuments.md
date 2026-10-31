@@ -138,13 +138,25 @@ extra request.
 A minimum release age filters versions by their publish time before it
 picks one, but it only needs to know whether a version is younger than the
 cutoff. So an entry carries its time only if the version was published within
-30 days of the package's last publish, and `pnpr.timesSince` says where that
-window starts. An entry without `time` was published before `timesSince`.
+a window before the package's last publish, 30 days by default, and
+`pnpr.timesSince` says where that window starts. An entry without `time` was
+published before `timesSince`, and the client treats it as published at
+`timesSince`.
 
-pnpm accepts a minimum release age of at most 30 days. The window ends at
+A registry can make the window longer, which costs bytes, but not shorter
+than 30 days: pnpm accepts a minimum release age of at most 30 days. The window ends at
 the last publish, which is never later than now, so `timesSince` is at least
 30 days ago and every version without a time is old enough for any cutoff
-pnpm accepts. Counting the window from the last publish rather than from the
+pnpm accepts.
+
+[Time-based resolution](https://pnpm.io/settings#resolutionmode) treats a
+version without a time as published at `timesSince` too. It picks a
+subdependency published before the newest of the direct dependencies, and
+for a cutoff at or after `timesSince` the result is exact. For an earlier
+cutoff, when the package was published to more than the window after it, the
+versions published before the cutoff have no time, so they look newer than
+it, and pnpm resolves the package as it does when no version was published
+before the cutoff. Counting the window from the last publish rather than from the
 current time keeps the document unchanged until the next publish, so it
 caches as well as today's.
 
@@ -359,7 +371,8 @@ one function every pick goes through.
 ## Implementation
 
 1. pnpr: serve the split form under the new media type with `Vary: Accept`,
-   with the likely-picks rule and a configurable threshold, and record that a
+   with the likely-picks rule, a configurable threshold, and a configurable
+   publish-time window of at least 30 days (30 by default), and record that a
    package is split.
 2. pnpr: serve release records at `<name>/<version>+r<revision>` for every
    accepted revision, with immutable caching.
@@ -402,13 +415,6 @@ install that reads no metadata.
 
 - The threshold: it should be chosen from the size distribution of the
   registry, and measured on gzipped size rather than serialized JSON.
-- [Time-based resolution](https://pnpm.io/settings#resolutionmode) picks a
-  subdependency published before the newest of the direct dependencies, so
-  it needs publish times older than the window. It could read them from the
-  full document, or treat a version without a time as published at
-  `timesSince`, which holds for any cutoff after it.
-- Should the window be fixed at 30 days, or should `timesSince` be free for
-  a registry to choose, with the client checking it against its cutoff?
 - A media type or a URL of its own (`/-/v2/<name>`, for example)? A URL needs
   no `Vary` and works with every CDN, but forks the routes; the media type
   keeps one URL per package.
