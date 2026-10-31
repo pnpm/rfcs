@@ -85,6 +85,12 @@ A version has:
 - zero or more **variants**, each an archive, a **tag** that names it, and the
   list of **platforms** it runs on.
 
+A platform is one combination of OS, CPU, and C library, with the fields in
+[Platform tags](#platform-tags), and a variant lists its platforms one by one.
+It does not use the `os`, `cpu`, and `libc` arrays of `package.json`, which
+match every combination of their values: a build for glibc x64 and musl
+arm64 declared that way also claims musl x64 and glibc arm64.
+
 A variant usually has one platform. It lists several when one build serves
 several hosts:
 
@@ -103,7 +109,10 @@ variant matches, with an error that lists the published platforms, and skips
 the package when it is an optional dependency. npm clients get a primary that
 pnpr generates: a `package.json` with the version's name, version, and the
 union of the variants' `os` and `cpu`, so npm reports an unsupported platform
-instead of installing an empty package.
+instead of installing an empty package. Those fields match every combination
+of their values, so a host whose OS and CPU each appear in some variant, but
+not together, still gets the empty package; the
+[compatibility view](#clients-that-do-not-read-variants) avoids that.
 
 A variant archive is a complete package for its platform, not an overlay on
 the primary. Its `package.json` has the same `name` and `version` as the
@@ -130,7 +139,9 @@ rejects the version unless:
 - no variant requires a build (`dist.pnpr.requiresBuild` is false), so a
   variant never needs an `allowBuilds` entry;
 - every variant's `os`, `cpu`, and `libc` fields, if present, include each of
-  its platforms;
+  its platforms. These fields never select a variant; the check only rejects
+  a manifest that would make a client skip the variant on a platform it
+  serves;
 - no two variants have the same tag, and no two variants list the same
   platform with the same floors, so no host can tie between them.
 
@@ -387,9 +398,10 @@ as a new `lockfileVersion`.
   so CLIs need no spawning shim.
 - `supportedArchitectures` decides which variants are fetched into the store,
   for `pnpm fetch`, Docker images, and Lambda bundles: every variant that
-  matches a platform in its cross product of `os`, `cpu`, and `libc`, and the
-  primary when one of those platforms matches none. Only one variant can be
-  linked under a package's name. The linked one is the host's, or, if
+  matches one of its platforms, and the primary when one of those platforms
+  matches none. Its list form names each platform; its `os`, `cpu`, and
+  `libc` form stands for every combination of its values. Only one variant
+  can be linked under a package's name. The linked one is the host's, or, if
   `supportedArchitectures` lists exactly one platform and omits `current`,
   that platform's.
 - The installer links a dependency listed in `archiveDependencies` only when
@@ -461,12 +473,15 @@ esbuild or biome that primary has no binary, so those users get a package
 that fails when it runs. A publisher whose users are not all on pnpm needs
 either a primary that works everywhere, such as a wasm build, or a generated
 compatibility view: the primary version's npm-visible
-`optionalDependencies` lists one reserved name per variant, and each reserved
-name serves a single version with the variant's `os`, `cpu`, `libc`,
-dependencies, and archive, which is the layout those clients read today.
-Reserved names cannot be published directly. The primary archive
-then needs the loader that esbuild-style packages ship today. pnpm ignores
-the generated entries when it reads `dist.pnpr.variants`.
+`optionalDependencies` lists reserved names, and each reserved name serves a
+single version with a variant's `os`, `cpu`, `libc`, dependencies, and
+archive, which is the layout those clients read today. A variant gets one
+reserved name when every combination of its platforms' OS, CPU, and C library
+is one of its platforms, such as `darwin-universal`, and one per platform
+otherwise, so the `os`, `cpu`, and `libc` arrays never claim a platform the
+variant does not serve. Reserved names cannot be published directly. The
+primary archive then needs the loader that esbuild-style packages ship today.
+pnpm ignores the generated entries when it reads `dist.pnpr.variants`.
 
 A publisher that needs the view cannot migrate until pnpr serves it, so it
 ships with the rest, not after it.
