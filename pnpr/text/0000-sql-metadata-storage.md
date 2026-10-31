@@ -122,6 +122,8 @@ versions and mutable state.
   annotation generation. A tag change reuses all
   fragments; a new release renders one new fragment; a deprecation re-renders
   one fragment.
+- Large documents are also served in a [split form](0000-split-packuments.md)
+  whose release records are these fragments, without the mutable state.
 - Cache assembled full and abbreviated responses keyed by representation and
   committed package generation, plus any authorization context the existing
   cache contract requires. Coalesce concurrent misses.
@@ -193,9 +195,5 @@ update reuses unchanged fragments.
 - What schema, indexes, and isolation strategy meet the domain contract on
   SQLite and the first shared backend?
 - Which shared backend ships first, and in which deployment mode?
-- Should the per-version fragments themselves become a client-facing read
-  path, so a resolver fetches only the versions a range can match? This would
-  extend the cache split above into the protocol (drafted in
-  [pnpm/rfcs#54](https://github.com/pnpm/rfcs/pull/54)).
 - What logical export format and coordinated metadata/blob backup process
   should operators use?
