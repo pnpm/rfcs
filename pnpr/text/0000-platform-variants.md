@@ -118,6 +118,29 @@ A variant archive is a complete package for its platform, not an overlay on
 the primary. Its `package.json` has the same `name` and `version` as the
 primary. Linking a variant means extracting its archive as the package.
 
+A variant's `package.json` declares the variant, so the archive describes
+itself and nothing about it is supplied beside the upload:
+
+```json
+{
+  "name": "fast-thing",
+  "version": "1.4.0",
+  "platformVariant": {
+    "tag": "linux-x64-static",
+    "platforms": ["linux-x64", "linux-x64-musl"]
+  },
+  "bin": { "fast-thing": "bin/fast-thing" }
+}
+```
+
+`platforms` lists [platform tags](#platform-tags), each one combination.
+`tag` may be omitted when the variant has one platform, and is then that
+platform's tag. pnpr reads the declaration from the verified archive and
+derives `dist.pnpr.variants` from it, as it derives every other `dist.pnpr`
+fact, so the archive's provenance statement covers where the build claims to
+run. The primary archive has no `platformVariant` field. The field name is a
+placeholder.
+
 The variant set is part of the immutable version. It is fixed when the version
 is published, and a [registry revision](./0000-integrity-addressed-patch-revisions.md)
 replaces it as a whole.
@@ -138,10 +161,9 @@ rejects the version unless:
   (`bundleDependencies`), so the lockfile resolves each name once;
 - no variant requires a build (`dist.pnpr.requiresBuild` is false), so a
   variant never needs an `allowBuilds` entry;
-- every variant's `os`, `cpu`, and `libc` fields, if present, include each of
-  its platforms. These fields never select a variant; the check only rejects
-  a manifest that would make a client skip the variant on a platform it
-  serves;
+- every variant declares `platformVariant` with at least one platform, and
+  no `os`, `cpu`, or `libc` field, so a variant has one statement of where it
+  runs and it cannot disagree with another;
 - no two variants have the same tag, and no two variants list the same
   platform with the same floors, so no host can tie between them.
 
@@ -189,7 +211,7 @@ an unresolved question.
 A variant's tag is its name in routes and the lockfile. For a variant with one
 platform it is that platform's tag; for one with several, the publisher picks a
 name in the same character set, such as `linux-x64-static` or
-`darwin-universal`.
+`darwin-universal`, and declares it in `platformVariant.tag`.
 
 `process.arch` reports `arm` for both ARMv6 and ARMv7. napi-rs builds `arm`
 as ARMv7 (`gnueabihf`, `musleabihf`), and the vocabulary keeps that meaning. gh,
@@ -445,7 +467,7 @@ jobs, so staged publishing collects them:
 # one job: stage the primary archive
 pnpm stage publish
 # each matrix job: attach its variant to the stage
-pnpm stage add-variant <stage-id> --platform linux-x64-musl ./fast-thing-1.4.0-linux-x64-musl.tgz
+pnpm stage add-variant <stage-id> ./fast-thing-1.4.0-linux-x64-musl.tgz
 # final job: publish the primary and every variant at once
 pnpm stage approve <stage-id>
 ```
@@ -543,9 +565,11 @@ A prototype implemented the pnpr publication checks, `dist.pnpr.variants`, the
 variant route, and the pnpm resolution, lockfile, and install parts, without
 staged publishing, the floor and ABI fields, `wasm32`, the compatibility
 view, or dependencies that differ between archives: it enforced an earlier,
-stricter rule that every archive declares the same dependencies. Real
-packages from npm were converted into a primary and variants and published to
-a local pnpr, then installed by real projects:
+stricter rule that every archive declares the same dependencies. It also took
+each variant's tag and platforms from the publish request rather than from
+`platformVariant`, and checked the variant's `os`, `cpu`, and `libc` against
+them. Real packages from npm were converted into a primary and variants and
+published to a local pnpr, then installed by real projects:
 
 | Scenario | Result |
 | --- | --- |
@@ -625,10 +649,13 @@ falling back to the primary, a frozen install on a platform that did not resolve
 the lockfile, a variant with a dependency the primary lacks (linked only where
 that variant is selected), a name declared with two specifiers by two archives
 (rejected), a variant whose peer dependencies differ (rejected), a variant that
-requires a build (rejected), a static Linux variant selected on a musl host, a
-version without a primary on an unmatched host, two variants that list the same
-platform (rejected), a stage approved with a missing variant or with provenance
-from another commit, and variants under a registry revision.
+requires a build (rejected), a variant without `platformVariant` or with an
+`os`, `cpu`, or `libc` field (rejected), a variant whose platforms are not a
+full cross product served to npm through the compatibility view, a static Linux
+variant selected on a musl host, a version without a primary on an unmatched
+host, two variants that list the same platform (rejected), a stage approved with
+a missing variant or with provenance from another commit, and variants under a
+registry revision.
 
 ## Prior Art
 
@@ -647,6 +674,9 @@ from another commit, and variants under a registry revision.
 
 ## Unresolved Questions and Bikeshedding
 
+- The name of the `platformVariant` field. It must not collide with a field
+  npm might add, and a name under a pnpr namespace would say that only pnpr
+  reads it.
 - The string form of floors and ABI fields in tags, for example
   `darwin-arm64-macos_11_0` or `linux-x64-manylinux_2_17-napi8`.
 - Should two archives be allowed different specifiers for one dependency
