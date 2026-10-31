@@ -316,23 +316,22 @@ into, as proposed for all packages in
 [the split packuments RFC](https://github.com/pnpm/rfcs/pull/54). The
 likely picks, every dist-tag target and the highest release of each major
 (of each minor below 1.0), stay whole in `versions`. Every other version
-moves to `pnpr.externalVersions` as its publish time plus its deprecation,
-trust rank, and selected revision. Its dependencies, its variants, and every
+moves to `pnpr.otherVersions` with its deprecation, trust rank, selected
+revision, and its publish time if that is recent. Its dependencies, its variants, and every
 integrity are in its immutable release record
 `<registry-base>/<name>/<version>+r<revision>`, which the resolver fetches
 for the versions it picks. Variant selection happens after a version is
-picked, so the variants move with the rest of the version. Split, with
-publish times, `esbuild`'s document with variants is 35 KB gzipped, most of
-it the 29 versions it keeps whole, one per 0.x minor, and `@swc/core`'s is
-12 KB, both smaller than today's 90 KB and 190 KB without variants.
+picked, so the variants move with the rest of the version. Split,
+`esbuild`'s document with variants is 32 KB gzipped, most of it the 29
+versions it keeps whole, one per 0.x minor, and `@swc/core`'s is 7 KB, both smaller than today's 90 KB and 190 KB without variants.
 
 The prototype measured this on an app of 787 packages proxied from npmjs,
 through a proxy that gzips and caches like a CDN, with an empty pnpm cache in
-every run. Resolution took 0.37 s instead of 1.34 s at 10 ms and 200 Mbit/s,
-1.13 s instead of 5.06 s at 40 ms and 50 Mbit/s, and 4.8 s instead of
-24.7 s at 100 ms and 10 Mbit/s. Packuments shrank from 30.3 MB to 5.3 MB
+every run. Resolution took 0.32 s instead of 1.36 s at 10 ms and 200 Mbit/s,
+1.01 s instead of 5.05 s at 40 ms and 50 Mbit/s, and 4.0 s instead of
+24.7 s at 100 ms and 10 Mbit/s. Packuments shrank from 30.3 MB to 4.3 MB
 gzipped, and 22 release records were fetched. A full install at 40 ms and
-50 Mbit/s took 24.4 s instead of 28.4 s, as tarballs dominate it.
+50 Mbit/s took 24.3 s instead of 28.5 s, as tarballs dominate it.
 
 A [release record](https://github.com/pnpm/rfcs/pull/49) of a version with
 variants covers every archive of the version, the primary and each variant,
