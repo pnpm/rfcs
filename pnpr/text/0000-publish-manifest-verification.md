@@ -80,10 +80,11 @@ Install-critical fields include:
 - `bundleDependencies` / `bundledDependencies`.
 - `os`, `cpu`, `libc`, and `engines`.
 - `bin` and `directories.bin`.
-- Lifecycle-script presence (`hasInstallScript`): `preinstall`, `install`, or
-  `postinstall`, or a root `binding.gyp` in the archive without those scripts
-  and without `gypfile: false`. pnpr's `dist.pnpr.requiresBuild` already
-  derives this from the verified archive.
+- Lifecycle scripts (`preinstall`, `install`, `postinstall`) and derived
+  `hasInstallScript` (true when any of those scripts is present, or when a root
+  `binding.gyp` is in the archive without those scripts and without
+  `gypfile: false`). pnpr's `dist.pnpr.requiresBuild` already derives this from
+  the verified archive.
 - Shrinkwrap presence and contents.
 
 The exact field set, and how absent and empty values compare, must be fixed
@@ -153,7 +154,8 @@ for example `c8@12.0.0`, `eslint@10.13.0`, and `cross-env@10.1.0`.
 
 The profile therefore also normalizes:
 
-- An empty dependency map or `bin` object equals an absent field.
+- An empty dependency map, `bin` object, or `engines` object equals an absent
+  field, as does `engines: {"node": "*"}` added by `normalize-package-data`.
 - `directories.bin` expands into `bin` entries.
 - `version` compares without semver build metadata, which npm's version
   cleaning drops. pnpm already reserves `+rN` build metadata for
@@ -193,9 +195,9 @@ blocked, or left as-is is an operator decision.
 1. **Client-side check at install time.** pnpm already extracts the archive and
    could compare its `package.json` with the manifest the resolver used. This
    protects against every registry, including the public npm registry, and is
-   worth proposing separately. It complements this RFC: it detects the problem
-   after resolution, while publish-time verification prevents it from being
-   published.
+   proposed in [pnpm/rfcs#50](https://github.com/pnpm/rfcs/pull/50). It
+   complements this RFC: it detects the problem after resolution, while
+   publish-time verification prevents it from being published.
 2. **Silently replace the submitted manifest with the archive-derived one.**
    Avoids rejecting publications, but hides publisher tooling bugs and makes
    the published metadata differ from what the publisher saw.
