@@ -327,7 +327,10 @@ and npm's registry signatures leave too. Small documents stay whole, so a
 small package costs no extra request. The versions a fresh resolution almost
 always picks keep their `dist` inline too: every dist-tag target and the
 highest release of each major (of each minor below 1.0). Most picks then need
-no second request.
+no second request. A client keeps split documents in a metadata cache of their
+own: an older release that shares the cache directory must never read a
+version whose integrity it cannot find. The prototype hit exactly that, an
+older pnpm on `PATH` reading a split document that the new one had cached.
 
 The prototype measured this on an app of 787 packages proxied from npmjs,
 through a proxy that gzips and caches like a CDN, with an empty pnpm cache in
