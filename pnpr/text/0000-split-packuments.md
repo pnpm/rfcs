@@ -201,8 +201,13 @@ today for registries that omit it.
 A version's release record is served at
 `<registry-base>/<name>/<version>+r<revision>`
 (`<registry-base>/@scope%2fname/<version>+r<revision>` for a scoped name),
-next to the tarball's `<name>@<version>+r<revision>` route, and it is the
-`manifest` of the version's entry, with `name` and `version`. It is the
+and it is the `manifest` of the version's entry, with `name` and `version`.
+It is a metadata endpoint, separate from the revision route of
+[integrity-addressed patch revisions](https://github.com/pnpm/rfcs/blob/main/pnpr/text/0000-integrity-addressed-patch-revisions.md),
+`<name>@<version>+r<revision>`, which serves the revision's tar. The record
+extends the version-document route `<name>/<version>`, which pnpr and npm
+already serve, with the same `+r<revision>` suffix, so a scoped name keeps
+the same escaping on both routes. It is the
 abbreviated version object of that revision without what may change after
 publication or what
 [release records](https://github.com/pnpm/rfcs/pull/49) keep as separate
@@ -215,6 +220,13 @@ the headers of every caller-gated response
 `Cache-Control: private, no-store` and `Vary: Authorization`, for its
 release records and its package document alike. The client still caches
 the records on disk for the caller that fetched them.
+
+A record that was served publicly stays in shared caches for its lifetime,
+like the public tarball of the same version. So when a package goes from
+public to caller-gated, pnpr purges its records from the CDN together with
+its tarballs and documents, as the operator's CDN integration does for any
+visibility change. Without a purge integration, pnpr refuses that
+transition for a package whose records were served publicly.
 
 The address carries the revision because `<name>/<version>` does not name
 fixed content: it is the registry's currently selected revision, and
@@ -265,11 +277,15 @@ publish, for no saving. pnpr records the decision with the package.
 A client that opts in:
 
 1. Reads every entry into its list of versions, with their deprecations
-   and trust ranks, and picks a version as today. A version without a time
-   passes the minimum release age.
+   and trust ranks, and picks a version as today. An entry without a `time`
+   field is recorded as published at `timesSince`, so it passes any minimum
+   release age pnpm accepts. An entry with `time: null` has an unknown
+   publish time and goes through `minimumReleaseAgeIgnoreMissingTime`, as a
+   missing time does today.
 2. If the picked version has no manifest in the document, fetches its
-   release record, once per URL per install, sharing an in-flight request between the resolutions that
-   need it, and reads the version from it, dependencies included.
+   release record, once per URL per install, sharing an in-flight request
+   between the resolutions that need it, and reads the version from it,
+   dependencies included.
 3. Writes the lockfile exactly as today. The lockfile records the integrity,
    so a frozen install reads no metadata at all and never sees the split.
 
@@ -283,6 +299,17 @@ this: an older pnpm on `PATH`, started by the version switch, read a split
 document the new pnpm had cached and failed.
 
 ### CDN caching
+
+A document in the new format is a generated view of the package, like the
+abbreviated and full documents, and follows the same cache contract as they
+do in
+[SQL metadata storage](https://github.com/pnpm/rfcs/blob/main/pnpr/text/0000-sql-metadata-storage.md):
+pnpr caches it keyed by representation, the package's committed generation,
+and any authorization context, gives it bounded freshness, and revalidates
+the generation when that expires. A tag move, a deprecation, a trust
+change, or a newly selected revision is a committed mutation, so it advances
+the generation and the next response reflects it. Release records are the
+exception: they never change, so they need no revalidation.
 
 Every response is a GET addressed by its URL and the `Accept` header. There
 are no range queries, `?since=` cursors, or POST lookups, because each of
@@ -415,7 +442,10 @@ Tests must cover an entry without a manifest, with and without flags; one with a
 inside the window (filtered by it), one without a time (passes any minimum
 release age), and one with a `null` time (handled as a missing time, passing
 or failing with `minimumReleaseAgeIgnoreMissingTime`); a caller-gated package
-(its records and document are `private, no-store`); a version
+(its records and document are `private, no-store`); a public package made
+caller-gated (its records are purged, or the change is refused); a
+deprecation, tag move, and revision selection each changing the next
+document; a scoped package's release record fetched through a CDN; a version
 deprecated after its record was cached (the new message shows), a selected
 patch revision (its record is fetched, not the original's), a version without
 `integrity` in `versions` (computed while fetching the tarball, as today), a
