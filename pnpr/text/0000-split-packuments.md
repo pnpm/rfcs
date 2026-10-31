@@ -156,7 +156,8 @@ for a cutoff at or after `timesSince` the result is exact. For an earlier
 cutoff, when the package was published to more than the window after it, the
 versions published before the cutoff have no time, so they look newer than
 it, and pnpm resolves the package as it does when no version was published
-before the cutoff. Counting the window from the last publish rather than from the
+before the cutoff. This is accepted: time-based resolution is rarely used, and
+it stays exact within the window. Counting the window from the last publish rather than from the
 current time keeps the document unchanged until the next publish, so it
 caches as well as today's.
 
