@@ -85,12 +85,16 @@ Turso-specific API or depend on one vendor's replication behavior.
 
 A transaction may contain new releases and the tag or revision-selection
 changes that should accompany them. All participants must belong to the same
-supported catalog. Reject an unsupported cross-catalog request before commit;
-do not silently split it into several transactions.
+organization's hosted catalog, which is the transaction scope. Reject a
+request that spans organizations before commit; do not silently split it into
+several transactions.
 
-Cross-ecosystem publication can share this boundary when all the ecosystem
-views read the same catalog. Independent npm, Cargo, Python, or OCI indexes
-cannot each be updated as separate authorities while claiming atomicity.
+The first implementation covers every ecosystem that pnpr hosts, not npm
+alone: one organization's npm, Cargo, Python, and OCI packages share one
+catalog, so a transaction may publish members of several ecosystems, as
+pnpr's batch publish already accepts. Independent npm, Cargo, Python, or OCI
+indexes cannot each be updated as separate authorities while claiming
+atomicity.
 Protocol views must be derived from the committed catalog reference.
 
 Every hosted writer that affects catalog state participates in this model:
@@ -167,6 +171,10 @@ Clients supply an idempotency key scoped to the organization and publisher
 identity. Bind that key to a digest of the complete request. Reusing it with a
 different request is a conflict. The request identity is scoped to a stable
 principal, not a bearer-token string that changes during token rotation.
+A publication's name is not an idempotency key. The name is chosen to be read
+and outlives the transaction; the key identifies one attempt. A client that
+lost the response can still find its transaction by name through the
+publications route.
 
 Recovering a committed outcome is a read, not a mutation. When a retry
 matches a committed transaction, pnpr returns the recorded outcome to the
@@ -183,10 +191,19 @@ recorded success, not a conflict. The match covers the whole request: the
 same archive with different tag changes is a conflict, not a replay. A
 different archive for the same version is still a conflict.
 
+A batch without a key is keyed the same way, by a digest over every entry's
+archive integrity and accepted manifest and every tag or revision-selection
+change in the request. A retry with the same digest returns the recorded
+outcome; a request that shares versions with a committed batch but has a
+different digest is a conflict.
+
 A timed-out commit has an unknown outcome to the client. The client queries or
 retries the same transaction to learn its durable state. Idempotency results
-must survive crashes and the documented retry period. A retry must not create
-another catalog generation for an already committed transaction.
+must survive crashes and the retry period, which is at least 7 days, well
+past any client's retry window. A retry must not create another catalog
+generation for an already committed transaction. Content-keyed outcomes need
+no separate record after that period: the committed releases themselves
+decide whether a later identical request is a replay.
 
 ### Publication visibility and read consistency
 
@@ -266,9 +283,11 @@ replica-local journal, determines whether publication became authoritative.
 
 Uncommitted candidates are protected while a transaction can still commit.
 Garbage collection must coordinate with active transactions and retained
-generations. Old generations remain reachable while a snapshot or retention
-reference needs them. Deleting a tag never makes a retained artifact eligible
-for accidental collection.
+generations. pnpr keeps the current generation and every generation that a
+snapshot read has pinned, until the pin expires; a generation with neither
+reference may be collected. Old generations remain reachable while a
+snapshot or retention reference needs them. Deleting a tag never makes a
+retained artifact eligible for accidental collection.
 
 Recovery and idempotency information required to decide a committed outcome
 must commit in the same SQL transaction as the release bindings and selections.
@@ -306,10 +325,10 @@ Index package and generation lookups and batch metadata reads. The schema must
 preserve historical generations without keeping a database transaction open
 for a client's entire install.
 
-The catalog and policy epoch can be contention points. Initially scope them to
-an organization and hosted catalog, reuse existing artifact storage, and
-benchmark realistic concurrent publishers before expanding the boundary. Avoid
-a global catalog counter, per-download writes, and long write transactions.
+The catalog and policy epoch can be contention points. Scoping them to one
+organization's hosted catalog keeps contention local; reuse existing artifact
+storage and benchmark realistic concurrent publishers before expanding the
+boundary. Avoid a global catalog counter, per-download writes, and long write transactions.
 Partitioning is acceptable only when it preserves the advertised boundary;
 splitting a batch across shards without coordination is not atomic publication.
 
@@ -381,15 +400,6 @@ claim that atomicity is free or faster than the existing publication path.
 
 - What versioned SQL catalog schema and policy-epoch locking or validation
   strategy preserve the contract on each supported backend?
-- Is one organization and hosted catalog the right initial transaction scope?
-- How should clients query transaction outcomes and pin read generations? A
-  publication's name names a committed transaction; should it also serve as
-  the idempotency key?
-- How long should idempotency records and unreferenced generations survive?
-- Should content-keyed idempotency for keyless clients also cover batches,
-  where the batch digest is the key?
-- Should the first implementation cover npm only, or every ecosystem whose
-  hosted mutation paths can share the catalog authority?
 - What contention and storage measurements should gate making this the default
   hosted publication path?
 
