@@ -108,18 +108,19 @@ several hosts:
 A version with variants may omit the primary. That fits tools with no portable
 implementation, such as a Go or Rust CLI. pnpm then fails on a host that no
 variant matches, with an error that lists the published platforms, and skips
-the package when it is an optional dependency. In pnpr's package document, top-level
-`integrity` is absent. For npm's documents, pnpr generates and stores a minimal
-primary archive at publication acceptance containing a `package.json` with the
-version's name, version, and the union of the variants' `os` and `cpu`, so npm
-reports an unsupported platform instead of installing an empty package. Those
-fields match every combination of their values, so a host whose OS and CPU each
-appear in some variant, but not together, still gets the empty package (see
-[Clients that do not read variants](#clients-that-do-not-read-variants)).
-pnpr builds the generated archive deterministically from those fields, so
-every replica and every rebuild produces the same integrity. It has no
-provenance statement and does not count toward the version's trust level,
-which comes from the variants alone.
+the package when it is an optional dependency. In pnpr's package document,
+top-level `integrity` is absent. For npm's documents, pnpr generates and
+stores a minimal primary archive at publication acceptance containing a
+`package.json` with the version's name, version, and the union of the
+variants' `os` and `cpu`, so npm reports an unsupported platform instead of
+installing an empty package. Those fields match every combination of their
+values, so a host whose OS and CPU each appear in some variant, but not
+together, still gets the empty package (see
+[Clients that do not read variants](#clients-that-do-not-read-variants)). pnpr builds the generated
+archive deterministically from those fields, so every replica and every
+rebuild produces the same integrity. It has no provenance statement and does
+not count toward the version's trust level, which comes from the variants
+alone.
 
 A variant archive is a complete package for its platform, not an overlay on
 the primary. Its `package.json` has the same `name` and `version` as the
@@ -172,9 +173,10 @@ rejects the version unless:
   can tie between them and no two variants get the same tag.
 
 A variant may differ from the primary in its files, its dependencies,
-including their specifiers and whether they are optional, bundled dependencies, `bin`, `main`, `exports`, and
-`engines`. The primary may require a build: a source build is a fallback, and
-it needs an `allowBuilds` entry only on hosts that link the primary.
+including their specifiers and whether they are optional, bundled
+dependencies, `bin`, `main`, `exports`, and `engines`. The primary may require
+a build: a source build is a fallback, and it needs an `allowBuilds` entry
+only on hosts that link the primary.
 
 Platform packages today declare their own dependencies, and variants keep
 that. sharp's `@img/sharp-linux-x64` depends on `@img/sharp-libvips-linux-x64`.
@@ -230,9 +232,9 @@ tag computed today stays the same under every later vocabulary.
 
 A variant's tag is its name in routes and the lockfile. pnpr derives it, and
 pnpm derives the same string from the lockfile's `targets`: the variant's
-platform tags, sorted by their bytes and joined with `+`, a character
-platform tags do not use. A variant with one platform is named by that platform, such as
-`linux-x64-musl`; a static Linux build is `linux-x64+linux-x64-musl`, and a
+platform tags, sorted by their bytes and joined with `+`, a character platform
+tags do not use. A variant with one platform is named by that platform, such
+as `linux-x64-musl`; a static Linux build is `linux-x64+linux-x64-musl`, and a
 macOS universal binary `darwin-arm64+darwin-x64`. Overlapping platforms are
 rejected, so derived tags are unique within a version, and the publisher has
 no name to choose or keep stable.
@@ -272,10 +274,10 @@ client fails rather than pick one.
 
 Variants are described only in pnpr's own package document,
 `application/vnd.pnpr.install-v2+json`, which pnpm asks for only from
-registries declared with `serverType: pnpr` and npm clients never do. npm's abbreviated, full, and version documents describe the version
-as npm clients read it, without variants. That keeps npm's documents the size
-they are today and leaves the variant metadata free to follow pnpr's format
-alone.
+registries declared with `serverType: pnpr` and npm clients never do. npm's
+abbreviated, full, and version documents describe the version as npm clients
+read it, without variants. That keeps npm's documents the size they are today
+and leaves the variant metadata free to follow pnpr's format alone.
 
 In pnpr's document, `variants` is a field of the version's entry, next to the
 primary archive's `integrity`, `requiresBuild`, and `bins`, and it is in the
@@ -326,17 +328,16 @@ below.
 A variant entry carries a `manifest`, matching the
 `{ <archive facts>, manifest }` shape of the version entry itself, with only
 the fields whose value differs from the version's `manifest`, such as
-`dependencies`, `optionalDependencies`, `bundleDependencies`, and `engines`. A
-field present there replaces the version's field as a whole, and a field the
-version's `manifest` has but the variant's does not is given as `null`. A
-variant whose manifest equals the version's has `"manifest": {}`. When the version has a primary, the
-version's `manifest` is the primary's manifest; when it has no primary, the
-version's `manifest` holds the shared `peerDependencies` and
+`dependencies`, `optionalDependencies`, `bundleDependencies`, and `engines`.
+A field present there replaces the version's field as a whole, and a field the version's
+`manifest` has but the variant's does not is given as `null`. A variant whose
+manifest equals the version's has `"manifest": {}`. When the version has a
+primary, the version's `manifest` is the primary's manifest; when it has no
+primary, the version's `manifest` holds the shared `peerDependencies` and
 `peerDependenciesMeta` plus the `dependencies` and `optionalDependencies` that
 every variant declares with the same specifier (`{}` when none). pnpr derives
-each `manifest` from the
-verified archive. A resolver therefore sees every archive's dependencies in the
-one entry it already reads.
+each `manifest` from the verified archive. A resolver therefore sees every
+archive's dependencies in the one entry it already reads.
 
 Inline, the variants would make a package's document several times larger.
 Rebuilt from today's platform packages, `esbuild`'s document would grow from
@@ -652,13 +653,13 @@ those hosts would need emulation, which is an unresolved question below.
 
 A prototype implemented the pnpr publication checks, `variants` in pnpr's
 package document and release records, the variant route, and the pnpm
-resolution, lockfile, and install parts, without per-archive blob upload, the floor
-and ABI fields, `wasm32`, or dependencies that differ between archives: it
-enforced an earlier, stricter rule that every archive declares the same dependencies. It also took
-each variant's tag and platforms from the publish request rather than from
-the `variant` field, recorded the tag on each lockfile variant and
-the dependencies of all archives in one snapshot rather than per variant,
-and checked the variant's `os`, `cpu`, and `libc` against
+resolution, lockfile, and install parts, without per-archive blob upload, the
+floor and ABI fields, `wasm32`, or dependencies that differ between archives:
+it enforced an earlier, stricter rule that every archive declares the same
+dependencies. It also took each variant's tag and platforms from the publish
+request rather than from the `variant` field, recorded the tag on each
+lockfile variant and the dependencies of all archives in one snapshot rather
+than per variant, and checked the variant's `os`, `cpu`, and `libc` against
 them. Real packages from npm were converted into a primary and variants and
 published to a local pnpr, then installed by real projects:
 
@@ -738,19 +739,20 @@ Target pnpr and pnpm v12. Do not add a feature to pnpm v11.
 6. pnpm: a lockfile marker that older releases reject without
    `--frozen-lockfile` too.
 
-Tests must cover selection order with floors and `wasm32`, an unknown tag field
-falling back to the primary, a frozen install on a platform that did not resolve
-the lockfile, a variant with a dependency the primary lacks (linked only where
-that variant is selected), a name declared with two specifiers by two archives
-(each variant's snapshot resolves its own), a variant whose peer dependencies differ (rejected), a variant that
-requires a build (rejected), a variant archive without a `variant` field or
-with an `os`, `cpu`, or `libc` field (rejected), npm's documents of a version with
-variants (no variants listed, the primary installed), a static Linux
-variant selected on a musl host, a version without a primary on an unmatched
-host, two variants that list the same platform (rejected), a batch publish with
-a missing variant blob or with provenance from another commit (rejected), and variants under a
-registry revision (including a frozen install rebuilding `+r<revision>` variant
-and fallback routes).
+Tests must cover selection order with floors and `wasm32`, an unknown tag
+field falling back to the primary, a frozen install on a platform that did not
+resolve the lockfile, a variant with a dependency the primary lacks (linked
+only where that variant is selected), a name declared with two specifiers by
+two archives (each variant's snapshot resolves its own), a variant whose peer
+dependencies differ (rejected), a variant that requires a build (rejected), a
+variant archive without a `variant` field or with an `os`, `cpu`, or `libc`
+field (rejected), npm's documents of a version with variants (no variants
+listed, the primary installed), a static Linux variant selected on a musl
+host, a version without a primary on an unmatched host, two variants that list
+the same platform (rejected), a batch publish with a missing variant blob or
+with provenance from another commit (rejected), and variants under a registry
+revision (including a frozen install rebuilding `+r<revision>` variant and
+fallback routes).
 
 ## Prior Art
 
