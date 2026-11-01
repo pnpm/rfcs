@@ -453,13 +453,12 @@ target.
 A variant's external dependencies are its `dependencies` and
 `optionalDependencies` without the names in its `bundleDependencies` (every name
 in `dependencies` when it is `true`), which pnpm already leaves out of
-snapshots. pnpm resolves them for every variant and compares the result with the
-version's `snapshots` entry: the resolved `dependencies` with its `dependencies`
-and the resolved `optionalDependencies` with its `optionalDependencies`,
-references including peer suffixes, never a manifest range against a resolved
-reference. When either differs, `snapshots` records a self-contained snapshot
-for that variant at `<name>@<version>/variants/<tag>` (with any peer suffix at
-the end, as for ordinary snapshot keys):
+snapshots. pnpm resolves them for every variant into the snapshot the resolver
+would write for that archive alone, with `dependencies`, `optionalDependencies`,
+and `transitivePeerDependencies`, references including peer suffixes. When that
+snapshot differs in any field from the version's `snapshots` entry, `snapshots`
+records it in full for that variant at `<name>@<version>/variants/<tag>` (with
+any peer suffix at the end, as for ordinary snapshot keys):
 
 ```yaml
 snapshots:
@@ -484,9 +483,9 @@ snapshots:
       semver: 7.7.0
 ```
 
-A variant whose resolved external dependencies are identical to
-`<name>@<version>` needs no separate entry in `snapshots`; the installer looks
-up `<name>@<version>/variants/<tag>` and falls back to `<name>@<version>`. The
+A variant whose resolved snapshot is identical to `<name>@<version>`'s needs no
+separate entry in `snapshots`; the installer looks up
+`<name>@<version>/variants/<tag>` and falls back to `<name>@<version>`. The
 lockfile is still the same on every machine, because every archive's
 dependencies are resolved on every machine, as every platform package is in pnpm
 today.
@@ -775,8 +774,10 @@ primary on an unmatched host, two variants that list the same platform
 (rejected), a batch publish with a missing variant blob or with a provenance
 statement that does not name every archive (rejected), a variant that bundles a
 dependency the primary installs (a frozen install links no external package for
-it), and variants under a registry revision (including a frozen install
-rebuilding `+r<revision>` variant and fallback routes).
+it), a variant-only dependency with a peer dependency (the variant's snapshot
+records its own `transitivePeerDependencies`), and variants under a registry
+revision (including a frozen install rebuilding `+r<revision>` variant and
+fallback routes).
 
 ## Prior Art
 
