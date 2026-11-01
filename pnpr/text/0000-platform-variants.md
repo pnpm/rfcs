@@ -267,14 +267,28 @@ For a host, the client keeps the variants with a platform whose every field
 matches, then picks one in this order, comparing each variant by its best
 matching platform:
 
-1. Variants with more matched fields, without `wasm32`.
-2. Among those, the highest `libcVersion`, then the highest `osVersion`, then
-   the highest `napi`.
-3. A `wasm32` variant.
-4. The primary archive, if the version has one.
+1. Native targets rank above `wasm32`. Among native targets, prefer the
+   greatest number of explicit constraints after normalization. Count `os`,
+   `cpu`, Linux `libc` (including implicit glibc), each version floor, and the
+   ABI constraint once each; do not count absent fields.
+2. Among equal counts, compare `libcVersion`, then `osVersion`, with absent
+   floors below every present floor. Compare numeric `(major, minor)` pairs,
+   never strings.
+3. Among remaining ties, prefer an exact `nodeAbi` match over a `napi` match,
+   and a `napi` match over no ABI constraint. For two `napi` matches, prefer
+   the greatest numeric N-API floor. `napi` and `nodeAbi` are mutually
+   exclusive within one target. Two matching `nodeAbi` values must be equal
+   because the host has one runtime family and ABI.
+4. A `wasm32` variant ranks below every matching native target, and above the
+   primary archive. The primary is selected only when no variant matches.
 
-If two variants still tie, publication should have rejected the version. The
-client fails rather than pick one.
+A variant's score is the maximum of its matching target scores under this
+lexicographic rule. Unknown host floors or ABI values cannot satisfy an
+explicit constraint. Targets normalize implicit Linux glibc before counting
+or comparing fields, so spelling it explicitly cannot change specificity.
+Reject a publication if distinct variants can share the highest score on any
+host. Clients also reject ties in malformed metadata rather than use array
+order or a tag as an arbitrary tie-breaker.
 
 ### Metadata
 
@@ -576,8 +590,18 @@ as a new `lockfileVersion`.
   `supportedArchitectures` from the store through an API that this RFC leaves
   open; they are not linked under the package's name.
 - Server-side resolution through pnpr already produces platform-neutral
-  lockfiles. It must negotiate support for the new lockfile version and selector
-  semantics before returning variant entries to a client.
+  lockfiles. Its request must include a `capabilities` array containing
+  `platform-variants/1` and a `lockfileVersions` array containing the new
+  lockfile version marker. The capability covers host-ranked selection,
+  per-variant snapshots, and fallback semantics together. The resolver
+  advertises the capability and supported marker in its capability document
+  and echoes the selected capability and marker in a successful response.
+  When the selected graph contains variants and either advertisement is
+  absent or incompatible, return HTTP 409 with error code
+  `PNPR_RESOLVER_CAPABILITY_REQUIRED`, naming the required capability and
+  marker. Never return unsupported entries or silently downgrade to the
+  primary. Clients validate the echoed values before accepting a lockfile;
+  absence of variant support does not block graphs containing no variants.
 
 ### Publication
 
@@ -801,7 +825,11 @@ fallback routes).
 Also test the A/B multi-target example above on both hosts after reversing
 lockfile array order, and two projects selecting identical archive bytes but
 different versions of a ranged dependency. Their virtual store entries must
-preserve the different resolved graphs.
+preserve the different resolved graphs. Cover equal constraint counts with
+an absent versus present libc floor, numeric floor ordering, exact ABI versus
+N-API overlaps, implicit versus explicit glibc, rejected score ties, and missing
+or incompatible resolver capabilities and lockfile versions. Unsupported
+clients must receive the incompatibility error without a downgraded lockfile.
 
 ## Prior Art
 

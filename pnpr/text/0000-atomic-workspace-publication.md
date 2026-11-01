@@ -194,9 +194,13 @@ same archive with different tag changes is a conflict, not a replay. A
 different archive for the same version is still a conflict.
 
 A batch without a key is keyed the same way, by a digest over every entry's
-archive integrity and accepted manifest and every tag or revision-selection
-change in the request. A retry with the same digest returns the recorded
-outcome; a request that shares versions with a committed batch but has a
+archive integrity, accepted manifest, and version note, the publication name
+and publication note, and every tag or revision-selection change in the
+request. Note absence and note text are distinct digest inputs; notes are not
+part of the accepted manifest. This whole-request rule also applies to a
+single-package publication without a key. A retry with the same digest
+returns the recorded outcome; a request that shares versions with a committed
+batch but has a
 different digest is a conflict.
 
 A timed-out commit has an unknown outcome to the client. The client queries or
@@ -285,8 +289,15 @@ The second form finds the initial publication of one package version.
 For Python it also accepts `filename=<filename>` to find the publication
 that introduced that distribution. Each distribution record and its publication
 evidence refer to that introducing publication; later uploads do not rewrite
-the initial publication or another file's evidence. A caller sees
-only the members whose packages it may read, and a publication with none
+the initial publication or another file's evidence. For imported history,
+the lookup returns a best-known historical link marked `origin: imported`,
+not a claim that this transaction introduced the distribution. Such a link
+must not produce a verified publication statement or a trusted-publisher rank.
+Where original introduction evidence is unavailable, report it as unavailable;
+known historical publisher fields remain explicitly unverified observations.
+The same restriction applies to synthetic publications in every ecosystem.
+A caller sees only the members whose packages it may read, and a publication
+with none
 answers `404`, so a publication never discloses a package to a caller who
 cannot read it. A version's entry in an ecosystem view may name its
 publication where the view has room for it, as pnpr's release record does

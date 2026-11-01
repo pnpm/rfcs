@@ -185,8 +185,9 @@ picks one, but it only needs to know whether a version is younger than the
 cutoff. So an entry carries its time only if the version was published within
 a window before the package's last publish, 30 days by default, and
 `timesSince` says where that window starts. An entry without `time` was
-published before `timesSince`, and the client treats it as published at
-`timesSince`.
+published before `timesSince`; this is an upper bound, not its publication
+timestamp. The client uses the bound only when it suffices for the cutoff,
+and otherwise fetches exact times as described below.
 
 A registry can make the window longer, which costs bytes, but not shorter
 than 30 days. This is a compression choice, not a limit on client policy.

@@ -19,8 +19,12 @@ with the standards other ecosystems already use, instead of a scheme of
 pnpr's own:
 
 - Each record is appended to the registry's **transparency log**, in the
-  formats Go's checksum database uses, so a registry, mirror, or cache cannot
-  serve one client a different record than it serves everyone else.
+  formats Go's checksum database uses. With the required witness quorum and
+  consistent checkpoint tracking, clients reject split log histories. A
+  private policy with no witnesses detects rewrites of each client's observed
+  history, but cannot rule out different histories served to different clients.
+  Even a witnessed log can contain conflicting records; monitors detect
+  duplicate identities as described below.
 - Endorsements and publication statements are **in-toto Statements in DSSE
   envelopes**, the format npm provenance, Sigstore, and SLSA use. They sign the
   exact bytes served, so nothing is canonicalized.
@@ -406,7 +410,11 @@ pnpr did not see that publication. Its evidence is what the upstream provides,
 such as npm provenance, PEP 740 attestations, or OCI referrers, kept as it was
 fetched, and a trust policy evaluates a proxied package from that evidence, as
 it does without pnpr. Only the registry produces a publication statement;
-publisher-supplied fields with the same names are stripped. Its predicate is the
+publisher-supplied fields with the same names are stripped. Synthetic imported
+publications provide historical links only: pnpr must not mint a publication
+statement or trusted-publisher rank from unverified imported identity fields.
+When original evidence is absent, publication evidence is unavailable.
+Its predicate is the
 artifact's introducing
 [publication](./0000-atomic-workspace-publication.md#publications),
 which already records the publishing identity, a workload's repository and
@@ -462,19 +470,45 @@ A client verifies registry signatures against the current authenticated
 policy, so history never depends on a retired key:
 
 - **Statements.** Before a policy update retires a statement key, pnpr
-  re-signs every statement with the new key. That changes evidence, not records,
-  so record
-  digests and log entries stay. After a compromise, pnpr re-signs only the
-  statements whose exact statement digests were independently authenticated
-  before the compromise, for example by an audited evidence archive. Inclusion
-  of a release record does not authenticate a later statement about its
-  publisher: the log binds record bytes, not mutable evidence. When no trusted
-  pre-compromise statement survives, report its publication evidence as
-  unavailable; do not re-sign a claim merely because its record is old.
+  re-signs every statement with the new key. That changes evidence, not
+  records, so record digests and log entries stay. Compromise recovery requires
+  the authenticated archive contract below; an old record alone never
+  authorizes re-signing a statement about its publisher.
 - **Checkpoints.** A log's checkpoint key signs new checkpoints only. Older
   ones stay valid through consistency: a client checks a new checkpoint,
   signed by the current key, against the one it kept, so an entry proven
   under an old checkpoint is proven under the new one.
+
+For statement-key compromise recovery, use a TUF target named
+`pnpr-statement-recovery.json`, signed through a dedicated delegated recovery
+role with an offline key threshold. The delegation is authenticated by the
+TUF targets chain; recovery keys must be distinct from statement keys and
+online evidence-service keys. The registry's authenticated policy identifies
+the recovery role. A statement key cannot authorize its own recovery.
+
+The recovery target identifies the authority, compromised key IDs, a UTC
+compromise cutoff, and entries containing the exact original statement payload
+digest, archive snapshot digest, and time that an independent archive observed
+those bytes. Offline recovery signers audit the archive and attest that each
+listed observation precedes the cutoff. This is an explicit trust assertion
+by the offline recovery authority, not a timestamp proved by record inclusion
+or by the compromised statement key. If the compromise start is unknown, no
+statement from that key is recoverable until the offline authority establishes
+a conservative cutoff.
+
+Evidence for a recovered statement includes the original payload, the archive
+snapshot bytes referenced by the recovery target, and a re-signature by the
+current statement key. Clients use their standard TUF client to authenticate
+the recovery target through the designated offline role, verify authority and
+key IDs, hash the payload and snapshot, check that the snapshot contains that
+exact payload, and require the authenticated observation time to precede the
+cutoff. They then verify the new signature over the unchanged payload. A
+missing target, archive, digest match, or pre-cutoff observation makes the
+publication evidence unavailable. The new signature alone cannot restore it.
+Each supplied archive snapshot contains only the statement being recovered
+and its audit metadata, never neighboring private statements. Recovery targets
+and snapshots follow the package's access rules. Specify their formats and
+test vectors before advertising compromise recovery.
 
 - **Public registries.** pnpm ships the TUF roots of the public registries it
   knows, as Go ships the key of `sum.golang.org`.
@@ -701,7 +735,13 @@ policy rollback, and a fresh installation after key rotation. A forged
 publication statement for an old logged record must not become trusted through
 re-signing after a key compromise. Python tests
 must cover wheels of one version with different dependencies and a dynamic
-source distribution; verification must follow the selected artifact.
+source distribution; verification must follow the selected artifact. Test a
+valid archived pre-cutoff payload and its current-key re-signature, a changed
+payload, a mismatched archive digest, an observation at or after the cutoff,
+a recovery target outside the designated offline role, and ordinary rotation
+without compromise. Only evidence meeting the applicable recovery checks may
+restore a compromised key's claim. Imported historical publication links must
+never create trusted-publisher evidence.
 
 
 ## Prior Art
