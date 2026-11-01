@@ -624,15 +624,16 @@ resolution-relevant manifest. This applies whether the first selected revision
 is zero or a replacement.
 Every later selection rebuilds the version document's artifact-derived fields
 from the selected revision's manifest. Selecting revision zero restores the
-original artifact-derived fields and sets `dist.revision: 0`, while retaining
-the complete revision history and `<name>@<version>+r0` tarball URL. A change of upstream source
+original artifact-derived fields and marks the version `revision: 0` in
+pnpr's document, while retaining the complete revision history and the
+`<name>@<version>+r0` tarball URL. A change of upstream source
 MUST NOT redefine revision zero; an artifact with a different digest is either
 accepted as a new revision or rejected by registry policy.
 
 The selected revision therefore needs no per-field override: the projected
 version entry *is* that revision's metadata. Non-selected revisions expose
-theirs through `dist.revisions[].manifest`, so a client pinning an older or
-newer revision resolves with the dependency set, peer requirements, and
+theirs through their release records at `<name>/<version>+r<revision>`, so a
+client pinning an older or newer revision resolves with the dependency set, peer requirements, and
 install-script posture that artifact actually has.
 
 An old lockfile retains its old digest and dependency snapshot. A pnpm revision
@@ -888,8 +889,8 @@ A bare revision number cannot authenticate provider identity, fixes, or
 attestations. It also cannot tell a verifier whether a historical digest was
 ever associated with a particular `name@version`.
 
-The compact `dist.revision` field complements but does not replace
-`dist.revisions`.
+The compact `revision` field complements but does not replace the history,
+which pnpr's release records and audit surface keep.
 
 ## Implementation
 
@@ -907,10 +908,13 @@ The compact `dist.revision` field complements but does not replace
    encoding-aware CDN caching, and the existing access policy.
 4. Materialize verified original tar resources before activating revision-aware
    metadata, including versions with no replacement yet.
-5. Emit `dist.revision` with stable nonnegative integer revision numbers,
-   including zero for the original.
-6. Project selected `<name>@<version>+r<revision>` URLs and append-only
-   `dist.revisions` into full and abbreviated packuments.
+5. Mark every revision-aware version in pnpr's package document with
+   `revision`, a stable nonnegative integer, including zero for the
+   original, and serve a release record at `<name>/<version>+r<revision>`
+   for every revision in the history.
+6. Project the selected `<name>@<version>+r<revision>` URL and its tar
+   integrity into npm's full and abbreviated documents, without revision
+   fields.
 7. Keep original canonical tarball routes immutable.
 8. Make provider refresh atomic and audit every selected-revision transition.
 9. Extend audit handling to understand integrity-scoped fixes and
@@ -925,16 +929,17 @@ Tests should cover:
 - original, first replacement, and second replacement retrievable by revision
   URL;
 - `1` assigned to the first replacement and stable monotonic revision numbers;
-- malformed `dist.revision` values rejected from protocol metadata;
-- `dist.tarball` selecting the latest revision without changing name/version;
+- malformed `revision` values rejected from pnpr's document;
+- the selected revision's URL in npm's documents, without changing
+  name/version;
 - canonical URLs continuing to return original bytes after every refresh;
-- full and abbreviated metadata exposing required revision history, each
-  entry's `revision` number included in the abbreviated form;
-- revision entries carrying `manifest` fields equal to their verified
-  artifacts' `package.json` (declared provider metadata cannot diverge);
-- the `dist.revision` field excluded from content-store identity, byte
+- a release record for every revision in the history, and none of the
+  revision fields in npm's documents;
+- release records carrying manifests equal to their verified artifacts'
+  `package.json` (declared provider metadata cannot diverge);
+- the `revision` field excluded from content-store identity, byte
   verification, and policy;
-- a forged `dist.revision` unable to change accepted bytes;
+- a forged `revision` unable to change accepted bytes;
 - provider revisions represented only in structured metadata;
 - the same physical digest referenced by two authorized registries without
   cross-registry disclosure;

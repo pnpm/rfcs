@@ -259,6 +259,13 @@ version's entry, with the version's `name` and `version`:
 }
 ```
 
+An ordinary version, outside the revision protocol, has one artifact, its
+original, and its record is at `+r0`: on this route, revision 0 names the
+original artifact whether or not the version is revision-aware. The entry's
+`revision` decides only the tarball URL, so an ordinary version's record
+describes the archive at its canonical URL, and a revision-aware original's
+the tar at `<name>@<version>+r0`.
+
 It is a metadata endpoint, separate from the revision route of
 [integrity-addressed patch revisions](https://github.com/pnpm/rfcs/blob/main/pnpr/text/0000-integrity-addressed-patch-revisions.md),
 `<name>@<version>+r<revision>`, which serves the revision's tar. The record
@@ -343,8 +350,10 @@ A client that opts in:
    between the resolutions that need it, and reads the version from it,
    dependencies included. An override that pins another revision (`+rN`)
    fetches that revision's record the same way.
-3. Writes the lockfile exactly as today. The lockfile records the integrity,
-   so a frozen install reads no metadata at all and never sees the split.
+3. Writes the lockfile as today: an ordinary version records its integrity,
+   and a revision-aware version its integrity and `revision`, including `0`,
+   from which a frozen install rebuilds `<name>@<version>+r<revision>`. A
+   frozen install reads no metadata at all and never sees the split.
 
 Release records never change, so the client caches them on disk with no
 expiry, keyed by registry, name, version, and revision.
