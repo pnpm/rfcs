@@ -79,7 +79,7 @@ Every record has the same core, whatever its ecosystem:
 | `interpretation` | The profile the metadata was derived under. |
 | `inputs` | Exact byte digests of the files the metadata was derived from, such as `package.json` or `Cargo.toml`. |
 | Artifact facts | The digests and sizes of the artifacts, in the profile's form. |
-| `manifest` | What the ecosystem's resolver reads, derived from the artifacts under the profile. |
+| `manifest` | What the ecosystem's resolver reads, derived from the artifacts under the profile. Absent from an OCI tag record, which derives nothing. |
 
 The profile decides which artifacts one record covers, how its `manifest` is
 derived, what its log entry is, and where it is served (see
@@ -212,10 +212,29 @@ Its log entry's identity is the repository, tag, revision, and profile, never
 the PURL, which changes with the digest.
 
 Deleting a tag, or deleting the manifest a tag points at, which the OCI
-Distribution Specification permits, writes a tombstone revision: a record with
-the next `revision` and `"purl": null`. A lookup whose last revision is a
-tombstone finds no current binding, and setting the tag again writes the next
-revision after it.
+Distribution Specification permits, writes a tombstone revision, a record of
+the same profile with no image:
+
+```json
+{
+  "schema": "pnpr-release-record/1",
+  "repository": "acme/app",
+  "tag": "1.0",
+  "revision": 4,
+  "interpretation": "oci-tag/1",
+  "purl": null
+}
+```
+
+Its `purl` is `null`, never omitted, so every tag record has the same fields. A
+lookup whose last revision is a tombstone finds no current binding, and setting
+the tag again writes the next revision after it. A tombstone is logged, signed,
+and served like any other tag record.
+
+For a proxied repository, the log holds what pnpr observed, not the upstream's
+history: each time pnpr resolves a tag upstream, it writes a revision if the
+digest differs from its last one, and a tombstone if the upstream answers that
+the tag does not exist. A deletion pnpr never asked about is not logged.
 
 So a moved tag is a new revision of the same identity, and every move is in the
 log; a client that pinned a tag to a digest finds a newer revision by looking
@@ -301,7 +320,8 @@ Everything signed about a record is an
 [in-toto Statement](https://github.com/in-toto/attestation/blob/main/spec/v1/statement.md)
 wrapped in a [DSSE](https://github.com/secure-systems-lab/dsse) envelope, the
 format of npm provenance and SLSA. The Statement's subject is the record, by its
-PURL and digest; its `predicateType` says what is claimed:
+digest, named by its PURL, or for an OCI tag record by
+`<repository>:<tag>+r<revision>`; its `predicateType` says what is claimed:
 
 - **Acceptance**, `https://pnpm.io/pnpr/acceptance/v1`: the registry accepted
   the binding of this manifest to this archive under this profile. The log
@@ -507,7 +527,12 @@ Extend the `GET /-/pnpr` capability document:
   resolves from it, as today. A client that verifies records fetches the
   record route for every version it locks, since only those bytes have the
   logged digest, resolves from the record, and caches it on disk forever,
-  keyed by the registry's authority as well as the record's identity.
+  keyed by the registry's authority as well as the record's identity. A
+  caller-gated record is cached only for the principal that fetched it, as
+  [split packuments](./0000-split-packuments.md) caches its records, and a
+  cache hit for another principal is a miss. A principal that later loses
+  access keeps what it already fetched, as it keeps a tarball already in its
+  store.
 - **Evidence and proofs.** A verifying client fetches each locked version's
   evidence and checks its inclusion proof. Statements are fetched only when the
   active policy needs them.
