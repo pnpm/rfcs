@@ -316,7 +316,8 @@ that contains exclusively public identities and whose operator has committed
 to keeping that history public. Ordinary readers obtain their authorized leaf
 and its inclusion proof from the package's evidence route, and checkpoints
 and hash tiles for consistency verification; they never receive neighboring
-leaves in a data tile. These proof-only reads still reveal log size and activity,
+leaves in a data tile. These proof-only reads still reveal log size and
+activity,
 and leaf hashes can permit guesses of predictable entries. Deployments needing
 isolation of those facts must use separate named registries and logs per
 confidentiality boundary. Full-log monitors are trusted with all its identities;
@@ -328,13 +329,15 @@ history; operators must acknowledge its permanent disclosure or use a new
 private namespace. Package record and artifact access remains separately gated.
 
 Each deployment runs its own logs, identified by log name and first-root
-digest. A shared log, as Go's ecosystem shares `sum.golang.org`, would need an operator
+digest. A shared log, as Go's ecosystem shares `sum.golang.org`, would need an
+operator
 every deployment trusts and would expose private names; deployments that want
 one can agree on a log later without changing the record or the protocol.
 
 Witnesses are what protect a client against a registry that shows different
 clients different logs. A public registry's TUF-authenticated policy names
-the witnesses its clients require. A private registry may name none. Its clients then still
+the witnesses its clients require. A private registry may name none. Its clients
+then still
 detect a rewrite of what each has seen, but not a registry that shows them
 different logs: that needs a witness, such as a CI job that co-signs
 checkpoints or a second pnpr deployment, which an organization that needs the
@@ -404,7 +407,8 @@ such as npm provenance, PEP 740 attestations, or OCI referrers, kept as it was
 fetched, and a trust policy evaluates a proxied package from that evidence, as
 it does without pnpr. Only the registry produces a publication statement;
 publisher-supplied fields with the same names are stripped. Its predicate is the
-artifact's introducing [publication](./0000-atomic-workspace-publication.md#publications),
+artifact's introducing
+[publication](./0000-atomic-workspace-publication.md#publications),
 which already records the publishing identity, a workload's repository and
 commit, and the commit time, plus:
 
@@ -438,7 +442,8 @@ work.
 
 Distribute registry verification policy through a standard
 [TUF repository](https://theupdateframework.github.io/specification/latest/).
-The offline root delegates TUF roles; a versioned target, `pnpr-log-policy.json`,
+The offline root delegates TUF roles; a versioned target,
+`pnpr-log-policy.json`,
 names the log, checkpoint and statement keys, required witnesses, and signature
 thresholds. Targets metadata authenticates that file's bytes, snapshot metadata
 binds the metadata versions, and timestamp metadata supplies bounded freshness.
@@ -457,7 +462,8 @@ A client verifies registry signatures against the current authenticated
 policy, so history never depends on a retired key:
 
 - **Statements.** Before a policy update retires a statement key, pnpr
-  re-signs every statement with the new key. That changes evidence, not records, so record
+  re-signs every statement with the new key. That changes evidence, not records,
+  so record
   digests and log entries stay. After a compromise, pnpr re-signs only the
   statements whose exact statement digests were independently authenticated
   before the compromise, for example by an audited evidence archive. Inclusion

@@ -557,7 +557,8 @@ as a new `lockfileVersion`.
   package with variants includes the selected archive's integrity in addition
   to the existing resolved dependency-graph and peer-context identity. Archive
   integrity alone does not identify dependencies: the same archive's ranges
-  may resolve differently in two projects or after an update. A global virtual store shared by an arm64
+  may resolve differently in two projects or after an update. A global virtual
+  store shared by an arm64
   Node.js and an x64 Node.js under Rosetta, or by two Node.js versions that
   select different `nodeAbi` variants, then keeps both.
 - The installer records which archive it linked for each package with

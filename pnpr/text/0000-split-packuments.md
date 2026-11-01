@@ -200,10 +200,16 @@ acceptable approximation.
 Clients needing earlier times fetch the existing full package document's
 `time` map, with ordinary conditional GET caching and access rules. Use only
 its timestamps; continue resolving from the split document and verified
-records under the active policy. The full and split views must identify the
-same committed package generation (and catalog when snapshot reads are in
-use); retry a mismatched pair. A server without a consistent exact-time path
-returns an explicit capability error for that lookup. An actually unknown
+records under the active policy. For hosted packages, the full and split
+views must identify the same committed package generation (and catalog when
+snapshot reads are in use). For proxied packages, both views must derive from
+the same cached upstream document, identified by its upstream validator, such
+as its ETag. Carry that source validator separately from each representation's
+own ETag; full and split representations need not have equal ETags. If the
+upstream supplies no validator, use a digest of the cached source document as
+the shared identity. Retry a mismatched pair. A server without a consistent
+exact-time path returns an explicit capability error for that lookup. An
+actually unknown
 publish time remains unknown and follows `minimumReleaseAgeIgnoreMissingTime`.
 Do not globally reject `minimumReleaseAge` values above 30 days, including
 when using other registries. Counting the window from the last publish rather
@@ -346,7 +352,8 @@ A client that opts in:
 1. Reads every entry into its list of versions, with their deprecations
    and trust ranks, and picks a version as today. An entry without a `time`
    field is known to predate `timesSince`; that bound suffices only for a
-   cutoff at or after it. Earlier cutoffs fetch exact times as above. An entry with `time: null` has an unknown
+   cutoff at or after it. Earlier cutoffs fetch exact times as above. An entry
+   with `time: null` has an unknown
    publish time and goes through `minimumReleaseAgeIgnoreMissingTime`, as a
    missing time does today.
 2. If the picked version has no manifest in the document, fetches its
@@ -517,8 +524,10 @@ one function every pick goes through.
 
 Tests must cover an entry without a manifest, with and without flags; npm's
 documents of the same package (no pnpr facts); one with a time
-inside the window (filtered by it), one without a time (passes a cutoff at or after `timesSince`, and fetches
-exact times for an earlier cutoff), and one with a `null` time (handled as a missing time, passing
+inside the window (filtered by it), one without a time (passes a cutoff at or
+after `timesSince`, and fetches
+exact times for an earlier cutoff), and one with a `null` time (handled as a
+missing time, passing
 or failing with `minimumReleaseAgeIgnoreMissingTime`); a caller-gated package
 (its records and document are `private, no-store`); a public package made
 caller-gated (its records are purged, or the change is refused); a
@@ -539,6 +548,9 @@ version has its manifest), an older pnpm sharing the home directory, and a froze
 install that reads no metadata. Also test a 60-day release-age policy,
 time-based resolution with an older cutoff, and mismatched generations while
 fetching exact times; the graph must equal the unsplit representation's graph.
+For proxied packages, test an upstream refresh between the two reads, distinct
+representation ETags derived from one source validator, and a source document
+without an upstream validator. Mismatched source identities must be retried.
 
 ## Prior Art
 
