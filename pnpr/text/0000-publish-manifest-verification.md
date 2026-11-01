@@ -83,8 +83,8 @@ Install-critical fields include:
 - Lifecycle scripts (`preinstall`, `install`, `postinstall`) and derived
   `hasInstallScript` (true when any of those scripts is present, or when a root
   `binding.gyp` is in the archive without those scripts and without
-  `gypfile: false`). pnpr's `dist.pnpr.requiresBuild` already derives this from
-  the verified archive.
+  `gypfile: false`). pnpr's `requiresBuild` already derives this from the
+  verified archive.
 - Shrinkwrap presence and contents.
 
 The exact field set, and how absent and empty values compare, must be fixed
