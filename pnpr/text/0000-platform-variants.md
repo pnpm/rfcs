@@ -300,7 +300,8 @@ publisher-supplied ones:
           "integrity": "sha512-<variant tar digest>",
           "unpackedSize": 9123456,
           "fileCount": 4,
-          "bins": { "fast-thing": { "path": "bin/fast-thing" } }
+          "bins": { "fast-thing": { "path": "bin/fast-thing" } },
+          "manifest": { "bin": { "fast-thing": "bin/fast-thing" } }
         },
         {
           "tag": "darwin-arm64-macos_11_0+darwin-x64-macos_11_0",
@@ -311,7 +312,8 @@ publisher-supplied ones:
           "integrity": "sha512-<variant tar digest>",
           "unpackedSize": 18234567,
           "fileCount": 4,
-          "bins": { "fast-thing": { "path": "bin/fast-thing" } }
+          "bins": { "fast-thing": { "path": "bin/fast-thing" } },
+          "manifest": { "bin": { "fast-thing": "bin/fast-thing" } }
         }
       ],
       "manifest": { "bin": { "fast-thing": "bin/fast-thing.js" } }
@@ -327,16 +329,18 @@ below.
 A variant entry carries a `manifest`, matching the
 `{ <archive facts>, manifest }` shape of the version entry itself, with only
 the fields whose value differs from the version's `manifest`, such as
-`dependencies`, `optionalDependencies`, `bundleDependencies`, and `engines`.
-A field present there replaces the version's field as a whole, and a field the version's
-`manifest` has but the variant's does not is given as `null`. A variant whose
-manifest equals the version's has `"manifest": {}`. When the version has a
-primary, the version's `manifest` is the primary's manifest; when it has no
-primary, the version's `manifest` holds the shared `peerDependencies` and
-`peerDependenciesMeta` plus the `dependencies` and `optionalDependencies` that
-every variant declares with the same specifier (`{}` when none). pnpr derives
-each `manifest` from the verified archive. A resolver therefore sees every
-archive's dependencies in the one entry it already reads.
+`dependencies`, `optionalDependencies`, `bundleDependencies`, and `engines`. A
+field present there replaces the version's field as a whole, and a field the
+version's `manifest` has but the variant's does not is given as `null`. A
+variant whose manifest equals the version's has `"manifest": {}`. The
+`variant` field is not part of it: the entry's `platforms` and `tag` describe
+it. When the version has a primary, the version's `manifest` is the primary's
+manifest; when it has no primary, the version's `manifest` holds the shared
+`peerDependencies` and `peerDependenciesMeta` plus the `dependencies` and
+`optionalDependencies` that every variant declares with the same specifier
+(`{}` when none). pnpr derives each `manifest` from the verified archive. A
+resolver therefore sees every archive's dependencies in the one entry it
+already reads.
 
 Inline, the variants would make a package's document several times larger.
 Rebuilt from today's platform packages, `esbuild`'s document would grow from
