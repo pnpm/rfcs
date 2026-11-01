@@ -154,8 +154,7 @@ publication has one:
       "publication": { "org": "example", "id": "9f2c41", "name": "v12.0.0" }
     },
     { "version": "11.4.0", "modified": "2026-09-30T17:01:02Z", "text": "…" }
-  ],
-  "truncated": false
+  ]
 }
 ```
 
@@ -165,14 +164,15 @@ publication note once, however many of the upgraded packages, in whatever
 ecosystems, came out of it. `text` is absent when only the publication has a
 note.
 
-To bound response and cache size without query parameters, the document holds
-at most the newest 100 notes and 1 MiB. When older notes are omitted,
-`truncated` is `true`, and a client whose upgrade range reaches versions older
-than the last entry in `notes` fetches those versions' notes individually from
-`<registry-base>/<name>/<version>/notes`. Unpublished versions are left out. A
-deprecated or yanked version keeps its note. A client upgrading from an
-installed version to a target version filters the returned list locally to
-`installed < v ≤ target` (including prereleases only when `target` is a
+To bound response and cache size without query parameters, `<name>/-/notes`
+includes inline `text` on at most the newest 100 version notes and 1 MiB of
+note text. Older entries that have a version note keep their `version`,
+`modified`, and `publication` fields, omit `text`, and carry
+`"truncated": true`; a client whose upgrade range reaches such an entry fetches
+its text from `<registry-base>/<name>/<version>/notes`. Unpublished versions
+are left out. A deprecated or yanked version keeps its note. A client upgrading
+from an installed version to a target version filters the returned list locally
+to `installed < v ≤ target` (including prereleases only when `target` is a
 prerelease, so an upgrade between stable versions does not list the betas in
 between).
 
@@ -190,9 +190,11 @@ DELETE <pnpr>/-/publications/<org>/<id-or-name>/notes
 For example, `https://pnpr.example.com/-/publications/example/v12.0.0/notes`.
 `<org>` and `<id-or-name>` are single path segments: publication identifiers
 and names use `[a-zA-Z0-9._+-]+` (never `.` or `..`, and containing no `/` or
-`%`). `GET` answers as for a version note. The publication's own document lists
-its members, filtered by what the caller may read, so a reader can see which
-packages, in which ecosystems, the release changed.
+`%`), and share one namespace within `<org>` so a publisher-chosen name can
+never collide with a server-assigned identifier. `GET` answers as for a version
+note. The publication's own document lists its members, filtered by what the
+caller may read, so a reader can see which packages, in which ecosystems, the
+release changed.
 
 ### Writing notes
 
@@ -258,13 +260,19 @@ for that caller.
 
 Notes follow the cache rules that the
 [split packuments RFC](./0000-split-packuments.md) gives to mutable
-documents. A note of a public package (or a publication note whose members are
-all public) is `public` with a short lifetime, five minutes by default, and is
-revalidated with its `ETag`; a note gated by the caller's credentials is
-`private, no-store` with `Vary: Authorization`. Whenever a note is edited or
-deleted, or a package's visibility changes between public and gated, pnpr
-purges the cached responses for `<name>/-/notes`, `<name>/<version>/notes`, and
-any publication note to which the package belongs.
+documents. A response for a public package (or a publication note whose members
+are all public) is `public` with a short lifetime, five minutes by default, and
+is revalidated with its `ETag`; in a `public` `<name>/-/notes` response,
+`publication` appears only for publications whose members are all public, so the
+shared cached representation never depends on the caller. Any response that
+depends on the caller's credentials (including a gated package, a publication
+with a gated member, or an authenticated `<name>/-/notes` response that
+includes such a `publication` reference) is `private, no-store` with
+`Vary: Authorization`. Whenever a note is created, edited, or deleted, or a
+package's visibility changes between public and gated, pnpr purges the cached
+responses for `<name>/-/notes`, `<name>/<version>/notes`, any publication note
+to which the package belongs, and `<member>/-/notes` for every member of an
+affected publication.
 
 ### Upstream and mirrored packages
 
@@ -287,7 +295,8 @@ from its change intents (see the next section). Elsewhere:
   (`## 1.4.0`) and Keep a Changelog (`## [1.4.0] - 2026-10-28`) write it, up
   to the next heading of the same level;
 - pnpm normalizes CRLF and CR line endings to LF in notes read from
-  `CHANGELOG.md` and `--release-notes <file>` before validation and submission;
+  `CHANGELOG.md`, `--release-notes <file>`, and change intents before
+  validation and submission;
 - `--no-release-notes` sends none.
 
 When pnpm publishes one package, `--release-notes` gives that package's
@@ -427,9 +436,9 @@ credentials, a publication note read by a caller who cannot read every member
 (`404`, and `publication` omitted from `<name>/-/notes`), cache purging on note
 edits and package visibility changes, an edit by an identity outside the
 `publish` rule (rejected), control and bidirectional override characters
-(rejected by pnpr, removed by pnpm), CRLF normalization from `CHANGELOG.md` and
-`--release-notes`, and changelog sections in the changesets and Keep a
-Changelog forms.
+(rejected by pnpr, removed by pnpm), CRLF normalization from `CHANGELOG.md`,
+`--release-notes`, and change intents, and changelog sections in the changesets
+and Keep a Changelog forms.
 
 ## Prior Art
 
