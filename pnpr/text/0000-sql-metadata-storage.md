@@ -23,7 +23,7 @@ pnpr also needs relationships that object storage does not coordinate well:
 uniqueness of published versions, concurrent tag and policy changes, durable
 publication outcomes after a lost response, and the snapshot and publication
 features drafted in [pnpm/rfcs#45](https://github.com/pnpm/rfcs/pull/45) and
-[pnpm/rfcs#46](https://github.com/pnpm/rfcs/pull/46).
+[atomic workspace publication](./0000-atomic-workspace-publication.md).
 
 The npm registry shows what the single-document model costs at scale:
 
