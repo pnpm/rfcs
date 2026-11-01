@@ -160,6 +160,18 @@ proxying an upstream. It holds digests and identities, not records, so a
 private package's log entries reveal its name and versions; a private registry
 keeps its log, like its records, behind its access rules.
 
+Each deployment runs its own log, and its verifier key is its identity. A
+shared log, as Go's ecosystem shares `sum.golang.org`, would need an operator
+every deployment trusts and would expose private names; deployments that want
+one can agree on a log later without changing the record or the protocol.
+
+Witnesses are what protect a client against a registry that shows different
+clients different logs. A public registry's TUF root names the witnesses its
+clients require. A private registry may name none: its clients still detect a
+rewritten entry, since each keeps the latest checkpoint it saw and checks every
+newer one against it, and a CI job that records checkpoints, or a second pnpr
+deployment, can witness the log where an organization needs more.
+
 ### Statements: in-toto in DSSE
 
 Everything signed about a record is an
@@ -394,7 +406,10 @@ packages and their Rust counterparts for notes and tiles, a DSSE library, and a
 TUF client.
 
 Benchmark cold and warm resolution with verification, and pnpr's cost of
-deriving records for proxied packages. Test that tag changes, deprecations,
+deriving records for proxied packages on a large mirror. pnpr keeps the
+archive of each version it derived a record for as long as it keeps the
+record, as a mirror keeps the tarballs it serves; the benchmark decides
+whether derivation runs on first request or ahead of it. Test that tag changes, deprecations,
 delayed attestations, and re-signing preserve record digests; that a second
 record for a logged identity is rejected; that an inconsistent checkpoint is
 rejected; that a rotated key is followed and the old one refused; and that
@@ -426,14 +441,6 @@ private records cannot be read through digest paths.
 
 ## Unresolved Questions and Bikeshedding
 
-- Who witnesses a private registry's log? A registry with no independent witness
-  still gets entries that cannot be rewritten without detection by the clients
-  that saw them, but not split-view protection across clients that never
-  compare checkpoints.
-- Should public pnpr deployments share one log, as Go's ecosystem shares
-  `sum.golang.org`, rather than each running its own?
-- How long does pnpr keep the archives of proxied versions it derived records
-  for, and what does deriving them cost on a large mirror?
-- Should publication evidence, together with a package-level publish policy the
-  registry enforces at acceptance, such as "only OIDC from this repository",
-  be its own RFC?
+None. A package-level publish policy that the registry enforces at
+acceptance, such as "only OIDC from this repository", reads the publication
+evidence defined here and belongs in an RFC of its own.
