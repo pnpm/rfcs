@@ -517,34 +517,30 @@ as a new `lockfileVersion`.
 
 ### Publication
 
-Each archive is uploaded in its own request and recorded in a stage, and all
-archives of a version become visible in one transaction: the
-[journaled batch publish](https://pnpm.io/pnpr/ecosystems#one-publish-for-a-workspace-that-spans-ecosystems)
-today, and the [atomic workspace publication](https://github.com/pnpm/rfcs/pull/46)
-transaction when it lands. Variants are usually built by separate CI matrix
-jobs, so staged publishing collects them:
+A version and its variants are published together through pnpr's batch publish
+endpoint ([journaled batch publish](https://pnpm.io/pnpr/ecosystems#one-publish-for-a-workspace-that-spans-ecosystems)
+today, and [atomic workspace publication](https://github.com/pnpm/rfcs/pull/46)
+when it lands), so all archives of the version become visible in one
+transaction.
 
-```sh
-# one job: stage the primary archive
-pnpm stage publish
-# each matrix job: attach its variant to the stage
-pnpm stage add-variant <stage-id> ./fast-thing-1.4.0-linux-x64-musl.tgz
-# final job: publish the primary and every variant at once
-pnpm stage approve <stage-id>
-```
-
-Command names are placeholders. Approval runs the invariants above against
-the complete set, so a missing or mismatched variant fails the release before
-anything is visible.
-
-One request cannot carry a whole release. esbuild's 26 variants are about
+One request body cannot carry a whole release: esbuild's 26 variants are about
 140 MB once base64-encoded in an npm publish body, over a 100 MB limit, and
-biome's 10 are 310 MB before encoding. Limits apply to each archive, not to
-the release.
+biome's 10 are 310 MB before encoding. As specified in
+[atomic workspace publication](https://github.com/pnpm/rfcs/pull/46), each
+archive is uploaded in its own request to the content-addressed blob endpoint
+(`PUT /-/pnpr/v0/artifacts/blob?integrity=...`, with `HEAD` skipping blobs
+already stored) before the batch commit request. Limits apply to each archive,
+not to the release. The batch publish commit request references the primary and
+variant archives by integrity without carrying archive bytes in the commit body,
+and runs the invariants above against the complete set before committing the
+release. In CI, matrix jobs can either pass their built `.tgz` archives as CI
+artifacts to a final release job that runs batch publish, or upload their
+archive blobs by integrity directly and let the final job send the batch publish
+commit request.
 
 Each archive carries its own provenance statement, from the job that built it.
-Approval rejects the set unless every statement names the same source
-repository and commit, so a matrix job cannot attach a build of other source.
+Batch publish rejects the set unless every statement names the same source
+repository and commit, so a matrix job cannot include a build of other source.
 The trust level of the version is the weakest among its archives, as the
 [`tool:` protocol](../../text/0000-tool-protocol.md) defines for tools that
 ship as platform archives.
@@ -622,7 +618,7 @@ those hosts would need emulation, which is an unresolved question below.
 
 A prototype implemented the pnpr publication checks, `variants` in pnpr's
 package document and release records, the variant route, and the pnpm
-resolution, lockfile, and install parts, without staged publishing, the floor
+resolution, lockfile, and install parts, without per-archive blob upload, the floor
 and ABI fields, `wasm32`, or dependencies that differ between archives: it
 enforced an earlier, stricter rule that every archive declares the same dependencies. It also took
 each variant's tag and platforms from the publish request rather than from
@@ -694,13 +690,14 @@ Target pnpr and pnpm v12. Do not add a feature to pnpm v11.
 2. pnpr: store variants with the version, enforce the invariants, compute
    `variants` in its own package document and release records,
    and serve the variant routes, including under revisions.
-3. pnpr: accept variants in batch publish and staged publishing, and add the
-   attach-to-stage operation.
+3. pnpr: accept variants in batch publish (referencing archives uploaded by
+   integrity).
 4. pnpm: read `variants` from pnpr's package document, write
    `variations` entries with the new
    target fields and `fallback`, select at install, and fetch variants for
    `supportedArchitectures`.
-5. pnpm: publisher commands to pack a variant and attach it to a stage.
+5. pnpm: publisher support to pack variants and publish a version with its
+   variants through batch publish.
 6. pnpm: a lockfile marker that older releases reject without
    `--frozen-lockfile` too.
 
@@ -713,8 +710,8 @@ requires a build (rejected), a variant archive without a `variant` field or
 with an `os`, `cpu`, or `libc` field (rejected), npm's documents of a version with
 variants (no variants listed, the primary installed), a static Linux
 variant selected on a musl host, a version without a primary on an unmatched
-host, two variants that list the same platform (rejected), a stage approved with
-a missing variant or with provenance from another commit, and variants under a
+host, two variants that list the same platform (rejected), a batch publish with
+a missing variant blob or with provenance from another commit (rejected), and variants under a
 registry revision (including a frozen install rebuilding `+r<revision>` variant
 and fallback routes).
 
