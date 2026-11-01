@@ -136,7 +136,7 @@ change and the `ETag` header identifies the text. In an ecosystem with
 dist-tags, a `GET` may name a tag instead of a version, as npm's version
 document route allows (`fast-thing/latest/notes`).
 
-`GET <registry-base>/<name>/-/notes` answers `application/json` with all notes
+`GET <registry-base>/<name>/-/notes` answers `application/json` with the notes
 of the package in one cacheable document, ordered by the ecosystem's own
 version order (semver for npm and Cargo, PEP 440 for Python), newest first.
 Because the route takes no query parameters, every client requests the same URL
@@ -151,23 +151,30 @@ publication has one:
       "version": "12.0.0",
       "modified": "2026-10-28T09:12:44Z",
       "text": "- `install` reads lockfiles from 11.x.\n",
-      "publication": { "id": "example/9f2c41", "name": "v12.0.0" }
+      "publication": { "org": "example", "id": "9f2c41", "name": "v12.0.0" }
     },
     { "version": "11.4.0", "modified": "2026-09-30T17:01:02Z", "text": "…" }
-  ]
+  ],
+  "truncated": false
 }
 ```
 
-`publication` is present when the version's publication has a note, so a
-client fetches each publication note once, however many of the upgraded
-packages, in whatever ecosystems, came out of it. `text` is absent when only
-the publication has a note.
+`publication` is present when the version's publication has a note and the
+caller may read every member of that publication, so a client fetches each
+publication note once, however many of the upgraded packages, in whatever
+ecosystems, came out of it. `text` is absent when only the publication has a
+note.
 
-Unpublished versions are left out. A deprecated or yanked version keeps its
-note. A client upgrading from an installed version to a target version filters
-the returned list locally to `installed < v ≤ target` (including prereleases
-only when `target` is a prerelease, so an upgrade between stable versions does
-not list the betas in between).
+To bound response and cache size without query parameters, the document holds
+at most the newest 100 notes and 1 MiB. When older notes are omitted,
+`truncated` is `true`, and a client whose upgrade range reaches versions older
+than the last entry in `notes` fetches those versions' notes individually from
+`<registry-base>/<name>/<version>/notes`. Unpublished versions are left out. A
+deprecated or yanked version keeps its note. A client upgrading from an
+installed version to a target version filters the returned list locally to
+`installed < v ≤ target` (including prereleases only when `target` is a
+prerelease, so an upgrade between stable versions does not list the betas in
+between).
 
 ### Publication note routes
 
@@ -181,8 +188,10 @@ DELETE <pnpr>/-/publications/<org>/<id-or-name>/notes
 ```
 
 For example, `https://pnpr.example.com/-/publications/example/v12.0.0/notes`.
-`GET` answers as for a version note. The publication's own document lists its
-members, filtered by what the caller may read, so a reader can see which
+`<org>` and `<id-or-name>` are single path segments: publication identifiers
+and names use `[a-zA-Z0-9._+-]+` (never `.` or `..`, and containing no `/` or
+`%`). `GET` answers as for a version note. The publication's own document lists
+its members, filtered by what the caller may read, so a reader can see which
 packages, in which ecosystems, the release changed.
 
 ### Writing notes
@@ -214,7 +223,10 @@ stores them when the stage is approved.
 
 pnpr stores the notes in the same transaction as the versions. A rejected
 note rejects the publication, so a release is never visible without the notes
-it was published with.
+it was published with. The publication note and every version note are included
+in the publish request's idempotency digest and content-keyed retry comparison
+(and in staged approval's replay check), so a retry with different notes
+conflicts rather than silently returning the earlier result.
 
 **After the publication.** `PUT` replaces a note with the request body
 (`text/markdown`), and `DELETE` removes it. A request for a version or
@@ -238,14 +250,21 @@ note are not served on the public note routes.
 
 A version note has the access rules of its package: whoever can read the
 package can read its notes, and a caller who cannot gets the response that the
-package's own routes give it. A publication note is readable by a caller who
-can read at least one of its members, as the publication itself is.
+package's own routes give it. A publication note is readable only by a caller
+who can read every member of the publication (since a publication note may name
+and describe changes across any of its members); a caller who cannot read every
+member gets `404`, and `publication` is omitted from `<name>/-/notes` entries
+for that caller.
 
 Notes follow the cache rules that the
 [split packuments RFC](./0000-split-packuments.md) gives to mutable
-documents. A note of public packages is `public` with a short lifetime, five
-minutes by default, and is revalidated with its `ETag`; a note gated by the
-caller's credentials is `private, no-store` with `Vary: Authorization`.
+documents. A note of a public package (or a publication note whose members are
+all public) is `public` with a short lifetime, five minutes by default, and is
+revalidated with its `ETag`; a note gated by the caller's credentials is
+`private, no-store` with `Vary: Authorization`. Whenever a note is edited or
+deleted, or a package's visibility changes between public and gated, pnpr
+purges the cached responses for `<name>/-/notes`, `<name>/<version>/notes`, and
+any publication note to which the package belongs.
 
 ### Upstream and mirrored packages
 
@@ -267,6 +286,8 @@ from its change intents (see the next section). Elsewhere:
   section under the heading whose text is the version, as changesets
   (`## 1.4.0`) and Keep a Changelog (`## [1.4.0] - 2026-10-28`) write it, up
   to the next heading of the same level;
+- pnpm normalizes CRLF and CR line endings to LF in notes read from
+  `CHANGELOG.md` and `--release-notes <file>` before validation and submission;
 - `--no-release-notes` sends none.
 
 When pnpm publishes one package, `--release-notes` gives that package's
@@ -396,15 +417,19 @@ ecosystem's protocol unchanged.
 7. Documentation of the routes for other clients, such as Renovate.
 
 Tests must cover: a publish whose note is rejected (nothing published), a
-staged publish whose notes appear only on approval, a publication of npm,
-Cargo, and Python packages whose note each member's `<name>/-/notes` lists,
-client-side range filtering across prereleases with a stable and a prerelease
-target in npm and Python version orders, a dist-tag target, a gated
-package read without credentials, a publication note read by a caller who can
-read only some members, an edit by an identity outside the `publish` rule
-(rejected), control and bidirectional override characters (rejected by pnpr,
-removed by pnpm), and changelog sections in the changesets and Keep a Changelog
-forms.
+publish retry whose note differs (conflict), a staged publish whose notes
+appear only on approval, a publication of npm, Cargo, and Python packages whose
+note each member's `<name>/-/notes` lists, client-side range filtering across
+prereleases with a stable and a prerelease target in npm and Python version
+orders, a dist-tag target, `<name>/-/notes` truncation falling back to
+`<name>/<version>/notes` for older versions, a gated package read without
+credentials, a publication note read by a caller who cannot read every member
+(`404`, and `publication` omitted from `<name>/-/notes`), cache purging on note
+edits and package visibility changes, an edit by an identity outside the
+`publish` rule (rejected), control and bidirectional override characters
+(rejected by pnpr, removed by pnpm), CRLF normalization from `CHANGELOG.md` and
+`--release-notes`, and changelog sections in the changesets and Keep a
+Changelog forms.
 
 ## Prior Art
 
