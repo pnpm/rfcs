@@ -271,7 +271,7 @@ with a `publication` field.
 
 Publications give a release a place for what belongs to the whole set rather
 than one package, such as its
-[release notes](https://github.com/pnpm/rfcs/pull/56).
+[release notes](./0000-release-notes.md).
 
 ### Crash recovery and garbage collection
 

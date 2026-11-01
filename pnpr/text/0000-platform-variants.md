@@ -378,7 +378,7 @@ every run. Resolution took 0.36 s instead of 1.35 s at 10 ms and 200 Mbit/s,
 2.5 MB gzipped, and 22 release records were fetched. A full install at
 40 ms and 50 Mbit/s took 24.0 s instead of 28.5 s, as tarballs dominate it.
 
-A [release record](https://github.com/pnpm/rfcs/pull/49) of a version with
+A [release record](./0000-release-records.md) of a version with
 variants covers every archive of the version, the primary and each variant,
 so the record, like the version document, describes the version as one
 release.
