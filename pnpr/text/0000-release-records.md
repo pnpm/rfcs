@@ -101,7 +101,7 @@ route followed by `/evidence`.
 | npm | `npm-install-manifest/1` | A version: its primary archive and every platform variant | `<name>/<version>+r<revision>` |
 | Cargo | `cargo-index-entry/1` | A crate version: its `.crate` | `api/v1/crates/<name>/<version>/record` |
 | Python | `python-core-metadata/1` | One distribution file of a release | `records/<project>/<filename>` |
-| OCI | `oci-tag/1` | One tag's binding to a manifest digest | the log entry itself |
+| OCI | `oci-tag/1` | One setting of a tag to a manifest digest | `-/records/<repository>/<tag>+r<revision>` |
 
 #### npm
 
@@ -187,14 +187,30 @@ fact is the file's SHA-256, the digest the Simple API already lists. Its
 
 An image is already content-addressed: its manifest digest identifies it, and
 the registry verifies every manifest and blob against its digest. What is not
-fixed is the tag: `1.0` can be moved to another image. So the OCI profile logs
-tag bindings, not derived metadata. A log entry is the repository, the tag, and
-the manifest digest it was set to, each time a tag is set, under
-`pkg:oci/<repository>@<digest>?tag=<tag>`. Moving a tag is a new entry, which
-monitors see; a client that pins a tag to a digest it saw before detects a move
-by finding a newer entry in the log. Signatures and attestations stay where OCI
-keeps them, in the registry's referrers for the manifest digest, as cosign and
-Notation store them.
+fixed is the tag: `1.0` can be moved to another image. So the OCI profile
+records tag bindings, not derived metadata.
+
+A tag's identity is its repository and tag, as the Package URL
+`pkg:oci/<repository>?tag=<tag>` with no version. Each time the tag is set,
+pnpr writes a record whose `revision` counts the settings, starting at 0, and
+whose artifact fact is the manifest digest:
+
+```json
+{
+  "schema": "pnpr-release-record/1",
+  "purl": "pkg:oci/acme/app?tag=1.0",
+  "revision": 3,
+  "interpretation": "oci-tag/1",
+  "digest": "sha256:<manifest digest>"
+}
+```
+
+So a moved tag is a new revision of the same identity, and every move is in the
+log; a client that pinned a tag to a digest finds a newer revision by looking
+the tag up. Signatures and attestations stay where OCI keeps them, as referrers
+of the manifest digest, served at `/v2/<repository>/referrers/<digest>` as
+cosign and Notation store them; the record's evidence lists them with pnpr's own
+statements.
 
 ### Bytes, not canonical JSON
 
@@ -224,17 +240,21 @@ served as [tiles](https://github.com/C2SP/C2SP/blob/main/tlog-tiles.md), and
 [witnesses](https://github.com/C2SP/C2SP/blob/main/tlog-witness.md) that
 co-sign checkpoints after checking that the log only grew.
 
-- A log entry is the record's PURL, revision, profile, and digest, or for OCI
-  the tag binding. pnpr appends it in the same transaction that accepts the
-  version, file, or tag.
+- A log entry is the record's PURL, revision, profile, and digest. pnpr
+  sequences it in the SQL metadata store, in the same transaction that accepts
+  the version, file, or tag, so a record is never accepted without its entry
+  or logged without being accepted. The log's tiles and checkpoints are built
+  from the sequenced entries after commit, idempotently, as Tessera-style logs
+  integrate them; pnpr serves a record only once its entry is integrated and
+  has an inclusion proof.
 - A second entry for the same PURL, revision, and profile with another digest is
   a forged or rewritten record. An inclusion proof shows only that an entry
   exists, not that no other does, so this is caught as Go's checksum database
   catches it: monitors read the whole witnessed log and report any identity
   logged twice, and a client that locked a record keeps its digest in the
   lockfile and rejects any other. A client that sees a version for the first
-  time relies on the monitors. A tag is the one identity whose entries may
-  change: every move is logged, so none is hidden.
+  time relies on the monitors. An OCI tag changes its digest only through a
+  new revision, so every move is a new entry and none is hidden.
 - With each record, pnpr serves an inclusion proof against a recent checkpoint.
   A client verifies the proof and the checkpoint's signatures, the log's and the
   witnesses' it requires, before it accepts the record.
@@ -352,6 +372,19 @@ witnesses the registry's clients require. Rotating a key is a new root version
 signed by the previous one; a client follows the chain and stops accepting the
 old key.
 
+A client verifies every signature against the current root only, so history
+never depends on a retired key:
+
+- **Statements.** Before a root retires a statement key, pnpr re-signs every
+  statement with the new key. That changes evidence, not records, so record
+  digests and log entries stay. After a compromise, pnpr re-signs only the
+  statements whose records the log shows were integrated before the
+  compromise, at a checkpoint the witnesses co-signed.
+- **Checkpoints.** A log's checkpoint key signs new checkpoints only. Older
+  ones stay valid through consistency: a client checks a new checkpoint,
+  signed by the current key, against the one it kept, so an entry proven
+  under an old checkpoint is proven under the new one.
+
 - **Public registries.** pnpm ships the TUF roots of the public registries it
   knows, as Go ships the key of `sum.golang.org`.
 - **Private registries.** The workspace declares the registry's root, by the
@@ -467,10 +500,11 @@ Extend the `GET /-/pnpr` capability document:
   active policy needs them.
 - **Log.** Each log's checkpoints and tiles are served at
   `<registry-base>/-/log/`, as C2SP's tiles specify, for monitors and
-  witnesses, and an entry with its inclusion proof at
-  `<registry-base>/-/log/lookup/<purl>`, as Go's checksum database serves
-  `/lookup/<module>@<version>`. For OCI, that lookup is how a client checks a
-  tag.
+  witnesses. `<registry-base>/-/log/lookup/<purl>` returns every entry for the
+  PURL, each revision and profile, with an inclusion proof against one
+  checkpoint, as Go's checksum database serves `/lookup/<module>@<version>`. A
+  client selects the entry for the revision and profile it locked. For OCI,
+  that lookup lists a tag's revisions, and its last is where the tag points.
 
 A digest is never a read capability: every record, evidence, and artifact read
 is authorized through its package and registry, and unauthorized callers must
@@ -522,8 +556,8 @@ Log tiles are immutable once full, as C2SP's tiles specify.
 Target pnpr and pnpm v12. Do not add a feature to pnpm v11.
 
 1. pnpr: add the core fields to the npm record it serves, store the exact bytes
-   in the SQL metadata layer, and append each record to a C2SP log in the
-   acceptance transaction.
+   in the SQL metadata layer, sequence each record's log entry in the
+   acceptance transaction, and integrate sequenced entries into a C2SP log.
 2. pnpr: sign acceptance and publication statements as in-toto Statements in
    DSSE envelopes, keep Sigstore bundles, and serve evidence with inclusion
    proofs.
@@ -553,8 +587,10 @@ private records cannot be read through digest paths.
 
 ## Prior Art
 
-- [Go's checksum database](https://go.dev/ref/mod#checksum-database) and the
-  [C2SP](https://github.com/C2SP/C2SP) transparency-log specifications.
+- [Go's checksum database](https://go.dev/ref/mod#checksum-database), the
+  [C2SP](https://github.com/C2SP/C2SP) transparency-log specifications, and
+  [Tessera](https://github.com/transparency-dev/tessera), which integrates
+  sequenced entries into tiles.
 - [in-toto attestations](https://github.com/in-toto/attestation),
   [DSSE](https://github.com/secure-systems-lab/dsse),
   [SLSA provenance](https://slsa.dev/), and
