@@ -141,8 +141,8 @@ of the package in one cacheable document, ordered by the ecosystem's own
 version order (semver for npm and Cargo, PEP 440 for Python), newest first.
 Because the route takes no query parameters, every client requests the same URL
 for the package and shares one cached response, and the server does no
-per-request filtering. Each version is listed when it has a note or its
-publication has one:
+per-request filtering. Each version is listed when it has a note or when its
+publication has one that the caller may read:
 
 ```json
 {
@@ -162,7 +162,8 @@ publication has one:
 caller may read every member of that publication, so a client fetches each
 publication note once, however many of the upgraded packages, in whatever
 ecosystems, came out of it. `text` is absent when only the publication has a
-note.
+note; a version that has no version note of its own and whose publication note
+the caller cannot read is omitted from `notes`.
 
 To bound response and cache size without query parameters, `<name>/-/notes`
 includes inline `text` on at most the newest 100 version notes and 1 MiB of
@@ -255,24 +256,26 @@ package can read its notes, and a caller who cannot gets the response that the
 package's own routes give it. A publication note is readable only by a caller
 who can read every member of the publication (since a publication note may name
 and describe changes across any of its members); a caller who cannot read every
-member gets `404`, and `publication` is omitted from `<name>/-/notes` entries
-for that caller.
+member gets `404`, `publication` is omitted from `<name>/-/notes` entries for
+that caller, and a version that has no version note of its own is omitted from
+`<name>/-/notes` altogether so the listing does not reveal that a publication
+note exists.
 
 Notes follow the cache rules that the
 [split packuments RFC](./0000-split-packuments.md) gives to mutable
 documents. A response for a public package (or a publication note whose members
 are all public) is `public` with a short lifetime, five minutes by default, and
 is revalidated with its `ETag`; in a `public` `<name>/-/notes` response,
-`publication` appears only for publications whose members are all public, so the
-shared cached representation never depends on the caller. Any response that
-depends on the caller's credentials (including a gated package, a publication
-with a gated member, or an authenticated `<name>/-/notes` response that
-includes such a `publication` reference) is `private, no-store` with
-`Vary: Authorization`. Whenever a note is created, edited, or deleted, or a
-package's visibility changes between public and gated, pnpr purges the cached
-responses for `<name>/-/notes`, `<name>/<version>/notes`, any publication note
-to which the package belongs, and `<member>/-/notes` for every member of an
-affected publication.
+`publication` (and any publication-only version entry) appears only for
+publications whose members are all public, so the shared cached representation
+never depends on the caller. Any response that depends on the caller's
+credentials (including a gated package, a publication with a gated member, or
+an authenticated `<name>/-/notes` response that includes such a `publication`
+reference) is `private, no-store` with `Vary: Authorization`. Whenever a note
+is created, edited, or deleted, or a package's visibility changes between
+public and gated, pnpr purges the cached responses for `<name>/-/notes`,
+`<name>/<version>/notes`, any publication note to which the package belongs,
+and `<member>/-/notes` for every member of an affected publication.
 
 ### Upstream and mirrored packages
 
@@ -314,10 +317,10 @@ elsewhere.
 - `pnpm view <name>@<version> releaseNotes` prints one version's note and its
   publication's.
 
-pnpm prints notes as plain text after removing any control characters a
-registry let through, shows link targets next to their text, and never
-treats a note as an instruction: the notes are the publisher's words, not
-pnpm's.
+pnpm prints notes as plain text after removing any control and bidirectional
+override characters a registry let through, shows link targets next to their
+text, and never treats a note as an instruction: the notes are the publisher's
+words, not pnpm's.
 
 ### Notes from pnpm's versioning
 
@@ -345,11 +348,12 @@ instead:
 The tarball then holds only what the tagged sources produce, and no previous
 tarball is fetched. A later `pnpm version -r` deletes a consumed intent once
 the registry holds the notes it went into, which it checks by verifying that
-the version and its publication carry notes from the release (or, when a note
-was edited after publish, that its initial revision held the composed text, so
-a post-publish typo fix does not block intent deletion). A version that another
-tool published has no such notes, so it blocks deletion, as a tarball without
-the section does today. Registries other than pnpr keep the tarball chain.
+the version and, when the release created a publication note, its publication
+carry notes from the release (or, when a note was edited after publish, that
+its initial revision held the composed text, so a post-publish typo fix does
+not block intent deletion). A version that another tool published has no such
+notes, so it blocks deletion, as a tarball without the section does today.
+Registries other than pnpr keep the tarball chain.
 
 A package on a release lane gets a version note for each prerelease, and its
 graduation's stable version gets the note composed from every intent the
