@@ -419,45 +419,51 @@ for `fallback`), so entries stay integrity-only like other registry entries.
 A target without `libc` on Linux means glibc, as in the existing type; a
 static build lists a glibc target and a musl target.
 
-When archives declare different dependencies, the snapshot lists the
-dependencies of every archive, resolved together, and the package entry names
-the archives that use each dependency not every archive declares, with
-`primary` for the primary archive (a name no platform tag can take):
+When a variant's dependencies differ from the version's `snapshots` entry,
+`snapshots` records a self-contained snapshot for that variant at
+`<name>@<version>/variants/<tag>` (with any peer suffix at the end, as for
+ordinary snapshot keys):
 
 ```yaml
-packages:
-  sharp@0.35.0:
-    resolution:
-      type: variations
-      # ...
-    archiveDependencies:
-      '@img/sharp-libvips-linux-x64': [linux-x64]
-      '@img/sharp-libvips-darwin-arm64': [darwin-arm64]
-      '@emnapi/runtime': [wasm32]
-
 snapshots:
   sharp@0.35.0:
     dependencies:
-      '@emnapi/runtime': 1.7.0
+      detect-libc: 2.1.0
+      semver: 7.7.0
+  sharp@0.35.0/variants/darwin-arm64:
+    dependencies:
       '@img/sharp-libvips-darwin-arm64': 1.3.0
+      detect-libc: 2.1.0
+      semver: 7.7.0
+  sharp@0.35.0/variants/linux-x64:
+    dependencies:
       '@img/sharp-libvips-linux-x64': 1.3.0
+      detect-libc: 2.1.0
+      semver: 7.7.0
+  sharp@0.35.0/variants/wasm32:
+    dependencies:
+      '@emnapi/runtime': 1.7.0
       detect-libc: 2.1.0
       semver: 7.7.0
 ```
 
-The lockfile is still the same on every machine, because every archive's
+A variant whose dependencies are identical to `<name>@<version>` needs no
+separate entry in `snapshots`; the installer looks up
+`<name>@<version>/variants/<tag>` and falls back to `<name>@<version>`. The
+lockfile is still the same on every machine, because every archive's
 dependencies are resolved on every machine, as every platform package is in
 pnpm today.
 
-Five changes to the existing type are needed:
+Five changes to the lockfile are needed:
 
-- A variant gains `tag`, derived from its platforms.
+- A variant in `VariationsResolution` gains `tag`, derived from its platforms.
 - `targets` gain the floor and ABI fields from the tag table.
 - A `fallback` resolution holds the primary archive. It is absent when the
   version has no primary.
 - `VariationsResolution` gains an optional `revision` (including `0` for
   revision-aware versions), matching ordinary registry resolutions.
-- The package entry gains `archiveDependencies`.
+- `snapshots` records `<name>@<version>/variants/<tag>` entries for variants
+  whose dependencies differ from `<name>@<version>`.
 
 `VariationsResolution` and its targets reject unknown fields today, so
 pnpm v12 releases that predate this RFC fail to parse such a lockfile instead
@@ -481,11 +487,13 @@ as a new `lockfileVersion`.
   can be linked under a package's name. The linked one is the host's, or, if
   `supportedArchitectures` lists exactly one platform and omits `current`,
   that platform's.
-- The installer links a dependency listed in `archiveDependencies` only when
-  the selected archive uses it. A package reachable only through archives
-  that were not selected is neither fetched nor linked, the same walk that
-  skips another platform's optional packages today. `supportedArchitectures`
-  fetches the dependencies of every archive it fetches.
+- For a package with variants, the installer walks the selected variant's
+  snapshot (`<name>@<version>/variants/<tag>`, falling back to
+  `<name>@<version>`), or `<name>@<version>` when the primary archive is
+  selected. A package reachable only through archives that were not selected is
+  neither fetched nor linked, the same walk that skips another platform's
+  optional packages today. `supportedArchitectures` fetches the dependencies of
+  every archive it fetches.
 - The linked variant depends on the host, so the virtual store directory of a
   package with variants is keyed by the selected archive's integrity, not only
   by name and version. That key also covers the archive's dependencies,
@@ -732,8 +740,8 @@ and fallback routes).
 - The string form of floors and ABI fields in tags, for example
   `darwin-arm64-macos_11_0` or `linux-x64-manylinux_2_17-napi8`.
 - Should two archives be allowed different specifiers for one dependency
-  name? No package in [Migration](#migration) needs it, and it would need a
-  resolution per archive in the snapshot.
+  name? No package in [Migration](#migration) needs it, and requiring the same
+  specifier resolves each dependency name once across the version's archives.
 - Should a host select a variant for an emulated CPU, such as an `x64`
   executable on macOS `arm64` under Rosetta or on Windows `arm64`? It works for
   executables but never for addons, which load into the host's Node.js
