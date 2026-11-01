@@ -498,7 +498,7 @@ Five changes to the lockfile are needed:
 - `VariationsResolution` gains an optional `revision` (including `0` for
   revision-aware versions), matching ordinary registry resolutions.
 - `snapshots` records `<name>@<version>/variants/<tag>` entries for variants
-  whose dependencies differ from `<name>@<version>`.
+  whose resolved snapshot differs in any field from `<name>@<version>`'s.
 - Snapshot keys gain the `/variants/<tag>` part, before any peer suffix, as
   in `sharp@0.35.0/variants/linux-x64(react@18.3.1)`. A version has no `/`,
   so the part is unambiguous, but every parser of snapshot keys must accept
