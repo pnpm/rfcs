@@ -60,8 +60,11 @@ nearly all of the growth.
 
 ### Opting in
 
-A client asks for the new format with its own media type, ahead of the
-abbreviated one:
+pnpm asks for the new format only from a registry declared
+`serverType: pnpr`, the declaration
+[tar registries](https://github.com/pnpm/rfcs/blob/main/text/0000-zstd-registry-tarballs.md)
+already require so that pnpm can rebuild pnpr's tarball URLs. It sends the
+format's media type ahead of the abbreviated one:
 
 ```
 Accept: application/vnd.pnpr.install-v2+json; q=1.0, application/vnd.npm.install-v1+json; q=0.9, application/json; q=0.8, */*
@@ -73,6 +76,15 @@ format and the abbreviated and full documents alike, so a cache never hands
 one client the form another asked for. npm, Yarn, Bun, and older pnpm releases do
 not send the type and get today's abbreviated or full document, so nothing
 changes for them.
+
+Every other registry, and a pnpr that is not declared, gets npm's media
+types and answers with npm's documents. Third-party registries and their
+CDNs never see the new type, and the choice is declared rather than
+inferred, as for the tarball layout. pnpr identifies itself with a
+`pnpr-registry` response header on package documents, and pnpm warns when a
+registry sends it without being declared: the install still works from npm's
+documents, but without variants, pnpr's facts about the archives, or
+revision overrides.
 
 Only a client that asks for the type reads the document, so it does not
 follow npm's format; see [Why a format of its own](#why-a-format-of-its-own).
@@ -125,9 +137,13 @@ changed. Each version's entry is an object with any of these fields:
   compares how versions were published before it picks one, and it reads
   only this rank.
 - `revision`: the selected
-  [registry revision](https://github.com/pnpm/rfcs/blob/main/pnpr/text/0000-integrity-addressed-patch-revisions.md),
-  when it is not the original (`0`). Selecting a patched revision changes
-  which release record the version is.
+  [registry revision](https://github.com/pnpm/rfcs/blob/main/pnpr/text/0000-integrity-addressed-patch-revisions.md)
+  of a revision-aware version, including `0`, and absent for an ordinary
+  version. It decides the tarball URL, `<name>@<version>+r<revision>` or the
+  canonical one, and with it which bytes `integrity` describes. Selecting a
+  patched revision changes which release record the version is. The
+  revision history is not in the document: every revision in it has its own
+  release record.
 - `integrity`, `fileCount`, and `unpackedSize`: the archive's digest, file
   count, and unpacked size, which npm's documents give in `dist`.
 - `requiresBuild` and `bins`: whether the archive needs a build, and its
@@ -214,7 +230,9 @@ saw only complete versions; with the type as the only way in, that client
 does not exist.
 
 npm's documents served by pnpr carry none of pnpr's facts: no `dist.pnpr`,
-no variants. A pnpm release that read `dist.pnpr.requiresBuild` and
+no variants, and none of the revision protocol's fields. A selected revision
+appears there as npm clients read any version, by its `+r<revision>` tarball
+URL and its integrity. A pnpm release that read `dist.pnpr.requiresBuild` and
 `dist.pnpr.bins` from them falls back to what it does with any registry,
 reading both from the archive after it fetches it. pnpr is experimental, so
 its documents and clients change together.
@@ -323,7 +341,8 @@ A client that opts in:
 2. If the picked version has no manifest in the document, fetches its
    release record, once per URL per install, sharing an in-flight request
    between the resolutions that need it, and reads the version from it,
-   dependencies included.
+   dependencies included. An override that pins another revision (`+rN`)
+   fetches that revision's record the same way.
 3. Writes the lockfile exactly as today. The lockfile records the integrity,
    so a frozen install reads no metadata at all and never sees the split.
 
@@ -331,7 +350,8 @@ Release records never change, so the client caches them on disk with no
 expiry, keyed by registry, name, version, and revision.
 
 A client keeps these documents in a metadata cache of its own, apart from
-the abbreviated documents it cached before. An older release that shares the
+the abbreviated documents it caches for other registries (pnpm uses
+`v12/metadata-pnpr` beside `v12/metadata`). An older release that shares the
 cache directory could not read them. The prototype hit an earlier form of
 this: an older pnpm on `PATH`, started by the version switch, read a split
 document the new pnpm had cached and failed.
@@ -469,11 +489,14 @@ one function every pick goes through.
    package is split.
 2. pnpr: serve release records at `<name>/<version>+r<revision>` for every
    accepted revision, with immutable caching, and remove `dist.pnpr`,
-   `variants`, and any variant declarations pnpr stores with a version from
-   npm's documents.
-3. pnpm: send the new media type, read the format, fetch the release
-   records of picked versions without a manifest, cache them on disk, and
-   keep these documents in a metadata cache directory of their own.
+   `variants`, any variant declarations pnpr stores with a version,
+   `dist.revision`, and `dist.revisions` from npm's documents; identify
+   itself with the `pnpr-registry` header.
+3. pnpm: send the new media type to registries declared `serverType: pnpr`,
+   read the format, fetch the release records of picked versions without a
+   manifest and of `+rN` overrides, cache them on disk, and keep these
+   documents in a metadata cache directory of their own. Warn about an
+   undeclared registry that sends `pnpr-registry`.
 4. pnpm: reject a `minimumReleaseAge` above 30 days (43200 minutes).
 5. pnpm: when the user points pnpm at a registry that does not serve the type,
    nothing changes, since it answers with the abbreviated document.
@@ -486,7 +509,12 @@ or failing with `minimumReleaseAgeIgnoreMissingTime`); a caller-gated package
 (its records and document are `private, no-store`); a public package made
 caller-gated (its records are purged, or the change is refused); a
 deprecation, tag move, and revision selection each changing the next
-document; a scoped package's release record fetched through a CDN; a version
+document; a scoped package's release record fetched through a CDN; a
+revision-aware version at revision 0 (rebuilt `+r0` URL) and at a patched
+revision, installed through pnpr's format and through npm's documents; a
+`+rN` override of a non-selected revision (its record is fetched), and the
+same override against npm's documents (fails, naming the revision); an
+undeclared pnpr (npm's documents, and the warning); a version
 deprecated after its record was cached (the new message shows), a selected
 patch revision (its record is fetched, not the original's), a version without
 `integrity` in `versions` (computed while fetching the tarball, as today), a

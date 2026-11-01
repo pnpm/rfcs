@@ -2,6 +2,13 @@
 
 > Status: proposed amendment to the experimental revision protocol;
 > implementation pending.
+>
+> Amended by [split packuments](0000-split-packuments.md): the revision
+> fields described below (`dist.revision`, `dist.revisions`) appear only in
+> pnpr's own package document, as `revision` and per-revision release
+> records. npm's documents give the selected revision by its tarball URL and
+> integrity alone. See
+> [Revision fields in pnpr's package document](#revision-fields-in-pnprs-package-document).
 
 ## Summary
 
@@ -169,10 +176,12 @@ route directly from the registry, package name, version, and revision number.
    that revision in the identity's append-only history, verified against its
    complete sha512 digest after HTTP content decoding. Re-encoding a revision
    tar changes neither its identity nor its revision number.
-3. **Every revision is explicitly marked.** Revision-aware metadata advertises
-   `dist.revision`, including zero, and a `<name>@<version>+r<revision>`
-   `dist.tarball`. Absence of the marker means ordinary metadata outside this
-   protocol.
+3. **Every revision is explicitly marked.** pnpr's package document marks
+   every revision-aware version with its `revision`, including zero, and its
+   tar is at `<name>@<version>+r<revision>`. Absence of the marker there means
+   ordinary metadata outside this protocol. npm's documents carry no marker:
+   a selected revision's `+r<revision>` tarball URL is an ordinary tarball
+   that answers only for that revision.
 4. **Revision numbers are stable and uniquely allocated.** A distinct accepted
    replacement receives the next positive integer. Numbers are never
    reassigned. Selecting a previously accepted artifact again uses its existing
@@ -450,6 +459,33 @@ Tar-aware clients ignore the unknown `dist.revision` field and follow
 `dist.tarball`; HTTP content decoding must precede SRI verification. pnpm records the revision
 number in its lockfile as the durable signal to construct the `<name>@<version>+r<revision>` URL, as the companion RFC specifies.
 
+### Revision fields in pnpr's package document
+
+This section supersedes where the sections around it place revision fields in
+package documents. The fields only pnpm reads live only in pnpr's own package
+document ([split packuments](0000-split-packuments.md)), which pnpm asks for
+from registries declared `serverType: pnpr`:
+
+- **npm's documents** give the selected revision as npm clients read any
+  version: `dist.tarball` is its `<name>@<version>+r<revision>` URL and
+  `dist.integrity` its tar's integrity. They carry no `dist.revision` and no
+  `dist.revisions`. npm, Yarn, Bun, and pnpm with an undeclared registry
+  install the selected revision and record its URL. Such a client cannot
+  resolve an override for another revision, and pnpm fails it with the
+  revision named rather than install the selected one.
+- **pnpr's document** marks a revision-aware version's entry with `revision`,
+  including `0`, and leaves it out for an ordinary version. There is no
+  `tarball`: pnpm rebuilds `<name>@<version>+r<revision>` from the marker,
+  and records the revision in its lockfile, as the companion RFC specifies.
+- **The history** is not in any document. Every revision in it has a release
+  record at `<registry-base>/<name>/<version>+r<revision>`, with its tar
+  integrity and its manifest, which a `+rN` override fetches. The record is
+  immutable, so the status fields `withdrawn` and `supersededBy`, and
+  provenance, stay with pnpr's audit surface rather than in the record.
+
+The rules below for `dist.revision` and `dist.revisions` describe the same
+information, which pnpr now serves in this form.
+
 ### Projected package document
 
 For a covered version, pnpr projects the selected artifact under the original
@@ -544,13 +580,13 @@ are the status fields `withdrawn` and `supersededBy`: they describe the
 record's standing, never its artifact, and updating them touches no
 artifact-derived field, byte, or revision number — append-only means records
 are never removed or renumbered, not that their status can never be annotated.
-The full packument may additionally carry all provenance fields. Abbreviated
-metadata should keep current `dist` plus the `revision` number, integrity,
-revision URL, and `manifest` of each historical revision — `+rN` resolution maps
-a revision number to its history record using the metadata pnpm actually
-fetches, so the revision number must survive abbreviation. A revision-aware
-version includes both fields even when zero is its only revision. A version
-outside the protocol omits both fields and uses ordinary metadata.
+The full packument may additionally carry all provenance fields. `+rN`
+resolution maps a revision number to its history record using the metadata
+pnpm actually fetches, which is now pnpr's package document and the
+revision's release record (see
+[Revision fields in pnpr's package document](#revision-fields-in-pnprs-package-document)).
+In pnpr's document, a revision-aware version is marked even when zero is its
+only revision, and a version outside the protocol is not.
 
 ### The canonical URL remains the original artifact
 
@@ -968,7 +1004,10 @@ contains the client and lockfile changes.
 ## Unresolved Questions and Bikeshedding
 
 - Is `<name>@<version>+r<revision>` the right revision endpoint?
-- Is `dist.revisions` the right package-document field name?
+- How does a client discover which revisions of a version exist, now that no
+  document lists the history? An override names its revision, and the
+  record's absence answers it, but `npm view`-style discovery needs an
+  endpoint.
 - Beyond the resolution-relevant fields required for revision selection, which
   projected manifest fields should historical entries retain?
 - Does `pnpm update --patches` update every artifact revision, only
