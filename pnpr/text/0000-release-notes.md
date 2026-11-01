@@ -3,10 +3,10 @@
 ## Summary
 
 pnpr stores release notes for each version of a hosted package: Markdown text
-the publisher sends with the publish and may edit later. Notes are served
-from their own route, one version at a time or all the versions between two,
-so a client upgrading from `1.2.0` to `1.4.0` reads what changed in one
-request. They are not part of the package document, the release record, or
+the publisher sends with the publish and may edit later. Notes are served at
+`<registry-base>/<name>/<version>/notes`, one version at a time or all the
+versions between two, so a client upgrading from `1.2.0` to `1.4.0` reads
+what changed in one request. They are not part of the package document, the release record, or
 the archive, so an install never downloads them and editing them changes
 nothing a lockfile pins. pnpm sends notes with `pnpm publish` and shows them
 where it offers an upgrade.
@@ -71,25 +71,34 @@ never renders HTML and never fetches images.
 
 ### Routes
 
-The routes are relative to the registry base, so each
-[named registry](./0000-pnpr-registry-mounts.md) serves the notes of its
-own packages:
+A note lives under its version's own path, next to the version document
+npm clients already read at `<registry-base>/<name>/<version>`:
 
 ```text
-GET    <registry-base>/-/pnpr/v0/notes/<name>/<version>
-PUT    <registry-base>/-/pnpr/v0/notes/<name>/<version>
-DELETE <registry-base>/-/pnpr/v0/notes/<name>/<version>
-GET    <registry-base>/-/pnpr/v0/notes/<name>?after=<version>&through=<version>
+GET    <registry-base>/<name>/<version>/notes
+PUT    <registry-base>/<name>/<version>/notes
+DELETE <registry-base>/<name>/<version>/notes
+GET    <registry-base>/<name>/<version>/notes?since=<version>
 ```
 
-A scoped name keeps its `/`, as in `@scope/fast-thing`.
+For example, `https://registry.example.com/fast-thing/1.4.0/notes` or
+`https://registry.example.com/@scope/fast-thing/1.4.0/notes`. The paths are
+relative to the registry base, so each
+[named registry](./0000-pnpr-registry-mounts.md) serves the notes of its own
+packages. No existing route has a segment after a version. An unscoped
+`fast-thing/1.4.0/notes` has as many segments as a scoped version document,
+`@scope/fast-thing/1.4.0`, and is told apart by its first segment: only a
+scope starts with `@`.
+A `GET` may name a dist-tag instead of a version, as the version document
+route allows: `fast-thing/latest/notes?since=1.2.0` is what changed since the
+installed version.
 
-The single-version `GET` answers `text/markdown; charset=utf-8` with the note,
+Without `since`, `GET` answers `text/markdown; charset=utf-8` with the note,
 and `404` when the version has none. The `Last-Modified` header carries the
 time of the last change and the `ETag` header identifies the text.
 
-The range `GET` answers `application/json` with the notes of every version
-`v` of the package with `after < v ≤ through` that has one, newest first:
+With `since`, it answers `application/json` with the notes of every version
+`v` of the package with `since < v ≤ <version>` that has one, newest first:
 
 ```json
 {
@@ -101,10 +110,10 @@ The range `GET` answers `application/json` with the notes of every version
 }
 ```
 
-`after` may be omitted to start at the first version. A range includes
-prereleases only when `through` is one, so an upgrade between stable
-versions does not list the betas in between. A response holds at most 100
-notes and 1 MiB; when more match, `next` is the URL of the following page.
+A range includes prereleases only when `<version>` is one, so an upgrade
+between stable versions does not list the betas in between. A response holds
+at most 100 notes and 1 MiB; when more match, `next` is the URL of the
+following page.
 
 Versions that are unpublished are left out. A deprecated version keeps its
 note.
@@ -162,7 +171,7 @@ gated by the caller's credentials is `private, no-store` with
 ### Upstream and mirrored packages
 
 npm's registry has no notes, so an upstream registry that proxies it serves
-`404` on the single-version route and an empty list on the range route. An
+`404` for a single note and an empty list for a range. An
 upstream registry whose origin is another pnpr forwards notes requests to it
 and caches the responses under the same rules. pnpr never fetches notes from
 GitHub or another release page on a reader's behalf.
@@ -247,7 +256,8 @@ frozen or force a new revision for a typo.
 
 Tests must cover: a publish whose note is rejected (nothing published), a
 staged publish whose note appears only on approval, a range across
-prereleases with a stable and a prerelease `through`, pagination, a gated
+prereleases with a stable and a prerelease target, a dist-tag target,
+pagination, a gated
 package read without credentials, an edit by an identity outside the
 `publish` rule (rejected), control and bidirectional override characters
 (rejected by pnpr, removed by pnpm), and changelog sections in the changesets
@@ -269,7 +279,7 @@ and Keep a Changelog forms.
 
 ## Unresolved Questions and Bikeshedding
 
-- The name of the `releaseNotes` publish field and of the route.
+- The name of the `releaseNotes` publish field.
 - Should `pnpm publish` read `CHANGELOG.md` by default, or only when asked? A
   default helps every publisher who keeps one, but publishes text the
   publisher may not have meant as release notes.
