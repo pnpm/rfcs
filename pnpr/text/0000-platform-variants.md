@@ -256,7 +256,8 @@ Node.js is used.
 
 The vocabulary is versioned. A tag with a field the client does not know is
 not selectable, so an older client falls back to the primary archive instead
-of guessing. pnpr's [shared side-effects cache](https://pnpm.io/pnpr/shared-side-effects-cache#platform-compatibility)
+of guessing. When the version has no primary, no other variant matches, and
+the package is not optional, the install fails as for any unmatched host. pnpr's [shared side-effects cache](https://pnpm.io/pnpr/shared-side-effects-cache#platform-compatibility)
 already applies the same rule to its `pnpm:v1:` tags. The two vocabularies
 should be one specification with shared test vectors.
 
