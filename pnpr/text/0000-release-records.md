@@ -190,20 +190,25 @@ the registry verifies every manifest and blob against its digest. What is not
 fixed is the tag: `1.0` can be moved to another image. So the OCI profile
 records tag bindings, not derived metadata.
 
-A tag's identity is its repository and tag, as the Package URL
-`pkg:oci/<repository>?tag=<tag>` with no version. Each time the tag is set,
-pnpr writes a record whose `revision` counts the settings, starting at 0, and
-whose artifact fact is the manifest digest:
+A tag's identity is its `repository` and `tag`, two explicit fields of its
+record, since an OCI Package URL names an image by digest rather than a tag.
+Each time the tag is set, pnpr writes a record whose `revision` counts the
+settings, starting at 0. Its `purl` is the image it points at, in the OCI
+type's form: the last segment of the repository as the name, the manifest
+digest as the version, and the repository and tag as qualifiers.
 
 ```json
 {
   "schema": "pnpr-release-record/1",
-  "purl": "pkg:oci/acme/app?tag=1.0",
+  "repository": "acme/app",
+  "tag": "1.0",
   "revision": 3,
   "interpretation": "oci-tag/1",
-  "digest": "sha256:<manifest digest>"
+  "purl": "pkg:oci/app@sha256%3A<manifest digest>?repository_url=acme/app&tag=1.0"
 }
 ```
+
+Its log entry's identity is the repository, tag, revision, and profile.
 
 So a moved tag is a new revision of the same identity, and every move is in the
 log; a client that pinned a tag to a digest finds a newer revision by looking
@@ -240,10 +245,11 @@ served as [tiles](https://github.com/C2SP/C2SP/blob/main/tlog-tiles.md), and
 [witnesses](https://github.com/C2SP/C2SP/blob/main/tlog-witness.md) that
 co-sign checkpoints after checking that the log only grew.
 
-- A log entry is the record's PURL, revision, profile, and digest. pnpr
-  sequences it in the SQL metadata store, in the same transaction that accepts
-  the version, file, or tag, so a record is never accepted without its entry
-  or logged without being accepted. The log's tiles and checkpoints are built
+- A log entry is the record's identity (its PURL, or an OCI tag's repository
+  and tag), revision, profile, and digest. pnpr sequences it in the SQL
+  metadata store, in the same transaction that accepts the version, file, or
+  tag, so a record is never accepted without its entry or logged without being
+  accepted. The log's tiles and checkpoints are built
   from the sequenced entries after commit, idempotently, as Tessera-style logs
   integrate them; pnpr serves a record only once its entry is integrated and
   has an inclusion proof.
@@ -504,7 +510,8 @@ Extend the `GET /-/pnpr` capability document:
   PURL, each revision and profile, with an inclusion proof against one
   checkpoint, as Go's checksum database serves `/lookup/<module>@<version>`. A
   client selects the entry for the revision and profile it locked. For OCI,
-  that lookup lists a tag's revisions, and its last is where the tag points.
+  `<registry-base>/-/log/lookup/<repository>/<tag>` lists a tag's revisions,
+  and its last is where the tag points.
 
 A digest is never a read capability: every record, evidence, and artifact read
 is authorized through its package and registry, and unauthorized callers must
