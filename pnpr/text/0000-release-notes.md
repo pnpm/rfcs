@@ -127,9 +127,14 @@ npm's version document route allows: `fast-thing/latest/notes?since=1.2.0`
 is what changed since the installed version.
 
 With `since`, it answers `application/json` with the notes of every version
-`v` of the package with `since < v ≤ <version>`, ordered by the ecosystem's
+`v` of the package with `since < v ≤ <version>` (and `v < before` when a
+`before=<version>` pagination cursor is given), ordered by the ecosystem's
 own version order (semver for npm and Cargo, PEP 440 for Python), newest
-first. Each version is listed when it has a note or its publication has one:
+first. `since` and `before` need not name versions present in the registry
+(the installed version may have been unpublished or installed from another
+source), but must parse as valid versions in the ecosystem's scheme (`400`
+otherwise). Each version is listed when it has a note or its publication has
+one:
 
 ```json
 {
@@ -154,8 +159,9 @@ the publication has a note.
 A range includes prereleases only when `<version>` is one, so an upgrade
 between stable versions does not list the betas in between. A response holds
 at most 100 notes and 1 MiB; when more match, `next` is the URL of the
-following page. Unpublished versions are left out. A deprecated or yanked
-version keeps its note.
+following page (`<registry-base>/<name>/<version>/notes?since=<since>&before=<last-version>`).
+Unpublished versions are left out. A deprecated or yanked version keeps its
+note.
 
 ### Publication note routes
 
@@ -218,7 +224,9 @@ it, needs. The CI identity that published a release can therefore write its
 notes once a later changelog step has run.
 
 pnpr records each change in its audit log with the identity, the time, and
-the digests of the old and new text. It does not keep or serve earlier texts.
+the previous text (retained in SQL so an accidental or unauthorized edit or
+deletion under `publish` permission can be restored). Earlier revisions of a
+note are not served on the public note routes.
 
 ### Reading notes
 
@@ -300,10 +308,12 @@ instead:
 
 The tarball then holds only what the tagged sources produce, and no previous
 tarball is fetched. A later `pnpm version -r` deletes a consumed intent once
-the registry holds the notes it went into, which it checks by comparing the
-notes' text with the text it composes. A version that another tool published
-has no such notes, so it blocks deletion, as a tarball without the section
-does today. Registries other than pnpr keep the tarball chain.
+the registry holds the notes it went into, which it checks by verifying that
+the version and its publication carry notes from the release (or, when a note
+was edited after publish, that its initial revision held the composed text, so
+a post-publish typo fix does not block intent deletion). A version that another
+tool published has no such notes, so it blocks deletion, as a tarball without
+the section does today. Registries other than pnpr keep the tarball chain.
 
 A package on a release lane gets a version note for each prerelease, and its
 graduation's stable version gets the note composed from every intent the
@@ -408,9 +418,6 @@ and Keep a Changelog forms.
 
 - Container images have tags rather than ordered versions. Should an image
   in a publication get version notes, and how would a range be defined?
-- Outside pnpm's versioning, should `pnpm publish` read `CHANGELOG.md` by
-  default, or only when asked? A default helps every publisher who keeps
-  one, but publishes text the publisher may not have meant as release notes.
 - Should the range route also accept a semver range, for a reader that wants
   the notes of `^1` without knowing the versions?
 - Should pnpr import notes from a package's GitHub releases when it mirrors a
@@ -420,5 +427,5 @@ and Keep a Changelog forms.
 - Should a package document entry say whether a version has a note, so a
   client can skip the request? That puts a mutable flag back into the
   document.
-- Should earlier texts of an edited note be served, as a history, rather than
-  kept only as digests in the audit log?
+- Should retained earlier revisions of an edited note also be served on a
+  public history route, rather than kept only for audit and recovery?
