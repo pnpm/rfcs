@@ -77,8 +77,8 @@ Every record has the same core, whatever its ecosystem:
 | `purl` | The [Package URL](https://github.com/package-url/purl-spec) of what the record describes, such as `pkg:npm/%40example/widgets@1.2.0` or `pkg:cargo/serde@1.0.210`. |
 | `revision` | The registry revision, in an ecosystem that has revisions. |
 | `interpretation` | The profile the metadata was derived under. |
-| `inputs` | Exact byte digests of the files the metadata was derived from, such as `package.json` or `Cargo.toml`. |
-| Artifact facts | The digests and sizes of the artifacts, in the profile's form. |
+| `inputs` | Exact byte digests of the files the metadata was derived from, such as `package.json` or `Cargo.toml`. Absent from an OCI tag record, which derives nothing. |
+| Artifact facts | The digests and sizes of the artifacts, in the profile's form. Absent from an OCI tag record, whose image digest is the version of its `purl`. |
 | `manifest` | What the ecosystem's resolver reads, derived from the artifacts under the profile. Absent from an OCI tag record, which derives nothing. |
 
 The profile decides which artifacts one record covers, how its `manifest` is
@@ -232,9 +232,11 @@ the tag again writes the next revision after it. A tombstone is logged, signed,
 and served like any other tag record.
 
 For a proxied repository, the log holds what pnpr observed, not the upstream's
-history: each time pnpr resolves a tag upstream, it writes a revision if the
-digest differs from its last one, and a tombstone if the upstream answers that
-the tag does not exist. A deletion pnpr never asked about is not logged.
+history: each time pnpr resolves a tag upstream, it writes a revision only if
+the state changed, a new digest, or a tombstone when the upstream answers that
+the tag does not exist and its last revision was not already one. Resolving an
+unchanged or still-absent tag writes nothing. A deletion pnpr never asked about
+is not logged.
 
 So a moved tag is a new revision of the same identity, and every move is in the
 log; a client that pinned a tag to a digest finds a newer revision by looking
@@ -329,6 +331,15 @@ digest, named by its PURL, or for an OCI tag record by
   record travel with a claim that does not need the log to be reachable.
 - **Publication**, `https://pnpm.io/pnpr/publication/v1`: how the version was
   published (see [Publication evidence](#publication-evidence)).
+
+Acceptance and publication statements describe released artifacts, so OCI tag
+records, tombstones included, get neither. Each gets a **tag binding**
+statement, `https://pnpm.io/pnpr/tag-binding/v1`, whose predicate says whether
+the registry set the tag on a push, removed it, or observed the binding
+upstream, and the principal that pushed or removed it for a hosted repository.
+A tag move is a selection, not a publication, as
+[atomic workspace publication](./0000-atomic-workspace-publication.md) treats
+one.
 
 Publisher provenance keeps its own subject and its ecosystem's form, and pnpr
 keeps it as it was published:
