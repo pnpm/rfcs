@@ -249,8 +249,8 @@ client fails rather than pick one.
 ### Metadata
 
 Variants are described only in pnpr's own package document,
-`application/vnd.pnpr.install-v2+json`, which pnpm asks for and npm clients
-never do. npm's abbreviated, full, and version documents describe the version
+`application/vnd.pnpr.install-v2+json`, which pnpm asks for only from
+registries declared with `serverType: pnpr` and npm clients never do. npm's abbreviated, full, and version documents describe the version
 as npm clients read it, without variants. That keeps npm's documents the size
 they are today and leaves the variant metadata free to follow pnpr's format
 alone.
