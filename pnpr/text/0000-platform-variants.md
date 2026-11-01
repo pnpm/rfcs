@@ -107,19 +107,25 @@ several hosts:
 
 A version with variants may omit the primary. That fits tools with no portable
 implementation, such as a Go or Rust CLI. pnpm then fails on a host that no
-variant matches, with an error that lists the published platforms, and skips
-the package when it is an optional dependency. In pnpr's package document,
-top-level `integrity` is absent. For npm's documents, pnpr generates and
-stores a minimal primary archive at publication acceptance containing a
-`package.json` with the version's name, version, and the union of the
-variants' `os` and `cpu`, so npm reports an unsupported platform instead of
-installing an empty package. Those fields match every combination of their
-values, so a host whose OS and CPU each appear in some variant, but not
-together, still gets the empty package (see
-[Clients that do not read variants](#clients-that-do-not-read-variants)). pnpr builds the generated
-archive deterministically from those fields, so every replica and every
-rebuild produces the same integrity. It is not a subject of the version's
-provenance statement and does not affect the version's trust level.
+variant matches, with an error that lists the published platforms, and skips the
+package when it is an optional dependency. In pnpr's package document, top-level
+`integrity` is absent. For npm's documents, pnpr generates and stores a minimal
+primary archive at publication acceptance containing a `package.json` with the
+version's name, version, and the union of the variants' `os`, `cpu`, and Linux
+`libc` (a Linux platform without `libc` counts as `glibc`), so npm reports an
+unsupported platform instead of installing an empty package. npm checks `libc`
+only on Linux, so the field does not exclude other operating systems. Those
+fields match every combination of their values, so a host whose OS and CPU each
+appear in some variant, but not together, still gets the empty package (see
+[Clients that do not read variants](#clients-that-do-not-read-variants)). pnpr
+builds the generated archive deterministically from those fields, so every
+replica and every rebuild produces the same integrity. A revision that replaces
+the variant set gets its own generated primary, built from its variants and
+served at its `<name>@<version>+r<revision>` route like any revision's archive;
+the canonical route keeps the original's bytes, and npm's documents point at the
+selected revision's archive as for any other revision. It is not a subject of
+the version's provenance statement and does not affect the version's trust
+level.
 
 A variant archive is a complete package for its platform, not an overlay on
 the primary. Its `package.json` has the same `name` and `version` as the
@@ -444,10 +450,10 @@ shape used by runtime dependencies. A target without `libc` on Linux means
 glibc, as in the existing type; a static build lists a glibc target and a musl
 target.
 
-When a variant's dependencies differ from the version's `snapshots` entry,
-`snapshots` records a self-contained snapshot for that variant at
-`<name>@<version>/variants/<tag>` (with any peer suffix at the end, as for
-ordinary snapshot keys):
+When a variant's `dependencies` or `optionalDependencies` differ from the
+version's `snapshots` entry, `snapshots` records a self-contained snapshot for
+that variant at `<name>@<version>/variants/<tag>` (with any peer suffix at the
+end, as for ordinary snapshot keys):
 
 ```yaml
 snapshots:
@@ -472,12 +478,12 @@ snapshots:
       semver: 7.7.0
 ```
 
-A variant whose dependencies are identical to `<name>@<version>` needs no
-separate entry in `snapshots`; the installer looks up
-`<name>@<version>/variants/<tag>` and falls back to `<name>@<version>`. The
+A variant whose `dependencies` and `optionalDependencies` are both identical to
+`<name>@<version>` needs no separate entry in `snapshots`; the installer looks
+up `<name>@<version>/variants/<tag>` and falls back to `<name>@<version>`. The
 lockfile is still the same on every machine, because every archive's
-dependencies are resolved on every machine, as every platform package is in
-pnpm today.
+dependencies are resolved on every machine, as every platform package is in pnpm
+today.
 
 Five changes to the lockfile are needed:
 
