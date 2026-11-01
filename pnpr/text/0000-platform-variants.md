@@ -450,8 +450,11 @@ shape used by runtime dependencies. A target without `libc` on Linux means
 glibc, as in the existing type; a static build lists a glibc target and a musl
 target.
 
-When a variant's `dependencies` or `optionalDependencies` differ from the
-version's `snapshots` entry, `snapshots` records a self-contained snapshot for
+A variant's external dependencies are its `dependencies` and
+`optionalDependencies` without the names in its `bundleDependencies` (every
+name in `dependencies` when it is `true`), which pnpm already leaves out of
+snapshots. When they differ from the version's
+`snapshots` entry, `snapshots` records a self-contained snapshot for
 that variant at `<name>@<version>/variants/<tag>` (with any peer suffix at the
 end, as for ordinary snapshot keys):
 
@@ -478,9 +481,9 @@ snapshots:
       semver: 7.7.0
 ```
 
-A variant whose `dependencies` and `optionalDependencies` are both identical to
-`<name>@<version>` needs no separate entry in `snapshots`; the installer looks
-up `<name>@<version>/variants/<tag>` and falls back to `<name>@<version>`. The
+A variant whose external dependencies are identical to `<name>@<version>` needs
+no separate entry in `snapshots`; the installer looks up
+`<name>@<version>/variants/<tag>` and falls back to `<name>@<version>`. The
 lockfile is still the same on every machine, because every archive's
 dependencies are resolved on every machine, as every platform package is in pnpm
 today.
@@ -756,20 +759,21 @@ Target pnpr and pnpm v12. Do not add a feature to pnpm v11.
 6. pnpm: a lockfile marker that older releases reject without
    `--frozen-lockfile` too.
 
-Tests must cover selection order with floors and `wasm32`, an unknown tag
-field falling back to the primary, a frozen install on a platform that did not
-resolve the lockfile, a variant with a dependency the primary lacks (linked
-only where that variant is selected), a name declared with two specifiers by
-two archives (each variant's snapshot resolves its own), a variant whose peer
-dependencies differ (rejected), a variant that requires a build (rejected), a
-variant archive without a `variant` field or with an `os`, `cpu`, or `libc`
-field (rejected), npm's documents of a version with variants (no variants
-listed, the primary installed), a static Linux variant selected on a musl
-host, a version without a primary on an unmatched host, two variants that list
-the same platform (rejected), a batch publish with a missing variant blob or
-with a provenance statement that does not name every archive (rejected), and variants under a registry
-revision (including a frozen install rebuilding `+r<revision>` variant and
-fallback routes).
+Tests must cover selection order with floors and `wasm32`, an unknown tag field
+falling back to the primary, a frozen install on a platform that did not resolve
+the lockfile, a variant with a dependency the primary lacks (linked only where
+that variant is selected), a name declared with two specifiers by two archives
+(each variant's snapshot resolves its own), a variant whose peer dependencies
+differ (rejected), a variant that requires a build (rejected), a variant archive
+without a `variant` field or with an `os`, `cpu`, or `libc` field (rejected),
+npm's documents of a version with variants (no variants listed, the primary
+installed), a static Linux variant selected on a musl host, a version without a
+primary on an unmatched host, two variants that list the same platform
+(rejected), a batch publish with a missing variant blob or with a provenance
+statement that does not name every archive (rejected), a variant that bundles a
+dependency the primary installs (a frozen install links no external package for
+it), and variants under a registry revision (including a frozen install
+rebuilding `+r<revision>` variant and fallback routes).
 
 ## Prior Art
 
