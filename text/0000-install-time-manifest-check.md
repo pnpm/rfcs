@@ -20,10 +20,15 @@ declares `@example/core: ^1.0.0` and a `postinstall` script. pnpm installs a
 graph the package does not declare, and runs a script that policy based on
 the metadata never saw.
 
-Publish-time verification in a registry, such as the
-[pnpr draft](https://github.com/pnpm/rfcs/pull/47), prevents this for packages
-that registry hosts. Most pnpm users install from registries they do not
-control. A client-side check protects them regardless of the registry.
+Publish-time verification in a registry prevents this for packages that registry
+hosts, as pnpr's [publish-time manifest
+verification](../pnpr/text/0000-publish-manifest-verification.md) does. pnpr's
+[release records](../pnpr/text/0000-release-records.md) go further and serve
+archive-derived metadata for the packages it proxies too. Most pnpm users
+install from registries that do neither, such as the public npm registry. A
+client-side check protects them regardless of the registry, and for a pnpr
+registry it is defense in depth: a mismatch there means the registry or a cache
+in front of it broke its contract.
 
 This check establishes consistency between metadata and contents. It does not
 establish that either is trustworthy or that the package is benign.
@@ -43,20 +48,22 @@ installation depend on:
 - `bin` and `directories.bin`.
 - Lifecycle-script presence.
 
-It compares them with the metadata resolution used: the registry metadata
-during a resolving install, or the lockfile entry during a frozen install.
-Fields the lockfile does not record are compared only where the lockfile is
-the source of the decision they affect. The derivation and comparison rules
-follow the same versioned interpretation as the pnpr draft, so both sides use
-one definition and share test fixtures.
+It compares them with the metadata resolution used: the registry metadata during
+a resolving install, or the lockfile entry during a frozen install. Fields the
+lockfile does not record are compared only where the lockfile is the source of
+the decision they affect. The derivation and comparison rules follow the same
+versioned interpretation as [publish-time manifest
+verification](../pnpr/text/0000-publish-manifest-verification.md), so both sides
+use one definition and share test fixtures.
 
 ### Normalizations and direction
 
 Registry metadata for the public npm registry is the output of the publishing
 client's normalization, while the archive keeps the raw `package.json`. The
 interpretation applies the same normalizations to both sides before comparing.
-The pnpr draft lists them under
-[publisher-side normalization](https://github.com/pnpm/rfcs/pull/47).
+[Publish-time manifest
+verification](../pnpr/text/0000-publish-manifest-verification.md#publisher-side-normalization)
+lists them.
 
 A survey compared each version's registry metadata with its archive's
 `package.json` in three samples: the 1,674 registry packages in pnpm/pnpm's
@@ -146,7 +153,10 @@ survey, and `fsevents@2.3.3` must install.
 
 - [The massive hole in the npm ecosystem](https://blog.vlt.sh/blog/the-massive-hole-in-the-npm-ecosystem),
   the public description of manifest confusion.
-- [Publish-time manifest verification for pnpr](https://github.com/pnpm/rfcs/pull/47).
+- [Publish-time manifest verification for pnpr](../pnpr/text/0000-publish-manifest-verification.md).
+- [Release records](../pnpr/text/0000-release-records.md), whose
+  archive-derived records make the same comparison on the registry side for
+  every package pnpr serves.
 
 ## Unresolved Questions and Bikeshedding
 
