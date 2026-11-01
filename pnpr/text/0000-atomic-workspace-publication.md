@@ -110,7 +110,10 @@ that mutates a separate authoritative package document would break the guarantee
 4. Read the relevant catalog state and validate binding uniqueness, mutation
    preconditions, and current permissions through the policy conflict gate below.
 5. Insert the immutable release records, versioned bindings, new selections,
-   catalog generation, and durable transaction outcome.
+   catalog generation, and durable transaction outcome. Advance the catalog's
+   current reference to the new generation in the same transaction, only if
+   the reference still names the generation read in step 4; a mismatch rolls
+   back the transaction.
 6. Commit the SQL transaction. This is the publication's commit point. A
    constraint or policy conflict rolls back the entire transaction. A lost
    commit acknowledgement requires outcome recovery before claiming success
@@ -214,7 +217,12 @@ exactly one publication. A publication has:
   a workload identity, the commit time, and the catalog generation it
   created.
 
-All of this is fixed at commit. Tag moves and revision selections that commit
+All of this is fixed at commit. Versions published before publications are
+recorded receive them when the catalog is first built: each such version
+becomes a publication of one member, with its publish time and, where pnpr
+recorded one, its publisher, and with no name. Versions of an earlier
+batch become separate publications too; grouping them would need a record
+of the batch that the storage does not promise to keep. The invariant therefore holds for every version, old or new. Tag moves and revision selections that commit
 alone are transactions but not publications; they change selections, not the
 set of published versions.
 
@@ -337,7 +345,10 @@ snapshot-aware clients and report their actual consistency guarantees.
 Run the same publication conformance suite against each SQL backend, including
 replica lag and policy write skew. Verify that replacing a backend through
 export/import preserves record digests, generations, revision assignments,
-current permissions, and idempotent outcomes. Failures between artifact upload
+current permissions, the policy epoch, publications, and idempotent outcomes.
+A replacement runs with hosted writes stopped; a transaction that had not
+committed when writes stopped fails, and its retry revalidates against the
+replaced backend before it can commit. Failures between artifact upload
 and SQL commit must leave no visible release and permit safe staging cleanup.
 
 Benchmark publication latency, contention retries, generation storage growth,
