@@ -8,11 +8,15 @@
 
 ## Summary
 
-pnpr already serves each version's release record, an immutable document at
-`<registry-base>/<name>/<version>+r<revision>` with the version's archive facts
-and archive-derived manifest ([split packuments](./0000-split-packuments.md)).
-This RFC makes that record verifiable with the standards other ecosystems
-already use, instead of a scheme of pnpr's own:
+A release record is the immutable statement of what one released artifact
+contains and what a resolver reads from it: its digests and its
+archive-derived metadata. This RFC defines records for every ecosystem pnpr
+serves, npm, Cargo, Python, and container images, as one core with a profile
+per ecosystem. For npm, the record is the one pnpr already serves at
+`<registry-base>/<name>/<version>+r<revision>`
+([split packuments](./0000-split-packuments.md)). It makes records verifiable
+with the standards other ecosystems already use, instead of a scheme of
+pnpr's own:
 
 - Each record is appended to the registry's **transparency log**, in the
   formats Go's checksum database uses, so a registry, mirror, or cache cannot
@@ -20,7 +24,8 @@ already use, instead of a scheme of pnpr's own:
 - Endorsements and publication statements are **in-toto Statements in DSSE
   envelopes**, the format npm provenance, Sigstore, and SLSA use. They sign the
   exact bytes served, so nothing is canonicalized.
-- Publisher provenance stays **Sigstore** evidence, as npm provenance is today.
+- Publisher provenance stays **Sigstore** evidence, as npm provenance and PyPI
+  attestations are today.
 - Clients obtain a registry's keys through **TUF** root metadata, which handles
   rotation and revocation.
 - A registry is identified by its **log's verifier key**, not by a hostname, and
@@ -62,34 +67,57 @@ provenance.
 
 ## Detailed Explanation
 
-### Record contents
+### The record
 
-The record is the one pnpr serves at
-`<registry-base>/<name>/<version>+r<revision>`, one per revision, with the
-fields that bind it added:
+Every record has the same core, whatever its ecosystem:
 
 | Field | Contract |
 | --- | --- |
 | `schema` | Record format version. |
-| `purl` | The version's [Package URL](https://github.com/package-url/purl-spec), such as `pkg:npm/%40example/widgets@1.2.0`. |
-| `revision` | The revision the route names. |
-| `interpretation` | The manifest interpretation profile. |
-| `inputs` | Exact byte digests of the archive manifest and shrinkwrap, if present. |
-| Archive facts | `integrity` (the digest of the uncompressed tar, as for every pnpr archive), `fileCount`, `unpackedSize`, `requiresBuild`, `bins`, and `variants`. |
-| `manifest` | Install-critical metadata derived from the archive. |
+| `purl` | The [Package URL](https://github.com/package-url/purl-spec) of what the record describes, such as `pkg:npm/%40example/widgets@1.2.0` or `pkg:cargo/serde@1.0.210`. |
+| `revision` | The registry revision, in an ecosystem that has revisions. |
+| `interpretation` | The profile the metadata was derived under. |
+| `inputs` | Exact byte digests of the files the metadata was derived from, such as `package.json` or `Cargo.toml`. |
+| Artifact facts | The digests and sizes of the artifacts, in the profile's form. |
+| `manifest` | What the ecosystem's resolver reads, derived from the artifacts under the profile. |
 
-The served record's `name` and `version` stay for the clients that read them
-today. A version with [platform variants](./0000-platform-variants.md) has one
-record covering every archive: each variant entry carries its own tar
-`integrity`, sizes, `bins`, platforms, and the fields of its manifest that
-differ from the version's. A version without a primary has no top-level
-`integrity`.
+The profile decides which artifacts one record covers, how its `manifest` is
+derived, what its log entry is, and where it is served (see
+[Ecosystem profiles](#ecosystem-profiles)). Every record is a deterministic
+function of the package identity, profile, and artifact bytes. It names no
+registry: the log that holds it does. It contains no timestamps, signatures,
+provenance, transport locations, or anything that may change after
+publication, such as an npm deprecation or a yanked crate.
 
-The record is a deterministic function of the package identity,
-interpretation profile, and archive bytes. It names no registry: the log that
-holds it does. It contains no timestamps, signatures, provenance, transport
-locations, deprecation, or `_npmUser`; the served record already leaves those
-out.
+### Ecosystem profiles
+
+Paths are relative to each ecosystem's registry base (`/npm/`, `/cargo/`,
+`/pypi/`, `/oci/`, or a named registry such as `/npm/~<name>/`). Every
+profile's record route is immutable, and its evidence is served at the record
+route followed by `/evidence`.
+
+| Ecosystem | Profile | One record covers | Record route |
+| --- | --- | --- | --- |
+| npm | `npm-install-manifest/1` | A version: its primary archive and every platform variant | `<name>/<version>+r<revision>` |
+| Cargo | `cargo-index-entry/1` | A crate version: its `.crate` | `api/v1/crates/<name>/<version>/record` |
+| Python | `python-core-metadata/1` | One distribution file of a release | `records/<project>/<filename>` |
+| OCI | `oci-tag/1` | One tag's binding to a manifest digest | the log entry itself |
+
+#### npm
+
+The record is the one [split packuments](./0000-split-packuments.md) serves,
+with the core fields added; they are additive, so a client that reads it today
+ignores them. Its artifact facts are the served ones: `integrity` (the digest
+of the uncompressed tar, as for every pnpr archive), `fileCount`,
+`unpackedSize`, `requiresBuild`, `bins`, and `variants`. A version with
+[platform variants](./0000-platform-variants.md) has one record covering every
+archive: each variant entry carries its own tar `integrity`, sizes, `bins`,
+platforms, and the fields of its manifest that differ from the version's. A
+version without a primary has no top-level `integrity`. The `manifest` is the
+install manifest that
+[publish-time manifest verification](./0000-publish-manifest-verification.md)
+derives from `package.json`. The served record's `name` and `version` stay
+for the clients that read them today.
 
 ```json
 {
@@ -113,8 +141,56 @@ out.
 }
 ```
 
-The fields this RFC adds are additive: a client that reads the served record
-today ignores them.
+#### Cargo
+
+Cargo resolves from the registry's index, not from the crates it downloads, and
+does not check one against the other: an index entry can list dependencies the
+crate's `Cargo.toml` does not. The record binds them. Its artifact fact is the
+`.crate`'s `cksum`, the SHA-256 the index already carries, and its `manifest`
+is the index entry Cargo resolves from, derived from the normalized
+`Cargo.toml` that `cargo publish` packs into the `.crate`: `deps` (each with
+`name`, `req`, `features`, `optional`, `default_features`, `target`, `kind`,
+`registry`, and `package`), `features`, `links`, and `rust_version`. The
+`yanked` flag changes after publication, so it is not in the record. Crates
+have no registry revisions.
+
+pnpr serves the sparse index from the records it holds, so the index entry
+Cargo reads is the record's `manifest` with `name`, `vers`, `cksum`, and
+`yanked` around it.
+
+#### Python
+
+A Python release is not a fixed set: wheels for new platforms can be uploaded
+to it after its first files, though none can be replaced. So one record covers
+one distribution file, named by its PURL's `file_name` qualifier, such as
+`pkg:pypi/example@1.2.0?file_name=example-1.2.0-py3-none-any.whl`. Its artifact
+fact is the file's SHA-256, the digest the Simple API already lists. Its
+`manifest` is what a resolver reads from the core metadata: `Requires-Dist`,
+`Requires-Python`, and `Provides-Extra`.
+
+- For a wheel, it is derived from the `.dist-info/METADATA` file, whose digest
+  is the record's input. That is the file PyPI serves beside the wheel
+  ([PEP 658](https://peps.python.org/pep-0658/)), so pnpr serves it too, from
+  the record, with the same hash.
+- For a source distribution, it is derived from `PKG-INFO` when the metadata
+  version is 2.2 or later and none of those fields is declared `Dynamic`
+  ([PEP 643](https://peps.python.org/pep-0643/)). Otherwise the metadata is
+  known only after a build, and the record says so with `"manifest": null`: it
+  binds the file's digest, and a client that requires verified metadata
+  refuses to resolve from it.
+
+#### OCI
+
+An image is already content-addressed: its manifest digest identifies it, and
+the registry verifies every manifest and blob against its digest. What is not
+fixed is the tag: `1.0` can be moved to another image. So the OCI profile logs
+tag bindings, not derived metadata. A log entry is the repository, the tag, and
+the manifest digest it was set to, each time a tag is set, under
+`pkg:oci/<repository>@<digest>?tag=<tag>`. Moving a tag is a new entry, which
+monitors see; a client that pins a tag to a digest it saw before detects a move
+by finding a newer entry in the log. Signatures and attestations stay where OCI
+keeps them, in the registry's referrers for the manifest digest, as cosign and
+Notation store them.
 
 ### Bytes, not canonical JSON
 
@@ -129,8 +205,9 @@ the response; the digest covers the decoded bytes.
 An auditor that re-derives a record from the archive compares the manifest it
 derives with the record's `manifest` under the record's profile, not the bytes.
 
-The record is addressed by version and revision, not by its digest:
-[split packuments](./0000-split-packuments.md) chose that so the package
+A record is addressed by its identity, such as an npm version and revision, a
+crate version, or a Python file name, not by its digest:
+[split packuments](./0000-split-packuments.md) chose that so a package
 document carries no incompressible digest per version.
 
 ### Transparency log
@@ -143,11 +220,13 @@ served as [tiles](https://github.com/C2SP/C2SP/blob/main/tlog-tiles.md), and
 [witnesses](https://github.com/C2SP/C2SP/blob/main/tlog-witness.md) that
 co-sign checkpoints after checking that the log only grew.
 
-- A log entry is the record's PURL, revision, profile, and digest. pnpr appends
-  it in the same transaction that accepts the version.
+- A log entry is the record's PURL, revision, profile, and digest, or for OCI
+  the tag binding. pnpr appends it in the same transaction that accepts the
+  version, file, or tag.
 - A second entry for the same PURL, revision, and profile with another digest is
   a forged or rewritten record. Clients reject it, and monitors that read the
-  log report it.
+  log report it. A tag is the one identity whose entries may change: every
+  move is logged, so none is hidden.
 - With each record, pnpr serves an inclusion proof against a recent checkpoint.
   A client verifies the proof and the checkpoint's signatures, the log's and the
   witnesses' it requires, before it accepts the record.
@@ -155,12 +234,14 @@ co-sign checkpoints after checking that the log only grew.
   is consistent with it, so a registry cannot show different clients different
   logs.
 
-The log holds hosted versions and the versions pnpr derived records for while
-proxying an upstream. It holds digests and identities, not records, so a
+Each configured registry has its own log, so `/npm/~internal/` and
+`/cargo/~internal/` are separate logs, as they are separate registries. A log
+holds hosted versions and the versions pnpr derived records for while proxying
+an upstream. It holds digests and identities, not records, so a
 private package's log entries reveal its name and versions; a private registry
 keeps its log, like its records, behind its access rules.
 
-Each deployment runs its own log, and its verifier key is its identity. A
+Each deployment runs its own logs, and a log's verifier key is its identity. A
 shared log, as Go's ecosystem shares `sum.golang.org`, would need an operator
 every deployment trusts and would expose private names; deployments that want
 one can agree on a log later without changing the record or the protocol.
@@ -187,14 +268,19 @@ PURL and digest; its `predicateType` says what is claimed:
 - **Publication**, `https://pnpm.io/pnpr/publication/v1`: how the version was
   published (see [Publication evidence](#publication-evidence)).
 
-Publisher provenance keeps its own subject. An npm provenance bundle is a
-Sigstore bundle whose SLSA Statement names the `.tgz` digest; pnpr keeps it as
-it was published and links it to the record through the `.tgz`-to-tar
-derivation it recorded at acceptance.
+Publisher provenance keeps its own subject and its ecosystem's form, and pnpr
+keeps it as it was published:
 
-All of a version's statements and bundles are served beside the record, at
-`<registry-base>/<name>/<version>+r<revision>/evidence`, with the inclusion
-proof:
+- npm provenance is a Sigstore bundle whose SLSA Statement names the `.tgz`
+  digest; pnpr links it to the record through the `.tgz`-to-tar derivation it
+  recorded at acceptance.
+- Python attestations ([PEP 740](https://peps.python.org/pep-0740/)) are
+  Sigstore-signed in-toto Statements naming the distribution file's digest,
+  which is the record's artifact digest.
+- OCI signatures and attestations are referrers of the manifest digest.
+
+All of a record's statements and bundles are served at its evidence route,
+with the inclusion proof:
 
 ```json
 {
@@ -212,9 +298,9 @@ the evidence generation. It follows the record's access rules, including
 
 ### Publication evidence
 
-At acceptance, the registry signs a publication statement. Only the registry
-produces it; publisher-supplied fields with the same names are stripped. Its
-predicate is the version's
+At acceptance, the registry signs a publication statement, in every
+ecosystem. Only the registry produces it; publisher-supplied fields with the
+same names are stripped. Its predicate is the version's
 [publication](./0000-atomic-workspace-publication.md#publications), which
 already records the publishing identity, a workload's repository and commit,
 and the commit time, plus:
@@ -225,11 +311,16 @@ and the commit time, plus:
   matched, such as repository and workflow;
 - whether the version was staged, and the principal that approved it.
 
-Clients evaluating `trustPolicy` read this statement instead of inferring trust
-from `_npmUser`, and pnpr computes the `trust` rank of each entry in its package
-document ([split packuments](./0000-split-packuments.md)) from it. npm
-overloaded `_npmUser` when it added staged publishing, so the approver replaced
-the workload and tools lost the trusted-publishing signal
+It is what a trust policy compares, in every ecosystem: a version published by
+a workload of a repository, after earlier versions were, and then one
+published with a token is the pattern of a stolen credential whether the
+package is an npm package, a crate, or a wheel.
+
+For npm, clients evaluating `trustPolicy` read this statement instead of
+inferring trust from `_npmUser`, and pnpr computes the `trust` rank of each
+entry in its package document ([split packuments](./0000-split-packuments.md))
+from it. npm overloaded `_npmUser` when it added staged publishing, so the
+approver replaced the workload and tools lost the trusted-publishing signal
 ([npm/cli#9397](https://github.com/npm/cli/issues/9397)).
 
 pnpr records no such evidence today. A workload credential resolves to an
@@ -273,18 +364,20 @@ reinterpretation. Revision numbers do not change when only the interpretation
 changes.
 
 A record's identity is its PURL, revision, and profile, as its log entry is.
-The record route `<name>/<version>+r<revision>` serves the record under the
-profile the version was accepted with, and keeps serving it. A record
-re-derived under another profile is served at
-`<name>/<version>+r<revision>/records/<profile>`, also immutable, and the
-accepted profile's record is at that route too. A client that requires a
+A profile's record route serves the record under the profile the artifact was
+accepted with, and keeps serving it. A record re-derived under another profile
+is served at the record route followed by `/records/<profile>`, such as
+`<name>/<version>+r<revision>/records/<profile>` for npm, also immutable, and
+the accepted profile's record is at that route too. A client that requires a
 profile reads that route and caches records by all three parts, never by
 revision alone.
 
 ### Upstream verification
 
-For proxied packages, upstream metadata is an unverified claim. pnpr fetches
-each version's archive, derives its record under the profile, and serves that,
+For proxied packages, upstream metadata is an unverified claim: an npm
+package document, a crates.io index entry, or a PyPI page. pnpr fetches each
+artifact, derives its record under the profile, and serves the metadata from
+it,
 as PyPI's index extracts each wheel's metadata and serves it with its hash
 ([PEP 658](https://peps.python.org/pep-0658/)). pnpr pays the download once,
 for every client; the client reads archive-derived metadata without fetching
@@ -298,6 +391,11 @@ archives to resolve.
 
 - When verification is required and fails, resolution fails. It never falls back
   to the unverified mode.
+- A Python source distribution whose metadata is dynamic cannot be verified:
+  under the verify mode it resolves only when a wheel of the same release
+  provides the metadata, or under an unverified exemption.
+- OCI has nothing to derive: pnpr verifies a proxied manifest and its blobs by
+  digest, as it does today, and logs the tag binding it observed upstream.
 - Archive-authoritative acceptance changes the metadata used for resolution: the
   graph is resolved from the archive manifest, never resolved from upstream
   metadata and patched afterwards.
@@ -310,7 +408,10 @@ explained by the publishing client's normalization, mostly `bin` syntax and
 `optionalDependencies` copied into `dependencies`. The full table is in
 [publish-time manifest verification](./0000-publish-manifest-verification.md).
 No other differences were found. With those normalizations in the profile,
-verification on by default fails no version in the survey.
+verification on by default fails no version in the survey. Cargo and Python
+need the same survey, of crates.io index entries against their crates and of
+PyPI metadata against its wheels, before their verify mode is released; until
+then pnpr records their disagreements without failing on them.
 
 ### Client protocol
 
@@ -320,11 +421,21 @@ Extend the `GET /-/pnpr` capability document:
 {
   "records": [1],
   "log": "registry.example+1a2b3c4d+<key>",
-  "manifestProfiles": ["npm-install-manifest/1"]
+  "manifestProfiles": [
+    "npm-install-manifest/1",
+    "cargo-index-entry/1",
+    "python-core-metadata/1",
+    "oci-tag/1"
+  ]
 }
 ```
 
-- **Records.** An entry of pnpr's package document
+- **Who verifies.** pnpm verifies records for the ecosystems it installs from,
+  npm, Cargo, and Python. Native clients, `cargo`, `pip`, and container
+  runtimes, read the metadata pnpr serves from records without verifying the
+  log; they gain upstream verification from pnpr, and a verifying client or
+  monitor can check the same log.
+- **Records.** For npm, an entry of pnpr's package document
   (`application/vnd.pnpr.install-v2+json`) that carries its manifest is a
   projection of the record: the same manifest and archive facts, beside the
   version's mutable `trust`, selected `revision`, publish time, and
@@ -335,11 +446,13 @@ Extend the `GET /-/pnpr` capability document:
 - **Evidence and proofs.** A verifying client fetches each locked version's
   evidence and checks its inclusion proof. Statements are fetched only when the
   active policy needs them.
-- **Log.** The log's checkpoints and tiles are served at
+- **Log.** Each log's checkpoints and tiles are served at
   `<registry-base>/-/log/`, as C2SP's tiles specify, for monitors and
-  witnesses.
+  witnesses, and an entry with its inclusion proof at
+  `<registry-base>/-/log/lookup/<purl>`, as Go's checksum database serves
+  `/lookup/<module>@<version>`. For OCI, that lookup is how a client checks a
+  tag.
 
-Paths are relative to the effective registry base (`/npm/` or `/npm/~<name>/`).
 A digest is never a read capability: every record, evidence, and artifact read
 is authorized through its package and registry, and unauthorized callers must
 not learn whether a private record exists.
@@ -389,7 +502,7 @@ Log tiles are immutable once full, as C2SP's tiles specify.
 
 Target pnpr and pnpm v12. Do not add a feature to pnpm v11.
 
-1. pnpr: add the binding fields to the record it serves, store the exact bytes
+1. pnpr: add the core fields to the npm record it serves, store the exact bytes
    in the SQL metadata layer, and append each record to a C2SP log in the
    acceptance transaction.
 2. pnpr: sign acceptance and publication statements as in-toto Statements in
@@ -399,7 +512,11 @@ Target pnpr and pnpm v12. Do not add a feature to pnpm v11.
 4. pnpm: verify records, proofs, checkpoint consistency, and the statements the
    trust policy needs; ship the roots of known public registries, and read a
    pinned root for a private one.
-5. pnpr: derive records for proxied versions and enforce the upstream modes.
+5. pnpr: derive records for proxied npm versions and enforce the upstream
+   modes.
+6. pnpr and pnpm: the Cargo and Python profiles, serving the sparse index and
+   the Simple API's core metadata from records, after the surveys; and OCI
+   tag entries.
 
 Use existing implementations rather than new ones: Go's `golang.org/x/mod/sumdb`
 packages and their Rust counterparts for notes and tiles, a DSSE library, and a
@@ -426,6 +543,11 @@ private records cannot be read through digest paths.
   [Sigstore](https://www.sigstore.dev/).
 - [TUF](https://theupdateframework.io/) and its adoption for PyPI in
   [PEP 458](https://peps.python.org/pep-0458/).
+- [PEP 643](https://peps.python.org/pep-0643/) static source distribution
+  metadata, and [PEP 740](https://peps.python.org/pep-0740/) attestations.
+- Cargo's [sparse index](https://doc.rust-lang.org/cargo/reference/registry-index.html),
+  and [cosign](https://github.com/sigstore/cosign) and
+  [Notation](https://notaryproject.dev/) signatures stored as OCI referrers.
 - [PEP 658](https://peps.python.org/pep-0658/), metadata extracted from the
   archive and served with its hash.
 - [Package URL](https://github.com/package-url/purl-spec).
