@@ -306,14 +306,16 @@ publisher-supplied ones:
 There is no `tarball`: the client derives each archive's URL from the routes
 below.
 
-A variant entry carries `dependencies` and `optionalDependencies` when the
-variant's differ from the version's `manifest`. When the version has a primary,
-`manifest` is the primary's manifest; when it has no primary, `manifest` holds
-the version's shared `peerDependencies` and `peerDependenciesMeta` plus the
-`dependencies` and `optionalDependencies` common to every variant (`{}` when
-none). pnpr copies per-variant `dependencies` and `optionalDependencies` from
-each variant's verified manifest. A resolver therefore sees every archive's
-dependencies in the one entry it already reads.
+A variant entry carries its own `manifest` (or only the fields that differ from
+the version's `manifest`, such as `dependencies`, `optionalDependencies`,
+`bundleDependencies`, and `engines`), matching the `{ <archive facts>, manifest }`
+shape of the version entry itself. When the version has a primary, the
+version's `manifest` is the primary's manifest; when it has no primary, the
+version's `manifest` holds the shared `peerDependencies` and
+`peerDependenciesMeta` plus the `dependencies` and `optionalDependencies`
+common to every variant (`{}` when none). pnpr derives each `manifest` from the
+verified archive. A resolver therefore sees every archive's dependencies in the
+one entry it already reads.
 
 Inline, the variants would make a package's document several times larger.
 Rebuilt from today's platform packages, `esbuild`'s document would grow from
@@ -362,8 +364,13 @@ A variant is served from an immutable route next to the version's own:
 <registry-base>/<name>@<version>+r<revision>/variants/<tag>
 ```
 
-Responses follow the revision route's rules: a tar with `gzip` or `zstd`
-content coding, no redirects, and integrity checked by the client.
+`<name>` uses the same form as the tarball and revision routes
+(`<registry-base>/@<scope>/<name>@<version>/variants/<tag>` for a scoped
+package), and `<tag>` is a single path segment of `[a-z0-9._+-]+` (never `.` or
+`..`, and containing no `/` or `%`). Responses follow the revision route's
+rules: a tar with `gzip` or `zstd` content coding, no redirects, and integrity
+checked by the client. Archives are content-addressed in storage, so a variant
+unchanged across revisions is stored once.
 
 ### Lockfile
 
@@ -539,10 +546,12 @@ ship as platform archives.
 ### Clients that do not read variants
 
 npm, Yarn, and Bun read npm's documents, which list no variants, and install
-the primary archive. So does pnpm with a registry that does not serve pnpr's
-format. For esbuild or biome that primary has no binary, so those users get a
-package that fails when it runs. Until something else exists, a publisher
-whose users are not all on pnpm and pnpr needs a primary that works
+the primary archive (or, when the version has no primary, the generated minimal
+primary archive served at the version's canonical tarball route with its own
+`dist.tarball` and `dist.integrity`). So does pnpm with a registry that does
+not serve pnpr's format. For esbuild or biome that primary has no binary, so
+those users get a package that fails when it runs. Until something else exists,
+a publisher whose users are not all on pnpm and pnpr needs a primary that works
 everywhere, such as a wasm or JavaScript build, or keeps publishing separate
 platform packages.
 
@@ -732,9 +741,6 @@ and fallback routes).
 - Should the vocabulary gain an accelerator dimension (CUDA, ROCm, Vulkan,
   Metal), as Python's WheelNext wheel variants proposal does? Such a
   dimension cannot be detected as reliably as the OS and CPU.
-- Can a variant be added to a published version for a platform not yet
-  covered, for example a new Electron ABI, without a revision? It would need
-  the same publisher identity and a lockfile refresh rule.
 - How should `pnpm deploy` and `node_modules` copied into a container choose
   the linked variant when several platforms are prepared?
 - Should large assets that are not platform builds, such as a Chromium
