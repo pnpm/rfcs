@@ -407,8 +407,20 @@ unchanged across revisions is stored once.
 ### Lockfile
 
 pnpm records a package with variants using the existing `variations`
-resolution, ordered by the selection rule so that its first-match semantics
-pick the best variant:
+resolution shape, extended with the selection rule above. Serialize variants
+in byte order of their derived tags for a platform-neutral lockfile; array
+order does not choose the archive. At install time, evaluate every variant's
+best matching target for the actual host and rank those matches.
+
+The current first-match implementation cannot express this rule for all hosts.
+For example, variant A can list `linux-x64` and `darwin-arm64-napi9`, while B
+lists `linux-x64-napi8` and `darwin-arm64`. Linux with N-API 9 must prefer B;
+macOS arm64 with N-API 9 must prefer A. No single ordering of A and B works.
+Reuse the resolution type and matching utilities, but extend the selector for
+these records; older runtime lockfiles retain their existing selection behavior.
+The required lockfile version marker distinguishes the new semantics.
+
+For example:
 
 ```yaml
 packages:
@@ -491,9 +503,12 @@ lockfile is still the same on every machine, because every archive's
 dependencies are resolved on every machine, as every platform package is in pnpm
 today.
 
-Five changes to the lockfile are needed:
+Six changes to the lockfile and its interpretation are needed:
 
 - `targets` gain the floor and ABI fields from the tag table.
+- The selector ranks the best matching target of every variant at install
+  time, independently of serialization order, instead of stopping at the first
+  match. The lockfile version distinguishes this from existing runtime entries.
 - A `fallback` resolution holds the primary archive. It is absent when the
   version has no primary.
 - `VariationsResolution` gains an optional `revision` (including `0` for
@@ -539,9 +554,10 @@ as a new `lockfileVersion`.
   optional packages today. `supportedArchitectures` fetches the dependencies of
   every archive it fetches.
 - The linked variant depends on the host, so the virtual store directory of a
-  package with variants is keyed by the selected archive's integrity, not only
-  by name and version. That key also covers the archive's dependencies,
-  which follow from the selection. A global virtual store shared by an arm64
+  package with variants includes the selected archive's integrity in addition
+  to the existing resolved dependency-graph and peer-context identity. Archive
+  integrity alone does not identify dependencies: the same archive's ranges
+  may resolve differently in two projects or after an update. A global virtual store shared by an arm64
   Node.js and an x64 Node.js under Rosetta, or by two Node.js versions that
   select different `nodeAbi` variants, then keeps both.
 - The installer records which archive it linked for each package with
@@ -559,7 +575,8 @@ as a new `lockfileVersion`.
   `supportedArchitectures` from the store through an API that this RFC leaves
   open; they are not linked under the package's name.
 - Server-side resolution through pnpr already produces platform-neutral
-  lockfiles. It writes `variations` entries without change to its protocol.
+  lockfiles. It must negotiate support for the new lockfile version and selector
+  semantics before returning variant entries to a client.
 
 ### Publication
 
@@ -779,6 +796,11 @@ it), a variant-only dependency with a peer dependency (the variant's snapshot
 records its own `transitivePeerDependencies`), and variants under a registry
 revision (including a frozen install rebuilding `+r<revision>` variant and
 fallback routes).
+
+Also test the A/B multi-target example above on both hosts after reversing
+lockfile array order, and two projects selecting identical archive bytes but
+different versions of a ranged dependency. Their virtual store entries must
+preserve the different resolved graphs.
 
 ## Prior Art
 

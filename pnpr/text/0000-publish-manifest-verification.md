@@ -119,7 +119,12 @@ The profile defines each of these as a normalization, applied to both sides
 before comparison. The `gypfile` step is the one case where the normalized
 sides still differ: the submitted manifest claims a build that the archive
 cannot run. That direction is benign. pnpr accepts it, serves the
-archive-derived verdict, and reports the difference to the publisher. The
+archive-derived verdict, and reports the difference to the publisher. This
+exception applies only to an added `install: "node-gyp rebuild"` and its
+associated `gypfile` flag, when the submitted manifest has no other lifecycle
+script difference and archive inspection proves no implicit build would run.
+It does not allow arbitrary added scripts, changed script bodies, or additional
+dependencies just because they overstate what the archive requires. The
 reverse direction, where the archive declares a script or dependency that the
 submitted manifest omits, is the attack and is always rejected.
 
