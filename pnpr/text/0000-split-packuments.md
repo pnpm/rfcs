@@ -273,7 +273,7 @@ extends the version-document route `<name>/<version>`, which pnpr and npm
 already serve, with the same `+r<revision>` suffix, so a scoped name keeps
 the same escaping on both routes. It leaves out what may change after
 publication and what
-[release records](https://github.com/pnpm/rfcs/pull/49) keep as separate
+[release records](./0000-release-records.md) keep as separate
 evidence: no `deprecated`, no `_npmUser`, no `tarball`, and no registry
 signatures or attestations. What remains never changes, so
 pnpr serves it with `Cache-Control: public, max-age=31536000, immutable`
@@ -403,7 +403,7 @@ a URL of its own for the new format; see
   to keep variant archives out of large documents. Variant selection happens
   after a version is picked, so the variants move with the rest of the
   version.
-- [Release records and upstream verification](https://github.com/pnpm/rfcs/pull/49)
+- [Release records and upstream verification](./0000-release-records.md)
   keeps endorsements and evidence apart from the immutable record, as the
   release record here leaves out signatures and attestations. Its signed
   record and the one served here describe the same release; the one served
