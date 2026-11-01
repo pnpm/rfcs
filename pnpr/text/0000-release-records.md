@@ -406,10 +406,10 @@ packages and their Rust counterparts for notes and tiles, a DSSE library, and a
 TUF client.
 
 Benchmark cold and warm resolution with verification, and pnpr's cost of
-deriving records for proxied packages on a large mirror. pnpr keeps the
-archive of each version it derived a record for as long as it keeps the
-record, as a mirror keeps the tarballs it serves; the benchmark decides
-whether derivation runs on first request or ahead of it. Test that tag changes, deprecations,
+deriving records for proxied packages on a large mirror. pnpr keeps the archive
+of each version it derived a record for as long as it keeps the record, as a
+mirror keeps the tarballs it serves; the benchmark decides whether derivation
+runs on first request or ahead of it. Test that tag changes, deprecations,
 delayed attestations, and re-signing preserve record digests; that a second
 record for a logged identity is rejected; that an inconsistent checkpoint is
 rejected; that a rotated key is followed and the old one refused; and that
