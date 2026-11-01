@@ -260,6 +260,15 @@ unsupported profile is a capability error rather than a silent
 reinterpretation. Revision numbers do not change when only the interpretation
 changes.
 
+A record's identity is its PURL, revision, and profile, as its log entry is.
+The record route `<name>/<version>+r<revision>` serves the record under the
+profile the version was accepted with, and keeps serving it. A record
+re-derived under another profile is served at
+`<name>/<version>+r<revision>/records/<profile>`, also immutable, and the
+accepted profile's record is at that route too. A client that requires a
+profile reads that route and caches records by all three parts, never by
+revision alone.
+
 ### Upstream verification
 
 For proxied packages, upstream metadata is an unverified claim. pnpr fetches
@@ -303,12 +312,14 @@ Extend the `GET /-/pnpr` capability document:
 }
 ```
 
-- **Records.** Clients read records where they read them today: an entry of
-  pnpr's package document (`application/vnd.pnpr.install-v2+json`) that
-  carries its manifest is the record's content inline, and a picked version
-  without one is fetched from its record route. A client that verifies records
-  fetches the record route for every version it locks, since only those bytes
-  have the logged digest, and caches them on disk forever.
+- **Records.** An entry of pnpr's package document
+  (`application/vnd.pnpr.install-v2+json`) that carries its manifest is a
+  projection of the record: the same manifest and archive facts, beside the
+  version's mutable `trust`, selected `revision`, publish time, and
+  deprecation, which are not part of the record. A client that does not verify
+  resolves from it, as today. A client that verifies records fetches the
+  record route for every version it locks, since only those bytes have the
+  logged digest, resolves from the record, and caches it on disk forever.
 - **Evidence and proofs.** A verifying client fetches each locked version's
   evidence and checks its inclusion proof. Statements are fetched only when the
   active policy needs them.
@@ -421,9 +432,6 @@ private records cannot be read through digest paths.
   compare checkpoints.
 - Should public pnpr deployments share one log, as Go's ecosystem shares
   `sum.golang.org`, rather than each running its own?
-- The record route is immutable, so it serves the record of the profile a
-  version was accepted under. Where is a record re-derived under a later
-  interpretation profile served, and how does a client ask for it?
 - How long does pnpr keep the archives of proxied versions it derived records
   for, and what does deriving them cost on a large mirror?
 - Should publication evidence, together with a package-level publish policy the
