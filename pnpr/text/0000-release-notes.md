@@ -8,12 +8,13 @@ it hosts: a note for each package version, and a note for each
 npm packages, crates, and wheels alike, that one publish made visible
 together. Notes are Markdown, sent with the publish and editable later. A
 version's notes are served next to its other routes in its ecosystem, one
-version at a time or all the versions between two, so a client upgrading from
-`1.2.0` to `1.4.0` reads what changed in one request. A publication's note is
-served from the server root, outside every ecosystem. Notes are not part of
-any package document, release record, or archive, so an install never
-downloads them and editing them changes nothing a lockfile pins. pnpm sends
-notes with `pnpm publish` and shows them where it offers an upgrade.
+version at a time or all notes of the package in one cacheable document, so a
+client upgrading from `1.2.0` to `1.4.0` reads what changed in one request and
+filters the version range locally. A publication's note is served from the
+server root, outside every ecosystem. Notes are not part of any package
+document, release record, or archive, so an install never downloads them and
+editing them changes nothing a lockfile pins. pnpm sends notes with
+`pnpm publish` and shows them where it offers an upgrade.
 
 ## Motivation
 
@@ -100,19 +101,20 @@ never renders HTML and never fetches images.
 
 ### Version note routes
 
-A version note lives under the version's path in its ecosystem's registry:
+A package's version notes live under its path in its ecosystem's registry:
 
 ```text
+GET    <registry-base>/<name>/-/notes
 GET    <registry-base>/<name>/<version>/notes
 PUT    <registry-base>/<name>/<version>/notes
 DELETE <registry-base>/<name>/<version>/notes
-GET    <registry-base>/<name>/<version>/notes?since=<version>
 ```
 
 The registry base is the one the package's other routes use, so the same
 shape serves every ecosystem:
 
 ```text
+https://pnpr.example.com/npm/@example/cli/-/notes
 https://pnpr.example.com/npm/@example/cli/12.0.0/notes
 https://pnpr.example.com/cargo/example-core/12.0.0/notes
 https://pnpr.example.com/pypi/example-bindings/12.0.0/notes
@@ -121,27 +123,26 @@ https://pnpr.example.com/pypi/example-bindings/12.0.0/notes
 A [named registry](./0000-pnpr-registry-mounts.md) serves the notes of its
 own packages under its `~<name>` base. A name is written as the ecosystem
 writes it in its own routes: an npm scope keeps its `/`, and a Python name is
-in its normalized form. No existing route has a segment after a version. An
-unscoped npm `fast-thing/1.4.0/notes` has as many segments as a scoped
-version document, `@scope/fast-thing/1.4.0`, and is told apart by its first
-segment: only a scope starts with `@`.
+in its normalized form. `/-/` cannot be a version or dist-tag in any ecosystem,
+and no existing route has a segment after a version. An unscoped npm
+`fast-thing/1.4.0/notes` has as many segments as a scoped version document,
+`@scope/fast-thing/1.4.0`, and is told apart by its first segment: only a
+scope starts with `@`.
 
-Without `since`, `GET` answers `text/markdown; charset=utf-8` with the note,
-and `404` when the version has none. The `Last-Modified` header carries the
-time of the last change and the `ETag` header identifies the text. In an
-ecosystem with dist-tags, a `GET` may name a tag instead of a version, as
-npm's version document route allows: `fast-thing/latest/notes?since=1.2.0`
-is what changed since the installed version.
+`GET <registry-base>/<name>/<version>/notes` answers
+`text/markdown; charset=utf-8` with the version's note, and `404` when the
+version has none. The `Last-Modified` header carries the time of the last
+change and the `ETag` header identifies the text. In an ecosystem with
+dist-tags, a `GET` may name a tag instead of a version, as npm's version
+document route allows (`fast-thing/latest/notes`).
 
-With `since`, it answers `application/json` with the notes of every version
-`v` of the package with `since < v ≤ <version>` (and `v < before` when a
-`before=<version>` pagination cursor is given), ordered by the ecosystem's
-own version order (semver for npm and Cargo, PEP 440 for Python), newest
-first. `since` and `before` need not name versions present in the registry
-(the installed version may have been unpublished or installed from another
-source), but must parse as valid versions in the ecosystem's scheme (`400`
-otherwise). Each version is listed when it has a note or its publication has
-one:
+`GET <registry-base>/<name>/-/notes` answers `application/json` with all notes
+of the package, ordered by the ecosystem's own version order (semver for npm
+and Cargo, PEP 440 for Python), newest first. Because the route takes no
+client-specific `since` parameter, every client requests the same URL for the
+package and shares one cached response, and the server does no per-request
+version range filtering. Each version is listed when it has a note or its
+publication has one:
 
 ```json
 {
@@ -163,12 +164,13 @@ client fetches each publication note once, however many of the upgraded
 packages, in whatever ecosystems, came out of it. `text` is absent when only
 the publication has a note.
 
-A range includes prereleases only when `<version>` is one, so an upgrade
-between stable versions does not list the betas in between. A response holds
-at most 100 notes and 1 MiB; when more match, `next` is the URL of the
-following page (`<registry-base>/<name>/<version>/notes?since=<since>&before=<last-version>`).
+A response holds at most 100 notes and 1 MiB; when more exist, `next` is the
+URL of the following page (`<registry-base>/<name>/-/notes?before=<last-version>`).
 Unpublished versions are left out. A deprecated or yanked version keeps its
-note.
+note. A client upgrading from an installed version to a target version filters
+the returned list locally to `installed < v ≤ target` (including prereleases
+only when `target` is a prerelease, so an upgrade between stable versions does
+not list the betas in between).
 
 ### Publication note routes
 
@@ -251,9 +253,9 @@ caller's credentials is `private, no-store` with `Vary: Authorization`.
 ### Upstream and mirrored packages
 
 npm's registry, crates.io, and PyPI have no notes, so an upstream registry
-that proxies one serves `404` for a single note and an empty list for a
-range. An upstream registry whose origin is another pnpr forwards notes
-requests to it and caches the responses under the same rules. pnpr never
+that proxies one serves `404` for a single note and an empty list for
+`<name>/-/notes`. An upstream registry whose origin is another pnpr forwards
+notes requests to it and caches the responses under the same rules. pnpr never
 fetches notes from GitHub or another release page on a reader's behalf.
 
 ### pnpm
@@ -303,7 +305,7 @@ instead:
 - A version note holds the intents that name only that package, plus the
   intents shared with packages outside the publication. It is the section
   versioning would have packed, without the history below it: a reader gets
-  the history from a range.
+  the history from `<name>/-/notes`.
 - The publication note holds the intents that name more than one package of
   the publication, once each, with the packages each applies to, and the
   text of `--release-notes <file>` above them for a summary written by hand.
@@ -398,14 +400,14 @@ ecosystem's protocol unchanged.
 
 Tests must cover: a publish whose note is rejected (nothing published), a
 staged publish whose notes appear only on approval, a publication of npm,
-Cargo, and Python packages whose note each member's range lists, a range
-across prereleases with a stable and a prerelease target in npm and Python
-version orders, a dist-tag target, pagination, a gated package read without
-credentials, a publication note read by a caller who can read only some
-members, an edit by an identity outside the
-`publish` rule (rejected), control and bidirectional override characters
-(rejected by pnpr, removed by pnpm), and changelog sections in the changesets
-and Keep a Changelog forms.
+Cargo, and Python packages whose note each member's `<name>/-/notes` lists,
+client-side range filtering across prereleases with a stable and a prerelease
+target in npm and Python version orders, a dist-tag target, pagination, a gated
+package read without credentials, a publication note read by a caller who can
+read only some members, an edit by an identity outside the `publish` rule
+(rejected), control and bidirectional override characters (rejected by pnpr,
+removed by pnpm), and changelog sections in the changesets and Keep a Changelog
+forms.
 
 ## Prior Art
 
@@ -424,9 +426,8 @@ and Keep a Changelog forms.
 ## Unresolved Questions and Bikeshedding
 
 - Container images have tags rather than ordered versions. Should an image
-  in a publication get version notes, and how would a range be defined?
-- Should the range route also accept a semver range, for a reader that wants
-  the notes of `^1` without knowing the versions?
+  in a publication get version notes, and how would `<name>/-/notes` order
+  them?
 - Should pnpr import notes from a package's GitHub releases when it mirrors a
   package from npm, so that public packages have notes too? That fetches
   from a third host on pnpr's side, with its own rate limits and failure
