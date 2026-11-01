@@ -208,7 +208,14 @@ digest as the version, and the repository and tag as qualifiers.
 }
 ```
 
-Its log entry's identity is the repository, tag, revision, and profile.
+Its log entry's identity is the repository, tag, revision, and profile, never
+the PURL, which changes with the digest.
+
+Deleting a tag, or deleting the manifest a tag points at, which the OCI
+Distribution Specification permits, writes a tombstone revision: a record with
+the next `revision` and `"purl": null`. A lookup whose last revision is a
+tombstone finds no current binding, and setting the tag again writes the next
+revision after it.
 
 So a moved tag is a new revision of the same identity, and every move is in the
 log; a client that pinned a tag to a digest finds a newer revision by looking
@@ -245,22 +252,21 @@ served as [tiles](https://github.com/C2SP/C2SP/blob/main/tlog-tiles.md), and
 [witnesses](https://github.com/C2SP/C2SP/blob/main/tlog-witness.md) that
 co-sign checkpoints after checking that the log only grew.
 
-- A log entry is the record's identity (its PURL, or an OCI tag's repository
-  and tag), revision, profile, and digest. pnpr sequences it in the SQL
-  metadata store, in the same transaction that accepts the version, file, or
-  tag, so a record is never accepted without its entry or logged without being
-  accepted. The log's tiles and checkpoints are built
-  from the sequenced entries after commit, idempotently, as Tessera-style logs
-  integrate them; pnpr serves a record only once its entry is integrated and
-  has an inclusion proof.
-- A second entry for the same PURL, revision, and profile with another digest is
-  a forged or rewritten record. An inclusion proof shows only that an entry
-  exists, not that no other does, so this is caught as Go's checksum database
-  catches it: monitors read the whole witnessed log and report any identity
-  logged twice, and a client that locked a record keeps its digest in the
-  lockfile and rejects any other. A client that sees a version for the first
-  time relies on the monitors. An OCI tag changes its digest only through a
-  new revision, so every move is a new entry and none is hidden.
+- A log entry is the record's identity (its PURL, or an OCI tag's repository and
+  tag), revision, profile, and digest. pnpr sequences it in the SQL metadata
+  store, in the same transaction that accepts the version, file, or tag, so a
+  record is never accepted without its entry or logged without being accepted.
+  The log's tiles and checkpoints are built from the sequenced entries after
+  commit, idempotently, as Tessera-style logs integrate them; pnpr serves a
+  record only once its entry is integrated and has an inclusion proof.
+- A second entry for the same identity, revision, and profile with another
+  digest is a forged or rewritten record. An inclusion proof shows only that an
+  entry exists, not that no other does, so this is caught as Go's checksum
+  database catches it: monitors read the whole witnessed log and report any
+  identity logged twice, and a client that locked a record keeps its digest in
+  the lockfile and rejects any other. A client that sees a version for the first
+  time relies on the monitors. An OCI tag changes its digest only through a new
+  revision, so every move is a new entry and none is hidden.
 - With each record, pnpr serves an inclusion proof against a recent checkpoint.
   A client verifies the proof and the checkpoint's signatures, the log's and the
   witnesses' it requires, before it accepts the record.
@@ -417,15 +423,16 @@ unsupported profile is a capability error rather than a silent
 reinterpretation. Revision numbers do not change when only the interpretation
 changes.
 
-A record's identity is its PURL, revision, and profile, as its log entry is.
-A profile's record route serves the record under the profile the artifact was
-accepted with, and keeps serving it. A record re-derived under another profile
-is served at the record route followed by `/records/<profile>`, such as
+A record's identity is its PURL, or an OCI tag's repository and tag, with its
+revision and profile, as its log entry is. A profile's record route serves the
+record under the profile the artifact was accepted with, and keeps serving it. A
+record re-derived under another profile is served at the record route followed
+by `/records/<profile>`, such as
 `<name>/<version>+r<revision>/records/npm-install-manifest/1` for npm, also
 immutable, and the accepted profile's record is at that route too. A profile is
 always `<name>/<version>` with each part in `[a-z0-9.-]+`, so it is two path
 segments and never needs encoding. A client that requires a profile reads that
-route and caches records by the registry's authority, PURL, revision, and
+route and caches records by the registry's authority, identity, revision, and
 profile, never by revision alone: two registries can serve the same PURL with
 different records.
 
