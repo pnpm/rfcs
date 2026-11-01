@@ -10,13 +10,16 @@ and selected artifacts. An explicit retention operation makes the artifacts
 needed by an approved dependency set durable for a declared period. Current
 authorization and security policy still apply when that set is restored.
 
-This builds on pnpr's server-side resolver and authorization-aware cache.
-The [SQL metadata storage RFC](https://github.com/pnpm/rfcs/blob/main/pnpr/text/0000-sql-metadata-storage.md)
-supplies the storage contract. Record-backed snapshots also depend on the
-[release records draft](https://github.com/pnpm/rfcs/pull/49); snapshots of
-upstream observations alone do not. The atomic publication draft
-describes consistent hosted release visibility. Snapshot selection and retention
-are separate operations.
+This builds on pnpr's server-side resolver and authorization-aware cache. [SQL
+metadata storage](./0000-sql-metadata-storage.md) supplies the storage contract,
+[release records](./0000-release-records.md) the immutable members a snapshot
+references and the signing and trust-root rules, [atomic workspace
+publication](./0000-atomic-workspace-publication.md) the committed catalog
+generations a hosted capture pins, and [split
+packuments](./0000-split-packuments.md) the split between a package's mutable
+state and its immutable records. Snapshot selection and retention are separate
+operations. They apply to every ecosystem release records cover: npm, Cargo,
+Python, and OCI tags.
 
 ## Motivation
 
@@ -38,28 +41,33 @@ making retained upstream artifacts authoritative local data.
 
 ### Snapshot contents and scope
 
-A snapshot is an immutable manifest of package observations. For every included
+A snapshot is an immutable manifest of package observations. It splits each
+package as [split packuments](./0000-split-packuments.md) does: the mutable
+state is copied, and the immutable versions are referenced. For every included
 origin and package it binds:
 
-- The candidate versions and their observed manifests or verified release records.
-- The tag and selected-revision mappings used for resolution.
+- The candidate versions, each by its
+  [release record](./0000-release-records.md)'s identity and digest. A
+  registry in the unverified mode of release records has no record for a
+  proxied version; the snapshot then holds pnpr's observation of its upstream
+  metadata instead, and marks it as unverified.
+- The mutable state used for resolution: tags, selected revisions,
+  deprecations, and trust ranks.
 - Publication timestamps used by policy, upstream validators when available,
   and observation times.
-- The origin's declared namespace and route identity.
+- The origin's declared namespace, route identity, and the authority of its
+  release-record log.
 
 A snapshot has an algorithm-qualified digest and a separately authorized
 reference. Private snapshots and their dependency names are private data.
 
-Snapshot manifests and receipts use the encoding the
-[release records draft](https://github.com/pnpm/rfcs/pull/49) defines for
-records: the digest is `sha512-` + base64(`SHA512(JCS_UTF8(object))`) over the
-[RFC 8785 JCS](https://www.rfc-editor.org/rfc/rfc8785) encoding, which fixes
-key order and number formatting and rejects duplicate keys and invalid Unicode.
-Each object carries a `type` (`snapshot` or `receipt`) and a format `version`
-inside the hashed bytes, so a digest of one kind can never be accepted as the
-other, and an absent optional field is omitted rather than written as `null`.
-pnpr stores and transmits the encoded bytes unchanged, and verifiers hash the
-bytes they receive.
+Snapshot manifests and receipts follow the byte rule of [release
+records](./0000-release-records.md): pnpr stores the bytes it wrote when it
+sealed the object, serves them unchanged, and their digest is the SHA-512 of
+those bytes. Verifiers hash the bytes they receive and never re-serialize, so no
+canonical JSON form is needed. Each object carries a `type` (`snapshot` or
+`receipt`) and a format `version` inside the hashed bytes, so a digest of one
+kind can never be accepted as the other.
 
 Store snapshot manifests, observations, receipts, and their memberships in the
 authoritative SQL metadata database under the
@@ -94,9 +102,12 @@ An upstream snapshot is a capture of what pnpr observed, not a claim that all
 upstream packages existed together at one wall-clock instant. Sequential
 upstream reads cannot establish that stronger property without upstream support.
 
-Hosted registries can expose one committed catalog generation. Once atomic
-publication exists, capture uses that generation throughout the operation.
-Until then, hosted capture has the same observed-state limitation and must say so.
+Hosted registries expose one committed catalog generation ([atomic workspace
+publication](./0000-atomic-workspace-publication.md)). A capture of hosted
+packages pins that generation throughout the operation, and the snapshot
+references it instead of copying the hosted packages' state: the generation
+already fixes their versions, tags, and revision selections, and retention keeps
+it from being collected.
 
 Replaying a sealed snapshot uses the same immutable candidate observations.
 It does not refresh a package because its TTL expired or silently switch to a
@@ -117,16 +128,15 @@ The resolver produces an immutable receipt binding:
 | Policy digest and evaluation time | Fixes the eligibility rules used for this decision. |
 | Output lockfile digest and artifact references | Identifies the accepted result. |
 
-Pin captured package-index integrities and per-version observation
-integrities for every member. Where a member has a verified release record, also
-pin its record integrity, its manifest interpretation profile, and any
-archive-authoritative acceptance policy from the
-[release records draft](https://github.com/pnpm/rfcs/pull/49). A receipt over
-a snapshot with observation-only members says so for each of them: their
-metadata is what pnpr observed upstream, not archive-verified, and replay uses
-those same observations. Retaining such a set verifies each archive against its
-observation, and a mismatch makes the retention incomplete rather than
-rewriting the receipt. Package-index captures preserve candidate sets and tags;
+Pin captured package-index integrities and per-version observation integrities
+for every member. Where a member has a release record, also pin its record
+digest, its interpretation profile, and any archive-authoritative acceptance
+from [release records](./0000-release-records.md). A receipt over a snapshot
+with observation-only members says so for each of them: their metadata is what
+pnpr observed upstream, not archive-verified, and replay uses those same
+observations. Retaining such a set verifies each archive against its
+observation, and a mismatch makes the retention incomplete rather than rewriting
+the receipt. Package-index captures preserve candidate sets and tags;
 per-version observations exclude unrelated index changes and detached evidence.
 A newer profile or a corrected upstream observation cannot reinterpret a sealed
 snapshot or receipt. An unsupported or withdrawn profile is an explicit replay
@@ -139,19 +149,21 @@ request must be rejected as unsupported for replay.
 
 The receipt can explain selected versions and rejected candidates using
 structured reason codes. It must not serialize upstream credentials. Returned
-reason details and private footprints remain subject to package authorization.
-A receipt signature authenticates the server's decision, not a proof that an
-arbitrary remote resolver executed correctly. Within one deployment, a
-retention request names a receipt by digest, and pnpr reads it from its own
-metadata database under current authorization; no signature is involved. A
-signature matters only when a receipt leaves the deployment. An importing
-deployment then accepts a receipt only from an issuer key it is configured to
-trust, and how such keys are distributed, rotated, and revoked follows the
-trust-root rules of the
-[release records draft](https://github.com/pnpm/rfcs/pull/49). An imported
-receipt is retained under the importer's own authorization; it carries no
-access rights from the issuer. Clients retain artifact integrity
-verification, and the protocol must define which metadata bindings they verify.
+reason details and private footprints remain subject to package authorization. A
+receipt signature authenticates the server's decision, not a proof that an
+arbitrary remote resolver executed correctly. Within one deployment, a retention
+request names a receipt by digest, and pnpr reads it from its own metadata
+database under current authorization; no signature is involved. A signature
+matters only when a receipt leaves the deployment. It is then an in-toto
+Statement in a DSSE envelope, as [release records](./0000-release-records.md)
+signs its statements, with the receipt's digest as its subject and
+`https://pnpm.io/pnpr/receipt/v1` as its predicate type, signed by the
+deployment's statement key. An importing deployment accepts it only from an
+issuer whose TUF root it pinned, and keys are distributed, rotated, and revoked
+by those roots. An imported receipt is retained under the importer's own
+authorization; it carries no access rights from the issuer. Clients retain
+artifact integrity verification, and the protocol must define which metadata
+bindings they verify.
 
 Resolution replay with the recorded implementation and inputs should produce
 the same graph, or a specific unsupported-version error. Byte-identical
@@ -179,6 +191,9 @@ the required target environments, and a retention period. It is complete only
 after pnpr has:
 
 1. Enumerated all package resources required to restore that dependency set.
+   For a package with [platform variants](./0000-platform-variants.md), that
+   is every variant the target environments select, and the primary where
+   one of them selects none.
 2. Downloaded and verified every resource not already durably stored.
 3. Stored the records, metadata, and evidence needed to interpret them.
 4. Committed retention references that keep these objects out of cache eviction
@@ -310,15 +325,9 @@ snapshot and receipt digests, membership, expiry, and verified blob availability
   without adding overlapping install modes?
 - What is the minimum replay-input schema, and how long should pnpr retain
   compatible resolver implementations?
-- Should initial snapshots require verified release records, or allow clearly
-  marked upstream metadata observations until retention verifies them?
 - Which target environments and external dependency sources are required for
   an initial complete retention set?
-- How should signed receipts, authority rebinding, and retention references be
-  exported between deployments without exporting access rights?
 - What quotas and retention defaults make the storage obligation predictable?
-- What membership indexes and retention/collection coordination meet the shared
-  SQL backend contract without catalog-wide copies or long write transactions?
 
 ---
 Written by an agent (Codex, GPT-6).
