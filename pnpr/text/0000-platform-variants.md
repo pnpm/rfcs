@@ -116,6 +116,10 @@ reports an unsupported platform instead of installing an empty package. Those
 fields match every combination of their values, so a host whose OS and CPU each
 appear in some variant, but not together, still gets the empty package (see
 [Clients that do not read variants](#clients-that-do-not-read-variants)).
+pnpr builds the generated archive deterministically from those fields, so
+every replica and every rebuild produces the same integrity. It has no
+provenance statement and does not count toward the version's trust level,
+which comes from the variants alone.
 
 A variant archive is a complete package for its platform, not an overlay on
 the primary. Its `package.json` has the same `name` and `version` as the
@@ -159,10 +163,6 @@ rejects the version unless:
 - every archive's `peerDependencies` and `peerDependenciesMeta` are equal across
   the primary (when present) and all variants, so the package's peers, and with
   them its key in the lockfile, do not depend on the platform;
-- a name that more than one archive declares in `dependencies` or
-  `optionalDependencies` has the same specifier and the same field in each,
-  after removing from each archive the names it bundles
-  (`bundleDependencies`), so the lockfile resolves each name once;
 - no variant requires a build (its `requiresBuild` is false), so a
   variant never needs an `allowBuilds` entry;
 - every variant archive declares a `variant` field with at least one
@@ -171,8 +171,8 @@ rejects the version unless:
 - no two variants list the same platform with the same floors, so no host
   can tie between them and no two variants get the same tag.
 
-A variant may differ from the primary in its files, its dependencies within
-the rule above, bundled dependencies, `bin`, `main`, `exports`, and
+A variant may differ from the primary in its files, its dependencies,
+including their specifiers and whether they are optional, bundled dependencies, `bin`, `main`, `exports`, and
 `engines`. The primary may require a build: a source build is a fallback, and
 it needs an `allowBuilds` entry only on hosts that link the primary.
 
@@ -208,13 +208,30 @@ below. The structured form in metadata has one field per part:
 | `nodeAbi` | `node-<NODE_MODULE_VERSION>` or `electron-<abi>`, for addons outside N-API | Exact. |
 | `wasm32` | `true` | Matches every host, ranked last. |
 
-Examples: `linux-x64`, `linux-x64-musl`, `linux-x64-manylinux_2_28`,
-`darwin-arm64`, `win32-x64`. The string form of the floors and ABI fields is
-an unresolved question.
+A platform's tag is its fields written in this order, joined with `-`, with
+absent fields left out:
 
-A variant's tag is its name in routes and the lockfile. pnpr derives it: the
-variant's platform tags, sorted and joined with `+`, a character platform tags
-do not use. A variant with one platform is named by that platform, such as
+| Field | String form |
+| --- | --- |
+| `os`, `cpu` | the value, such as `linux-x64` |
+| `libc` | `musl`; glibc is written as no part |
+| `libcVersion` | `manylinux_<major>_<minor>`, as in PEP 600 |
+| `osVersion` | `macos_<major>_<minor>` on `darwin`, `windows_<major>_<minor>` on `win32` |
+| `napi` | `napi<N>` |
+| `nodeAbi` | `node<N>` or `electron<N>` |
+| `wasm32` | the whole tag is `wasm32` |
+
+Versions are written as two decimal numbers without leading zeros, so `11`
+and `11.0` both give `11_0`. Examples: `linux-x64`, `linux-x64-musl`,
+`linux-x64-manylinux_2_28-napi8`, `darwin-arm64-macos_11_0`, `win32-x64`.
+The form of a field never changes once specified: a later vocabulary only
+adds fields, which appear only in the tags of platforms that use them, so a
+tag computed today stays the same under every later vocabulary.
+
+A variant's tag is its name in routes and the lockfile. pnpr derives it, and
+pnpm derives the same string from the lockfile's `targets`: the variant's
+platform tags, sorted by their bytes and joined with `+`, a character
+platform tags do not use. A variant with one platform is named by that platform, such as
 `linux-x64-musl`; a static Linux build is `linux-x64+linux-x64-musl`, and a
 macOS universal binary `darwin-arm64+darwin-x64`. Overlapping platforms are
 rejected, so derived tags are unique within a version, and the publisher has
@@ -275,7 +292,7 @@ publisher-supplied ones:
       "requiresBuild": false,
       "variants": [
         {
-          "tag": "linux-x64-manylinux_2_17",
+          "tag": "linux-x64-manylinux_2_17-napi8",
           "platforms": [
             { "os": "linux", "cpu": "x64", "libc": "glibc", "libcVersion": "2.17", "napi": 8 }
           ],
@@ -306,14 +323,18 @@ publisher-supplied ones:
 There is no `tarball`: the client derives each archive's URL from the routes
 below.
 
-A variant entry carries its own `manifest` (or only the fields that differ from
-the version's `manifest`, such as `dependencies`, `optionalDependencies`,
-`bundleDependencies`, and `engines`), matching the `{ <archive facts>, manifest }`
-shape of the version entry itself. When the version has a primary, the
+A variant entry carries a `manifest`, matching the
+`{ <archive facts>, manifest }` shape of the version entry itself, with only
+the fields whose value differs from the version's `manifest`, such as
+`dependencies`, `optionalDependencies`, `bundleDependencies`, and `engines`. A
+field present there replaces the version's field as a whole, and a field the
+version's `manifest` has but the variant's does not is given as `null`. A
+variant whose manifest equals the version's has `"manifest": {}`. When the version has a primary, the
 version's `manifest` is the primary's manifest; when it has no primary, the
 version's `manifest` holds the shared `peerDependencies` and
-`peerDependenciesMeta` plus the `dependencies` and `optionalDependencies`
-common to every variant (`{}` when none). pnpr derives each `manifest` from the
+`peerDependenciesMeta` plus the `dependencies` and `optionalDependencies` that
+every variant declares with the same specifier (`{}` when none). pnpr derives
+each `manifest` from the
 verified archive. A resolver therefore sees every archive's dependencies in the
 one entry it already reads.
 
@@ -396,6 +417,7 @@ packages:
             - os: linux
               cpu: x64
               libcVersion: '2.17'
+              napi: 8
         - resolution:
             integrity: sha512-<darwin universal digest>
           targets:
@@ -453,7 +475,7 @@ lockfile is still the same on every machine, because every archive's
 dependencies are resolved on every machine, as every platform package is in
 pnpm today.
 
-Four changes to the lockfile are needed:
+Five changes to the lockfile are needed:
 
 - `targets` gain the floor and ABI fields from the tag table.
 - A `fallback` resolution holds the primary archive. It is absent when the
@@ -462,6 +484,14 @@ Four changes to the lockfile are needed:
   revision-aware versions), matching ordinary registry resolutions.
 - `snapshots` records `<name>@<version>/variants/<tag>` entries for variants
   whose dependencies differ from `<name>@<version>`.
+- Snapshot keys gain the `/variants/<tag>` part, before any peer suffix, as
+  in `sharp@0.35.0/variants/linux-x64(react@18.3.1)`. A version has no `/`,
+  so the part is unambiguous, but every parser of snapshot keys must accept
+  it.
+
+Tools that walk the lockfile, such as `pnpm why`, `pnpm audit`,
+`pnpm licenses`, and SBOM generation, visit the variant snapshots too, so a
+dependency that only one variant declares is reported.
 
 `VariationsResolution` and its targets reject unknown fields today, so
 pnpm v12 releases that predate this RFC fail to parse such a lockfile instead
@@ -517,11 +547,14 @@ as a new `lockfileVersion`.
 
 ### Publication
 
-A version and its variants are published together through pnpr's batch publish
-endpoint ([journaled batch publish](https://pnpm.io/pnpr/ecosystems#one-publish-for-a-workspace-that-spans-ecosystems)
-today, and [atomic workspace publication](https://github.com/pnpm/rfcs/pull/46)
-when it lands), so all archives of the version become visible in one
-transaction.
+A version and its variants are published together through pnpr's batch
+publish endpoint, so all archives of the version become visible in one
+transaction. Publishing variants depends on
+[atomic workspace publication](https://github.com/pnpm/rfcs/pull/46): today's
+[journaled batch publish](https://pnpm.io/pnpr/ecosystems#one-publish-for-a-workspace-that-spans-ecosystems)
+carries every archive's bytes in its body, which cannot hold a release of
+this size, and a commit request that refers to archives uploaded before it
+is part of that RFC.
 
 One request body cannot carry a whole release: esbuild's 26 variants are about
 140 MB once base64-encoded in an npm publish body, over a 100 MB limit, and
@@ -541,7 +574,8 @@ commit request.
 Each archive carries its own provenance statement, from the job that built it.
 Batch publish rejects the set unless every statement names the same source
 repository and commit, so a matrix job cannot include a build of other source.
-The trust level of the version is the weakest among its archives, as the
+The trust level of the version is the weakest among its published archives,
+leaving out a generated primary, as the
 [`tool:` protocol](../../text/0000-tool-protocol.md) defines for tools that
 ship as platform archives.
 
@@ -622,7 +656,9 @@ resolution, lockfile, and install parts, without per-archive blob upload, the fl
 and ABI fields, `wasm32`, or dependencies that differ between archives: it
 enforced an earlier, stricter rule that every archive declares the same dependencies. It also took
 each variant's tag and platforms from the publish request rather than from
-the `variant` field, and checked the variant's `os`, `cpu`, and `libc` against
+the `variant` field, recorded the tag on each lockfile variant and
+the dependencies of all archives in one snapshot rather than per variant,
+and checked the variant's `os`, `cpu`, and `libc` against
 them. Real packages from npm were converted into a primary and variants and
 published to a local pnpr, then installed by real projects:
 
@@ -685,7 +721,8 @@ The prototype found these problems, now addressed above:
 
 Target pnpr and pnpm v12. Do not add a feature to pnpm v11.
 
-1. Write the platform tag specification with test vectors, shared with the
+1. Write the platform tag specification, including the derivation of tags,
+   with test vectors, shared with the
    shared side-effects cache.
 2. pnpr: store variants with the version, enforce the invariants, compute
    `variants` in its own package document and release records,
@@ -705,7 +742,7 @@ Tests must cover selection order with floors and `wasm32`, an unknown tag field
 falling back to the primary, a frozen install on a platform that did not resolve
 the lockfile, a variant with a dependency the primary lacks (linked only where
 that variant is selected), a name declared with two specifiers by two archives
-(rejected), a variant whose peer dependencies differ (rejected), a variant that
+(each variant's snapshot resolves its own), a variant whose peer dependencies differ (rejected), a variant that
 requires a build (rejected), a variant archive without a `variant` field or
 with an `os`, `cpu`, or `libc` field (rejected), npm's documents of a version with
 variants (no variants listed, the primary installed), a static Linux
@@ -732,11 +769,6 @@ and fallback routes).
 
 ## Unresolved Questions and Bikeshedding
 
-- The string form of floors and ABI fields in tags, for example
-  `darwin-arm64-macos_11_0` or `linux-x64-manylinux_2_17-napi8`.
-- Should two archives be allowed different specifiers for one dependency
-  name? No package in [Migration](#migration) needs it, and requiring the same
-  specifier resolves each dependency name once across the version's archives.
 - Should a host select a variant for an emulated CPU, such as an `x64`
   executable on macOS `arm64` under Rosetta or on Windows `arm64`? It works for
   executables but never for addons, which load into the host's Node.js
