@@ -29,6 +29,13 @@ inside the package, or both, and every reader goes looking:
   host, guess the release tag from conventions that monorepos break, and find
   nothing when the repository is private, moved, hosted elsewhere, or not
   named.
+- Coding agents upgrading a dependency or debugging a breakage after a bump
+  hit the same walls, and most packages omit `CHANGELOG.md` from their
+  published `files` array, so `node_modules` has nothing to read either. With
+  notes on the registry, one `pnpm outdated --notes` or `pnpm view` call gives
+  an agent the exact breaking changes and migration steps between the
+  installed and target versions using the workspace's existing registry
+  credentials.
 - A `CHANGELOG.md` in the archive can be read only after downloading the
   version it describes, and it cannot be corrected once published.
 - A package published to a private pnpr registry often has no public
