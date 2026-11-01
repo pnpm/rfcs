@@ -118,9 +118,8 @@ values, so a host whose OS and CPU each appear in some variant, but not
 together, still gets the empty package (see
 [Clients that do not read variants](#clients-that-do-not-read-variants)). pnpr builds the generated
 archive deterministically from those fields, so every replica and every
-rebuild produces the same integrity. It has no provenance statement and does
-not count toward the version's trust level, which comes from the variants
-alone.
+rebuild produces the same integrity. It is not a subject of the version's
+provenance statement and does not affect the version's trust level.
 
 A variant archive is a complete package for its platform, not an overlay on
 the primary. Its `package.json` has the same `name` and `version` as the
@@ -567,18 +566,27 @@ already stored) before the batch commit request. Limits apply to each archive,
 not to the release. The batch publish commit request references the primary and
 variant archives by integrity without carrying archive bytes in the commit body,
 and runs the invariants above against the complete set before committing the
-release. In CI, matrix jobs can either pass their built `.tgz` archives as CI
-artifacts to a final release job that runs batch publish, or upload their
-archive blobs by integrity directly and let the final job send the batch publish
-commit request.
+release. In CI, matrix jobs pass their built `.tgz` archives as CI artifacts
+to a final release job, which uploads them and sends the commit request. Only
+that job talks to pnpr, so no build job needs registry credentials.
 
-Each archive carries its own provenance statement, from the job that built it.
-Batch publish rejects the set unless every statement names the same source
-repository and commit, so a matrix job cannot include a build of other source.
-The trust level of the version is the weakest among its published archives,
-leaving out a generated primary, as the
-[`tool:` protocol](../../text/0000-tool-protocol.md) defines for tools that
-ship as platform archives.
+The release job signs one provenance statement for the version, with the
+digest of every archive it publishes as a subject; SLSA statements allow
+several subjects. Batch publish rejects the version unless the statement
+names every published archive, so no archive enters the version outside it.
+This is what npm provenance proves today: that a workflow of a given
+repository and commit published these bytes. It does not prove that a job of
+that commit built each archive, the same gap npm has for any package built in
+one job and published in another. The version's trust level comes from that
+one statement, and a generated primary, which pnpr builds itself, is not a
+subject of it.
+
+A build attestation from each matrix job, naming its archive's digest and the
+same repository and commit, would close that gap. It is optional evidence
+that a later revision of this protocol can accept and rank, not a
+requirement; it would also need blob-upload permission for workload
+identities, which [atomic workspace publication](https://github.com/pnpm/rfcs/pull/46)
+does not grant today.
 
 ### Clients that do not read variants
 
@@ -750,7 +758,7 @@ field (rejected), npm's documents of a version with variants (no variants
 listed, the primary installed), a static Linux variant selected on a musl
 host, a version without a primary on an unmatched host, two variants that list
 the same platform (rejected), a batch publish with a missing variant blob or
-with provenance from another commit (rejected), and variants under a registry
+with a provenance statement that does not name every archive (rejected), and variants under a registry
 revision (including a frozen install rebuilding `+r<revision>` variant and
 fallback routes).
 
