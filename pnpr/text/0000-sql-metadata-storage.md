@@ -21,8 +21,8 @@ of the whole package.
 
 pnpr also needs relationships that object storage does not coordinate well:
 uniqueness of published versions, concurrent tag and policy changes, durable
-publication outcomes after a lost response, and the snapshot and publication
-features drafted in [pnpm/rfcs#45](https://github.com/pnpm/rfcs/pull/45) and
+publication outcomes after a lost response, and the generations and
+publications of
 [atomic workspace publication](./0000-atomic-workspace-publication.md).
 
 The npm registry shows what the single-document model costs at scale:
@@ -109,8 +109,9 @@ revision, including `r0`; it is an internal key, not new version syntax.
 All key columns are non-null, so a nullable revision column cannot weaken
 duplicate-publication protection. A new interpretation profile adds
 `accepted_manifests` rows next to the existing ones and never overwrites
-accepted metadata. Which profile a view uses is an explicit selection. Tables for snapshots, retention, and
-workspace publication belong to their own RFCs and build on these operations.
+accepted metadata. Which profile a view uses is an explicit selection. Tables
+for workspace publication belong to their own RFC and build on these
+operations.
 
 ### Generated views and caching
 

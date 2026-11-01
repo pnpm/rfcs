@@ -13,9 +13,9 @@ Snapshot-aware readers pin that generation for their operation, so concurrent
 publication cannot give them a mixture of the old and new release.
 
 This strengthens pnpr's existing journaled batch publication. It builds on
-the [SQL metadata contract](./0000-sql-metadata-storage.md) and composes with
-resolution snapshots. An initial implementation can restrict batches to one
-organization and one configured hosted catalog; it does not promise transactions
+the [SQL metadata contract](./0000-sql-metadata-storage.md). An initial
+implementation can restrict batches to one organization and one configured
+hosted catalog; it does not promise transactions
 across independent servers.
 
 ## Motivation
@@ -285,9 +285,8 @@ Uncommitted candidates are protected while a transaction can still commit.
 Garbage collection must coordinate with active transactions and retained
 generations. pnpr keeps the current generation and every generation that a
 snapshot read has pinned, until the pin expires; a generation with neither
-reference may be collected. Old generations remain reachable while a
-snapshot or retention reference needs them. Deleting a tag never makes a
-retained artifact eligible for accidental collection.
+reference may be collected. Deleting a tag never makes a retained artifact
+eligible for accidental collection.
 
 Recovery and idempotency information required to decide a committed outcome
 must commit in the same SQL transaction as the release bindings and selections.
@@ -361,7 +360,7 @@ Target pnpr, with new publishing and snapshot-read support in pnpm v12 only.
 4. Add idempotent transaction status and capability-negotiated batch semantics.
 5. Record publications with their members and serve them from the
    publication routes, filtered by the caller's read access.
-6. Connect server-side resolution and retained snapshots to pinned generations.
+6. Connect server-side resolution to pinned generations.
 
 Required validation includes concurrent publications of overlapping versions,
 non-overlapping writers, conflicting tag updates, and policy revocation racing

@@ -41,8 +41,8 @@ for hosted packages. Clients still have to trust that the registry did so, and
 proxied upstream packages are not verified at all.
 
 A release record is a long-lived unit that can be signed, logged, cached,
-audited, and pinned by later features (resolution snapshots,
-[atomic workspace publication](./0000-atomic-workspace-publication.md))
+audited, and pinned by other features, such as the catalog generations of
+[atomic workspace publication](./0000-atomic-workspace-publication.md),
 independently of mutable package state such as tags and deprecations.
 
 npm's registry signatures sign only `${name}@${version}:${integrity}` with a key
