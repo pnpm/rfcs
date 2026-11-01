@@ -137,11 +137,11 @@ dist-tags, a `GET` may name a tag instead of a version, as npm's version
 document route allows (`fast-thing/latest/notes`).
 
 `GET <registry-base>/<name>/-/notes` answers `application/json` with all notes
-of the package, ordered by the ecosystem's own version order (semver for npm
-and Cargo, PEP 440 for Python), newest first. Because the route takes no
-client-specific `since` parameter, every client requests the same URL for the
-package and shares one cached response, and the server does no per-request
-version range filtering. Each version is listed when it has a note or its
+of the package in one cacheable document, ordered by the ecosystem's own
+version order (semver for npm and Cargo, PEP 440 for Python), newest first.
+Because the route takes no query parameters, every client requests the same URL
+for the package and shares one cached response, and the server does no
+per-request filtering. Each version is listed when it has a note or its
 publication has one:
 
 ```json
@@ -154,8 +154,7 @@ publication has one:
       "publication": { "id": "example/9f2c41", "name": "v12.0.0" }
     },
     { "version": "11.4.0", "modified": "2026-09-30T17:01:02Z", "text": "…" }
-  ],
-  "next": null
+  ]
 }
 ```
 
@@ -164,8 +163,6 @@ client fetches each publication note once, however many of the upgraded
 packages, in whatever ecosystems, came out of it. `text` is absent when only
 the publication has a note.
 
-A response holds at most 100 notes and 1 MiB; when more exist, `next` is the
-URL of the following page (`<registry-base>/<name>/-/notes?before=<last-version>`).
 Unpublished versions are left out. A deprecated or yanked version keeps its
 note. A client upgrading from an installed version to a target version filters
 the returned list locally to `installed < v ≤ target` (including prereleases
@@ -402,7 +399,7 @@ Tests must cover: a publish whose note is rejected (nothing published), a
 staged publish whose notes appear only on approval, a publication of npm,
 Cargo, and Python packages whose note each member's `<name>/-/notes` lists,
 client-side range filtering across prereleases with a stable and a prerelease
-target in npm and Python version orders, a dist-tag target, pagination, a gated
+target in npm and Python version orders, a dist-tag target, a gated
 package read without credentials, a publication note read by a caller who can
 read only some members, an edit by an identity outside the `publish` rule
 (rejected), control and bidirectional override characters (rejected by pnpr,
