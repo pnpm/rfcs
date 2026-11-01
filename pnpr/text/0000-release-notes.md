@@ -129,20 +129,31 @@ and no existing route has a segment after a version. An unscoped npm
 `@scope/fast-thing/1.4.0`, and is told apart by its first segment: only a
 scope starts with `@`.
 
-`GET <registry-base>/<name>/<version>/notes` answers
-`text/markdown; charset=utf-8` with the version's note, and `404` when the
-version has none. The `Last-Modified` header carries the time of the last
-change and the `ETag` header identifies the text. In an ecosystem with
-dist-tags, a `GET` may name a tag instead of a version, as npm's version
-document route allows (`fast-thing/latest/notes`).
+`GET <registry-base>/<name>/<version>/notes` answers `200`
+(`text/markdown; charset=utf-8`) with the version's note when the version has
+one, `204 No Content` when the version has no note of its own but its
+publication has a note (or publish-time `initialDigest`) that the caller may
+read, and `404` otherwise. The `Last-Modified` header carries the time of the
+last change and the `ETag` header identifies the text. When the version's
+publication has a note (or publish-time `initialDigest`) and the caller may read
+every member of that publication, the response includes
+`Link: </-/publications/<org>/<id>/notes>; rel="publication-notes"` (plus
+`PNPR-Publication-Name: <name>` when the publication is named, and
+`PNPR-Publication-Initial-Digest: sha256-<base64>` when the publication was
+created with a note), so a per-version lookup also locates the publication note.
+When the version or publication was published with a note, `GET` on its note
+route also includes `PNPR-Note-Initial-Digest: sha256-<base64>` (even on `204`
+or `404` if the note was later deleted). In an ecosystem with dist-tags, a `GET`
+may name a tag instead of a version, as npm's version document route allows
+(`fast-thing/latest/notes`).
 
 `GET <registry-base>/<name>/-/notes` answers `application/json` with the notes
 of the package in one cacheable document, ordered by the ecosystem's own
 version order (semver for npm and Cargo, PEP 440 for Python), newest first.
 Because the route takes no query parameters, every client requests the same URL
 for the package and shares one cached response, and the server does no
-per-request filtering. Each version is listed when it has a note or when its
-publication has one that the caller may read:
+per-request filtering. Each version is listed when it has a note (or
+`initialDigest`) or when its publication has one that the caller may read:
 
 ```json
 {
@@ -151,31 +162,42 @@ publication has one that the caller may read:
       "version": "12.0.0",
       "modified": "2026-10-28T09:12:44Z",
       "text": "- `install` reads lockfiles from 11.x.\n",
-      "publication": { "org": "example", "id": "9f2c41", "name": "v12.0.0" }
+      "initialDigest": "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=",
+      "publication": {
+        "org": "example",
+        "id": "9f2c41",
+        "name": "v12.0.0",
+        "initialDigest": "sha256-LCa0a2j/xo/5m0U8HTBBNBNCLXBkg7+g+YpeiGJm564="
+      }
     },
     { "version": "11.4.0", "modified": "2026-09-30T17:01:02Z", "text": "…" }
   ]
 }
 ```
 
-`publication` is present when the version's publication has a note and the
+`initialDigest` is present when the note was created with the publication and
+records the immutable SHA-256 digest of that initial text, even if the note is
+later edited or deleted (when deleted, `text` is omitted). `publication` is
+present when the version's publication has a note (or `initialDigest`) and the
 caller may read every member of that publication, so a client fetches each
 publication note once, however many of the upgraded packages, in whatever
 ecosystems, came out of it. `text` is absent when only the publication has a
-note; a version that has no version note of its own and whose publication note
-the caller cannot read is omitted from `notes`.
+note; a version that has no version note (or `initialDigest`) of its own and
+whose publication note the caller cannot read is omitted from `notes`.
 
-To bound response and cache size without query parameters, `<name>/-/notes`
-includes inline `text` on at most the newest 100 version notes and 1 MiB of
-note text. Older entries that have a version note keep their `version`,
-`modified`, and `publication` fields, omit `text`, and carry
-`"truncated": true`; a client whose upgrade range reaches such an entry fetches
-its text from `<registry-base>/<name>/<version>/notes`. Unpublished versions
-are left out. A deprecated or yanked version keeps its note. A client upgrading
-from an installed version to a target version filters the returned list locally
-to `installed < v ≤ target` (including prereleases only when `target` is a
-prerelease, so an upgrade between stable versions does not list the betas in
-between).
+To bound both entry count and response size without query parameters,
+`<name>/-/notes` returns at most the newest 100 entries and 1 MiB of serialized
+JSON, omitting older entries and setting top-level `"truncated": true` when
+more exist. A client whose upgrade range reaches versions older than a
+truncated `notes` list fetches `<registry-base>/<name>/<version>/notes` for
+each remaining version in the range (from the package's version list), which
+returns the version note on `200` and the `Link: ...; rel="publication-notes"`
+header on `200` or `204` when the version has a readable publication note.
+Unpublished versions are left out. A deprecated or yanked version keeps its
+note. A client upgrading from an installed version to a target version filters
+the returned list locally to `installed < v ≤ target` (including prereleases
+only when `target` is a prerelease, so an upgrade between stable versions does
+not list the betas in between).
 
 ### Publication note routes
 
@@ -256,26 +278,30 @@ package can read its notes, and a caller who cannot gets the response that the
 package's own routes give it. A publication note is readable only by a caller
 who can read every member of the publication (since a publication note may name
 and describe changes across any of its members); a caller who cannot read every
-member gets `404`, `publication` is omitted from `<name>/-/notes` entries for
-that caller, and a version that has no version note of its own is omitted from
-`<name>/-/notes` altogether so the listing does not reveal that a publication
-note exists.
+member gets `404`, `publication` and publication headers (`Link`,
+`PNPR-Publication-Name`, `PNPR-Publication-Initial-Digest`) are omitted from
+`<name>/-/notes` and `<name>/<version>/notes` for that caller, and a version
+that has no version note (or `initialDigest`) of its own is omitted from
+`<name>/-/notes` and answered `404` on `<name>/<version>/notes` so neither
+route reveals that a publication note exists.
 
 Notes follow the cache rules that the
 [split packuments RFC](./0000-split-packuments.md) gives to mutable
 documents. A response for a public package (or a publication note whose members
 are all public) is `public` with a short lifetime, five minutes by default, and
-is revalidated with its `ETag`; in a `public` `<name>/-/notes` response,
-`publication` (and any publication-only version entry) appears only for
-publications whose members are all public, so the shared cached representation
-never depends on the caller. Any response that depends on the caller's
-credentials (including a gated package, a publication with a gated member, or
-an authenticated `<name>/-/notes` response that includes such a `publication`
-reference) is `private, no-store` with `Vary: Authorization`. Whenever a note
-is created, edited, or deleted, or a package's visibility changes between
-public and gated, pnpr purges the cached responses for `<name>/-/notes`,
-`<name>/<version>/notes`, any publication note to which the package belongs,
-and `<member>/-/notes` for every member of an affected publication.
+is revalidated with its `ETag`; in a `public` `<name>/-/notes` or
+`<name>/<version>/notes` response, `publication` metadata (and any
+publication-only version entry or `204` response) appears only for publications
+whose members are all public, so the shared cached representation never depends
+on the caller. Any response that depends on the caller's credentials
+(including a gated package, a publication with a gated member, or an
+authenticated `<name>/-/notes` or `<name>/<version>/notes` response that
+includes such a publication reference) is `private, no-store` with
+`Vary: Authorization`. Whenever a note is created, edited, or deleted, or a
+package's visibility changes between public and gated, pnpr purges the cached
+responses for `<name>/-/notes`, `<name>/<version>/notes`, any publication note
+to which the package belongs, and `<member>/-/notes` and
+`<member>/<version>/notes` for every member of an affected publication.
 
 ### Upstream and mirrored packages
 
@@ -349,10 +375,12 @@ The tarball then holds only what the tagged sources produce, and no previous
 tarball is fetched. A later `pnpm version -r` deletes a consumed intent once
 the registry holds the notes it went into, which it checks by verifying that
 the version and, when the release created a publication note, its publication
-carry notes from the release (or, when a note was edited after publish, that
-its initial revision held the composed text, so a post-publish typo fix does
-not block intent deletion). A version that another tool published has no such
-notes, so it blocks deletion, as a tarball without the section does today.
+(readable when the caller has read access to every member of the publication)
+either carry the composed text or carry an immutable `initialDigest`
+(`PNPR-Note-Initial-Digest` / `PNPR-Publication-Initial-Digest`) matching the
+SHA-256 digest of the composed text, so a post-publish edit or deletion does
+not block intent deletion while an unverified or foreign-published version still
+blocks it, as a tarball without the section does today.
 Registries other than pnpr keep the tarball chain.
 
 A package on a release lane gets a version note for each prerelease, and its
