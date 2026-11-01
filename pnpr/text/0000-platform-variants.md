@@ -384,22 +384,19 @@ packages:
     resolution:
       type: variations
       variants:
-        - tag: linux-x64-musl
-          resolution:
+        - resolution:
             integrity: sha512-<linux-x64 musl digest>
           targets:
             - os: linux
               cpu: x64
               libc: musl
-        - tag: linux-x64-manylinux_2_17
-          resolution:
+        - resolution:
             integrity: sha512-<linux-x64 glibc digest>
           targets:
             - os: linux
               cpu: x64
               libcVersion: '2.17'
-        - tag: darwin-arm64+darwin-x64
-          resolution:
+        - resolution:
             integrity: sha512-<darwin universal digest>
           targets:
             - os: darwin
@@ -413,11 +410,13 @@ packages:
 The lockfile is the same on every machine. No optional node exists for an
 installer to drop, and a frozen install on a new platform needs no
 resolution. The archive route is rebuilt from the package key, the
-variant's `tag`, and the resolution's `revision` when present (including `0`,
-for `<name>@<version>+r<revision>/variants/<tag>` and `<name>@<version>+r<revision>`
-for `fallback`), so entries stay integrity-only like other registry entries.
-A target without `libc` on Linux means glibc, as in the existing type; a
-static build lists a glibc target and a musl target.
+tag derived from the variant's `targets`, and the resolution's `revision` when
+present (including `0`, for `<name>@<version>+r<revision>/variants/<tag>` and
+`<name>@<version>+r<revision>` for `fallback`), so entries stay integrity-only
+like other registry entries and variant items keep the `{ resolution, targets }`
+shape used by runtime dependencies. A target without `libc` on Linux means
+glibc, as in the existing type; a static build lists a glibc target and a musl
+target.
 
 When a variant's dependencies differ from the version's `snapshots` entry,
 `snapshots` records a self-contained snapshot for that variant at
@@ -454,9 +453,8 @@ lockfile is still the same on every machine, because every archive's
 dependencies are resolved on every machine, as every platform package is in
 pnpm today.
 
-Five changes to the lockfile are needed:
+Four changes to the lockfile are needed:
 
-- A variant in `VariationsResolution` gains `tag`, derived from its platforms.
 - `targets` gain the floor and ABI fields from the tag table.
 - A `fallback` resolution holds the primary archive. It is absent when the
   version has no primary.
