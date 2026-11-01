@@ -108,12 +108,13 @@ several hosts:
 A version with variants may omit the primary. That fits tools with no portable
 implementation, such as a Go or Rust CLI. pnpm then fails on a host that no
 variant matches, with an error that lists the published platforms, and skips
-the package when it is an optional dependency. npm clients get a primary that
-pnpr generates: a `package.json` with the version's name, version, and the
-union of the variants' `os` and `cpu`, so npm reports an unsupported platform
-instead of installing an empty package. Those fields match every combination
-of their values, so a host whose OS and CPU each appear in some variant, but
-not together, still gets the empty package (see
+the package when it is an optional dependency. In pnpr's package document, top-level
+`integrity` is absent. For npm's documents, pnpr generates and stores a minimal
+primary archive at publication acceptance containing a `package.json` with the
+version's name, version, and the union of the variants' `os` and `cpu`, so npm
+reports an unsupported platform instead of installing an empty package. Those
+fields match every combination of their values, so a host whose OS and CPU each
+appear in some variant, but not together, still gets the empty package (see
 [Clients that do not read variants](#clients-that-do-not-read-variants)).
 
 A variant archive is a complete package for its platform, not an overlay on
@@ -151,13 +152,13 @@ replaces it as a whole.
 ### Invariants the registry enforces
 
 At publication, pnpr derives each archive's manifest under the
-[manifest verification profile](https://github.com/pnpm/rfcs/pull/47) and
+[manifest verification profile](https://github.com/pnpm/rfcs/blob/main/pnpr/text/0000-publish-manifest-verification.md) and
 rejects the version unless:
 
-- every variant's `name` and `version` equal the primary's;
-- every variant's `peerDependencies` and `peerDependenciesMeta` equal the
-  primary's, so the package's peers, and with them its key in the lockfile,
-  do not depend on the platform;
+- every archive's `name` and `version` equal the version's;
+- every archive's `peerDependencies` and `peerDependenciesMeta` are equal across
+  the primary (when present) and all variants, so the package's peers, and with
+  them its key in the lockfile, do not depend on the platform;
 - a name that more than one archive declares in `dependencies` or
   `optionalDependencies` has the same specifier and the same field in each,
   after removing from each archive the names it bundles
@@ -306,9 +307,13 @@ There is no `tarball`: the client derives each archive's URL from the routes
 below.
 
 A variant entry carries `dependencies` and `optionalDependencies` when the
-variant's differ from the version's, which describe the primary. pnpr copies
-them from the variant's verified manifest. A resolver therefore sees every
-archive's dependencies in the one entry it already reads.
+variant's differ from the version's `manifest`. When the version has a primary,
+`manifest` is the primary's manifest; when it has no primary, `manifest` holds
+the version's shared `peerDependencies` and `peerDependenciesMeta` plus the
+`dependencies` and `optionalDependencies` common to every variant (`{}` when
+none). pnpr copies per-variant `dependencies` and `optionalDependencies` from
+each variant's verified manifest. A resolver therefore sees every archive's
+dependencies in the one entry it already reads.
 
 Inline, the variants would make a package's document several times larger.
 Rebuilt from today's platform packages, `esbuild`'s document would grow from
@@ -400,8 +405,10 @@ packages:
 
 The lockfile is the same on every machine. No optional node exists for an
 installer to drop, and a frozen install on a new platform needs no
-resolution. The archive route is rebuilt from the package key and the
-variant's `tag`, so entries stay integrity-only like other registry entries.
+resolution. The archive route is rebuilt from the package key, the
+variant's `tag`, and the resolution's `revision` when present (including `0`,
+for `<name>@<version>+r<revision>/variants/<tag>` and `<name>@<version>+r<revision>`
+for `fallback`), so entries stay integrity-only like other registry entries.
 A target without `libc` on Linux means glibc, as in the existing type; a
 static build lists a glibc target and a musl target.
 
@@ -435,12 +442,14 @@ The lockfile is still the same on every machine, because every archive's
 dependencies are resolved on every machine, as every platform package is in
 pnpm today.
 
-Four changes to the existing type are needed:
+Five changes to the existing type are needed:
 
 - A variant gains `tag`, derived from its platforms.
 - `targets` gain the floor and ABI fields from the tag table.
 - A `fallback` resolution holds the primary archive. It is absent when the
   version has no primary.
+- `VariationsResolution` gains an optional `revision` (including `0` for
+  revision-aware versions), matching ordinary registry resolutions.
 - The package entry gains `archiveDependencies`.
 
 `VariationsResolution` and its targets reject unknown fields today, so
@@ -691,7 +700,8 @@ variants (no variants listed, the primary installed), a static Linux
 variant selected on a musl host, a version without a primary on an unmatched
 host, two variants that list the same platform (rejected), a stage approved with
 a missing variant or with provenance from another commit, and variants under a
-registry revision.
+registry revision (including a frozen install rebuilding `+r<revision>` variant
+and fallback routes).
 
 ## Prior Art
 
