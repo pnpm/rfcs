@@ -451,12 +451,15 @@ glibc, as in the existing type; a static build lists a glibc target and a musl
 target.
 
 A variant's external dependencies are its `dependencies` and
-`optionalDependencies` without the names in its `bundleDependencies` (every
-name in `dependencies` when it is `true`), which pnpm already leaves out of
-snapshots. When they differ from the version's
-`snapshots` entry, `snapshots` records a self-contained snapshot for
-that variant at `<name>@<version>/variants/<tag>` (with any peer suffix at the
-end, as for ordinary snapshot keys):
+`optionalDependencies` without the names in its `bundleDependencies` (every name
+in `dependencies` when it is `true`), which pnpm already leaves out of
+snapshots. pnpm resolves them for every variant and compares the result with the
+version's `snapshots` entry: the resolved `dependencies` with its `dependencies`
+and the resolved `optionalDependencies` with its `optionalDependencies`,
+references including peer suffixes, never a manifest range against a resolved
+reference. When either differs, `snapshots` records a self-contained snapshot
+for that variant at `<name>@<version>/variants/<tag>` (with any peer suffix at
+the end, as for ordinary snapshot keys):
 
 ```yaml
 snapshots:
@@ -481,9 +484,9 @@ snapshots:
       semver: 7.7.0
 ```
 
-A variant whose external dependencies are identical to `<name>@<version>` needs
-no separate entry in `snapshots`; the installer looks up
-`<name>@<version>/variants/<tag>` and falls back to `<name>@<version>`. The
+A variant whose resolved external dependencies are identical to
+`<name>@<version>` needs no separate entry in `snapshots`; the installer looks
+up `<name>@<version>/variants/<tag>` and falls back to `<name>@<version>`. The
 lockfile is still the same on every machine, because every archive's
 dependencies are resolved on every machine, as every platform package is in pnpm
 today.
