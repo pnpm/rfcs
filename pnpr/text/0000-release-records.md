@@ -78,7 +78,7 @@ Every record has the same core, whatever its ecosystem:
 | `revision` | The registry revision, in an ecosystem that has revisions. |
 | `interpretation` | The profile the metadata was derived under. |
 | `inputs` | Exact byte digests of the files the metadata was derived from, such as `package.json` or `Cargo.toml`. Absent from an OCI tag record, which derives nothing. |
-| Artifact facts | The digests and sizes of the artifacts, in the profile's form. Absent from an OCI tag record, whose image digest is the version of its `purl`. |
+| Artifact facts | The digests and sizes of the artifacts, in the profile's form. Absent from an OCI tag record, whose image digest is the version of its `purl`; a tombstone has none, and its `purl` is `null`. |
 | `manifest` | What the ecosystem's resolver reads, derived from the artifacts under the profile. Absent from an OCI tag record, which derives nothing. |
 
 The profile decides which artifacts one record covers, how its `manifest` is
@@ -372,12 +372,13 @@ the evidence generation. It follows the record's access rules, including
 
 ### Publication evidence
 
-At acceptance, the registry signs a publication statement, in every
-ecosystem. Only the registry produces it; publisher-supplied fields with the
-same names are stripped. Its predicate is the version's
+At acceptance, the registry signs a publication statement for every released
+artifact's record, in every ecosystem; OCI tag records get only their
+tag-binding statement. Only the registry produces it; publisher-supplied fields
+with the same names are stripped. Its predicate is the version's
 [publication](./0000-atomic-workspace-publication.md#publications), which
-already records the publishing identity, a workload's repository and commit,
-and the commit time, plus:
+already records the publishing identity, a workload's repository and commit, and
+the commit time, plus:
 
 - the principal kind: a user token, an interactive session, or an OIDC
   workload;
