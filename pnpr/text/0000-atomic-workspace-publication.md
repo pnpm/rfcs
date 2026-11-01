@@ -105,12 +105,14 @@ that mutates a separate authoritative package document would break the guarantee
    Upload and durably stage artifacts without exposing them as releases.
    Protect staged objects from garbage collection while commit is pending.
 3. Begin a short authoritative SQL transaction and acquire or recheck the
-   idempotency claim. A previously committed identical request follows the
-   authorized outcome-query path instead of publishing again.
+   idempotency claim. A previously committed identical request returns its
+   recorded outcome instead of publishing again; recovering that outcome
+   does not need the mutation permission checked in step 1 (see below).
 4. Read the relevant catalog state and validate binding uniqueness, mutation
    preconditions, and current permissions through the policy conflict gate below.
-5. Insert the immutable release records, versioned bindings, new selections,
-   catalog generation, and durable transaction outcome. Advance the catalog's
+5. Insert the immutable release records, the publication and its members,
+   versioned bindings, new selections, catalog generation, and durable
+   transaction outcome. Advance the catalog's
    current reference to the new generation in the same transaction, only if
    the reference still names the generation read in step 4; a mismatch rolls
    back the transaction.
@@ -166,12 +168,20 @@ identity. Bind that key to a digest of the complete request. Reusing it with a
 different request is a conflict. The request identity is scoped to a stable
 principal, not a bearer-token string that changes during token rotation.
 
+Recovering a committed outcome is a read, not a mutation. When a retry
+matches a committed transaction, pnpr returns the recorded outcome to the
+same stable principal without requiring its current publish permission, so a
+permission revoked after commit but before the response arrived does not hide
+the result. Authentication is still required, and any request that would
+mutate is authorized against current permissions as usual.
+
 Existing npm clients send no idempotency key, and npm, pnpm, and lerna retry
 a timed-out publish. For a single-package publication without a key, the
 request's content is the key: a publication of `name@version` whose archive
 integrity and accepted manifest equal the committed release returns the
-recorded success, not a conflict. A different archive for the same version
-is still a conflict.
+recorded success, not a conflict. The match covers the whole request: the
+same archive with different tag changes is a conflict, not a replay. A
+different archive for the same version is still a conflict.
 
 A timed-out commit has an unknown outcome to the client. The client queries or
 retries the same transaction to learn its durable state. Idempotency results
@@ -222,9 +232,10 @@ recorded receive them when the catalog is first built: each such version
 becomes a publication of one member, with its publish time and, where pnpr
 recorded one, its publisher, and with no name. Versions of an earlier
 batch become separate publications too; grouping them would need a record
-of the batch that the storage does not promise to keep. The invariant therefore holds for every version, old or new. Tag moves and revision selections that commit
-alone are transactions but not publications; they change selections, not the
-set of published versions.
+of the batch that the storage does not promise to keep. The invariant
+therefore holds for every version, old or new. Tag moves and revision
+selections that commit alone are transactions but not publications; they
+change selections, not the set of published versions.
 
 A publication belongs to no single ecosystem, so it is served from the
 server root rather than an ecosystem's prefix:
@@ -346,9 +357,11 @@ Run the same publication conformance suite against each SQL backend, including
 replica lag and policy write skew. Verify that replacing a backend through
 export/import preserves record digests, generations, revision assignments,
 current permissions, the policy epoch, publications, and idempotent outcomes.
-A replacement runs with hosted writes stopped; a transaction that had not
-committed when writes stopped fails, and its retry revalidates against the
-replaced backend before it can commit. Failures between artifact upload
+A replacement runs with hosted writes stopped. Stopping writes is a barrier:
+pnpr starts no new transaction, waits until every open one has committed or
+rolled back, and only then exports, so the export holds every committed
+generation and outcome. A transaction that had not committed fails, and its
+retry revalidates against the replaced backend before it can commit. Failures between artifact upload
 and SQL commit must leave no visible release and permit safe staging cleanup.
 
 Benchmark publication latency, contention retries, generation storage growth,
