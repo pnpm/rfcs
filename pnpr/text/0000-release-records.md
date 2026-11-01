@@ -372,9 +372,13 @@ the evidence generation. It follows the record's access rules, including
 
 ### Publication evidence
 
-At acceptance, the registry signs a publication statement for every released
-artifact's record, in every ecosystem; OCI tag records get only their
-tag-binding statement. Only the registry produces it; publisher-supplied fields
+At acceptance, the registry signs a publication statement for every record of
+an artifact published to it, in every ecosystem; OCI tag records get only their
+tag-binding statement. A record pnpr derived for a proxied artifact gets none:
+pnpr did not see that publication. Its evidence is what the upstream provides,
+such as npm provenance, PEP 740 attestations, or OCI referrers, kept as it was
+fetched, and a trust policy evaluates a proxied package from that evidence, as
+it does without pnpr. Only the registry produces a publication statement; publisher-supplied fields
 with the same names are stripped. Its predicate is the version's
 [publication](./0000-atomic-workspace-publication.md#publications), which
 already records the publishing identity, a workload's repository and commit, and
