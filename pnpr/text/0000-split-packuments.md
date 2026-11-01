@@ -50,7 +50,7 @@ almost all of it dependency lists. npm's abbreviated form has no `time`
 map; pnpr's has one, for the minimum release age, and the new format keeps
 the recent times (see [Publish times](#publish-times)).
 
-[Platform variants](https://github.com/pnpm/rfcs/pull/51) make it worse. Each
+[Platform variants](./0000-platform-variants.md) make it worse. Each
 variant archive brings a digest of its own, so `esbuild`'s document grows from
 90 KB to 361 KB gzipped and `@swc/core`'s from 190 KB to 764 KB. The tags and
 platforms of the variants repeat and cost almost nothing; the digests are
@@ -150,7 +150,7 @@ changed. Each version's entry is an object with any of these fields:
   executables with their interpreters, which pnpr derives from the verified
   archive.
 - `variants`: the version's
-  [platform variants](https://github.com/pnpm/rfcs/pull/51), if it has any.
+  [platform variants](./0000-platform-variants.md), if it has any.
 - `manifest`: the publisher's manifest, as
   [manifest verification](https://github.com/pnpm/rfcs/blob/main/pnpr/text/0000-publish-manifest-verification.md)
   derives it, in its abbreviated form, without `dist`, `name`, and
@@ -399,7 +399,7 @@ a URL of its own for the new format; see
   rendered, and the rest of each entry is the mutable state. Its
   open question, whether fragments become a client-facing read path, is
   answered here with a narrow yes, and this RFC removes it from there.
-- [Platform variants](https://github.com/pnpm/rfcs/pull/51) relies on this RFC
+- [Platform variants](./0000-platform-variants.md) relies on this RFC
   to keep variant archives out of large documents. Variant selection happens
   after a version is picked, so the variants move with the rest of the
   version.
