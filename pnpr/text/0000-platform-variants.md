@@ -554,7 +554,7 @@ as a new `lockfileVersion`.
 A version and its variants are published together through pnpr's batch
 publish endpoint, so all archives of the version become visible in one
 transaction. Publishing variants depends on
-[atomic workspace publication](https://github.com/pnpm/rfcs/pull/46): today's
+[atomic workspace publication](./0000-atomic-workspace-publication.md): today's
 [journaled batch publish](https://pnpm.io/pnpr/ecosystems#one-publish-for-a-workspace-that-spans-ecosystems)
 carries every archive's bytes in its body, which cannot hold a release of
 this size, and a commit request that refers to archives uploaded before it
@@ -563,7 +563,7 @@ is part of that RFC.
 One request body cannot carry a whole release: esbuild's 26 variants are about
 140 MB once base64-encoded in an npm publish body, over a 100 MB limit, and
 biome's 10 are 310 MB before encoding. As specified in
-[atomic workspace publication](https://github.com/pnpm/rfcs/pull/46), each
+[atomic workspace publication](./0000-atomic-workspace-publication.md), each
 archive is uploaded in its own request to the content-addressed blob endpoint
 (`PUT /-/pnpr/v0/artifacts/blob?integrity=...`, with `HEAD` skipping blobs
 already stored) before the batch commit request. Limits apply to each archive,
@@ -588,9 +588,8 @@ subject of it.
 A build attestation from each matrix job, naming its archive's digest and the
 same repository and commit, would close that gap. It is optional evidence
 that a later revision of this protocol can accept and rank, not a
-requirement; it would also need blob-upload permission for workload
-identities, which [atomic workspace publication](https://github.com/pnpm/rfcs/pull/46)
-does not grant today.
+requirement. Build jobs would pass their attestations to the release job
+with their archives, so they still need no registry credentials.
 
 ### Clients that do not read variants
 
