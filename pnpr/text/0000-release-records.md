@@ -107,17 +107,20 @@ route followed by `/evidence`.
 
 The record is the one [split packuments](./0000-split-packuments.md) serves,
 with the core fields added; they are additive, so a client that reads it today
-ignores them. Its artifact facts are the served ones: `integrity` (the digest
-of the uncompressed tar, as for every pnpr archive), `fileCount`,
-`unpackedSize`, `requiresBuild`, `bins`, and `variants`. A version with
+ignores them. Its artifact facts are the served ones: `integrity` (the digest of
+the uncompressed tar, as for every pnpr archive), `fileCount`, `unpackedSize`,
+`requiresBuild`, `bins`, and `variants`. Its `inputs` name the `.tgz` as
+published, by the digest npm clients and npm provenance use, beside its
+`package.json`: the record binds that digest to the tar's, so anyone can check
+the binding by decompressing the `.tgz` and hashing the tar. A version with
 [platform variants](./0000-platform-variants.md) has one record covering every
-archive: each variant entry carries its own tar `integrity`, sizes, `bins`,
-platforms, and the fields of its manifest that differ from the version's. A
-version without a primary has no top-level `integrity`. The `manifest` is the
-install manifest that
+archive: each variant entry carries its own `inputs` (its `.tgz` and its
+`package.json`), its tar `integrity`, sizes, `bins`, platforms, and the fields
+of its manifest that differ from the version's. A version without a primary has
+no top-level `integrity`. The `manifest` is the install manifest that
 [publish-time manifest verification](./0000-publish-manifest-verification.md)
-derives from `package.json`. The served record's `name` and `version` stay
-for the clients that read them today.
+derives from `package.json`. The served record's `name` and `version` stay for
+the clients that read them today.
 
 ```json
 {
@@ -128,6 +131,7 @@ for the clients that read them today.
   "revision": 0,
   "interpretation": "npm-install-manifest/1",
   "inputs": {
+    "archive": { "kind": "tgz", "integrity": "sha512-<published .tgz>" },
     "packageJson": { "path": "package/package.json", "integrity": "sha512-<bytes>" },
     "shrinkwrap": null
   },
@@ -224,15 +228,20 @@ co-sign checkpoints after checking that the log only grew.
   the tag binding. pnpr appends it in the same transaction that accepts the
   version, file, or tag.
 - A second entry for the same PURL, revision, and profile with another digest is
-  a forged or rewritten record. Clients reject it, and monitors that read the
-  log report it. A tag is the one identity whose entries may change: every
-  move is logged, so none is hidden.
+  a forged or rewritten record. An inclusion proof shows only that an entry
+  exists, not that no other does, so this is caught as Go's checksum database
+  catches it: monitors read the whole witnessed log and report any identity
+  logged twice, and a client that locked a record keeps its digest in the
+  lockfile and rejects any other. A client that sees a version for the first
+  time relies on the monitors. A tag is the one identity whose entries may
+  change: every move is logged, so none is hidden.
 - With each record, pnpr serves an inclusion proof against a recent checkpoint.
   A client verifies the proof and the checkpoint's signatures, the log's and the
   witnesses' it requires, before it accepts the record.
 - Clients keep the latest checkpoint they have seen and check that a newer one
-  is consistent with it, so a registry cannot show different clients different
-  logs.
+  is consistent with it, so a registry cannot rewrite what a client has seen.
+  Only witnesses, which co-sign one checkpoint for every client, stop it from
+  showing different clients different logs.
 
 Each configured registry has its own log, so `/npm/~internal/` and
 `/cargo/~internal/` are separate logs, as they are separate registries. A log
@@ -248,10 +257,11 @@ one can agree on a log later without changing the record or the protocol.
 
 Witnesses are what protect a client against a registry that shows different
 clients different logs. A public registry's TUF root names the witnesses its
-clients require. A private registry may name none: its clients still detect a
-rewritten entry, since each keeps the latest checkpoint it saw and checks every
-newer one against it, and a CI job that records checkpoints, or a second pnpr
-deployment, can witness the log where an organization needs more.
+clients require. A private registry may name none. Its clients then still
+detect a rewrite of what each has seen, but not a registry that shows them
+different logs: that needs a witness, such as a CI job that co-signs
+checkpoints or a second pnpr deployment, which an organization that needs the
+guarantee names in its root.
 
 ### Statements: in-toto in DSSE
 
@@ -272,8 +282,9 @@ Publisher provenance keeps its own subject and its ecosystem's form, and pnpr
 keeps it as it was published:
 
 - npm provenance is a Sigstore bundle whose SLSA Statement names the `.tgz`
-  digest; pnpr links it to the record through the `.tgz`-to-tar derivation it
-  recorded at acceptance.
+  digest. A client accepts it for a record only when that digest is the
+  record's `inputs.archive`, or a variant's, which the logged record binds to
+  the tar digest it installs.
 - Python attestations ([PEP 740](https://peps.python.org/pep-0740/)) are
   Sigstore-signed in-toto Statements naming the distribution file's digest,
   which is the record's artifact digest.
@@ -348,10 +359,14 @@ old key.
   pnpm does not trust a root fetched from the registry it vouches for unless the
   workspace pinned it.
 
-A registry is identified by its log's verifier key, written as Go writes one,
-`<name>+<key hash>+<key>`. The name is an identifier, not a transport location:
-a mirror or another hostname serving the same log is the same authority, and a
-lockfile that records the authority does not change when the registry moves.
+A registry is identified by its log's name and the digest of its first TUF root
+version, such as `registry.example+sha256:<root digest>`, the same digest a
+workspace pins. The current checkpoint key, written as Go writes one,
+`<name>+<key hash>+<key>`, is verification metadata from the current root, so
+rotating it does not change the identity. The name is an identifier, not a
+transport location: a mirror or another hostname serving the same log is the
+same authority, and a lockfile that records the authority does not change when
+the registry moves or rotates a key.
 Rebinding an authority to a different log requires an explicit operator action.
 Identical archive bytes in two logs do not establish shared ownership.
 
@@ -367,10 +382,13 @@ A record's identity is its PURL, revision, and profile, as its log entry is.
 A profile's record route serves the record under the profile the artifact was
 accepted with, and keeps serving it. A record re-derived under another profile
 is served at the record route followed by `/records/<profile>`, such as
-`<name>/<version>+r<revision>/records/<profile>` for npm, also immutable, and
-the accepted profile's record is at that route too. A client that requires a
-profile reads that route and caches records by all three parts, never by
-revision alone.
+`<name>/<version>+r<revision>/records/npm-install-manifest/1` for npm, also
+immutable, and the accepted profile's record is at that route too. A profile is
+always `<name>/<version>` with each part in `[a-z0-9.-]+`, so it is two path
+segments and never needs encoding. A client that requires a profile reads that
+route and caches records by the registry's authority, PURL, revision, and
+profile, never by revision alone: two registries can serve the same PURL with
+different records.
 
 ### Upstream verification
 
@@ -420,7 +438,7 @@ Extend the `GET /-/pnpr` capability document:
 ```json
 {
   "records": [1],
-  "log": "registry.example+1a2b3c4d+<key>",
+  "authority": "registry.example+sha256:<first root digest>",
   "manifestProfiles": [
     "npm-install-manifest/1",
     "cargo-index-entry/1",
@@ -442,7 +460,8 @@ Extend the `GET /-/pnpr` capability document:
   deprecation, which are not part of the record. A client that does not verify
   resolves from it, as today. A client that verifies records fetches the
   record route for every version it locks, since only those bytes have the
-  logged digest, resolves from the record, and caches it on disk forever.
+  logged digest, resolves from the record, and caches it on disk forever,
+  keyed by the registry's authority as well as the record's identity.
 - **Evidence and proofs.** A verifying client fetches each locked version's
   evidence and checks its inclusion proof. Statements are fetched only when the
   active policy needs them.
