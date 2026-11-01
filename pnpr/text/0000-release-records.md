@@ -8,70 +8,57 @@
 
 ## Summary
 
-pnpr already serves each version's release record, an immutable document
-at `<registry-base>/<name>/<version>+r<revision>` with the version's
-archive facts and archive-derived manifest
-([split packuments](./0000-split-packuments.md)). This RFC makes that record
-verifiable: it adds the authority, interpretation profile, and input digests
-that bind it, fixes its bytes so its digest identifies it, lets a configured
-signer endorse it, keeps publication evidence beside it, and lets pnpr
-compare upstream metadata with archive-derived records for proxied packages
-under an explicit policy.
+pnpr already serves each version's release record, an immutable document at
+`<registry-base>/<name>/<version>+r<revision>` with the version's archive facts
+and archive-derived manifest ([split packuments](./0000-split-packuments.md)).
+This RFC makes that record verifiable with the standards other ecosystems
+already use, instead of a scheme of pnpr's own:
+
+- Each record is appended to the registry's **transparency log**, in the
+  formats Go's checksum database uses, so a registry, mirror, or cache cannot
+  serve one client a different record than it serves everyone else.
+- Endorsements and publication statements are **in-toto Statements in DSSE
+  envelopes**, the format npm provenance, Sigstore, and SLSA use. They sign the
+  exact bytes served, so nothing is canonicalized.
+- Publisher provenance stays **Sigstore** evidence, as npm provenance is today.
+- Clients obtain a registry's keys through **TUF** root metadata, which handles
+  rotation and revocation.
+- A registry is identified by its **log's verifier key**, not by a hostname, and
+  a package by its **Package URL**.
+- For proxied packages, pnpr serves **archive-derived metadata**, as PyPI's
+  index serves metadata extracted from each wheel, and verification is **on by
+  default and fails closed**, as Go's checksum verification is.
 
 ## Motivation
 
 Publish-time manifest verification makes pnpr serve archive-derived metadata
-for hosted packages. Clients still have to trust that the registry did so,
-and proxied upstream packages are not verified at all.
+for hosted packages. Clients still have to trust that the registry did so, and
+proxied upstream packages are not verified at all.
 
-A release record is a long-lived unit that can be signed, cached, audited, and
-pinned by later features (resolution snapshots,
+A release record is a long-lived unit that can be signed, logged, cached,
+audited, and pinned by later features (resolution snapshots,
 [atomic workspace publication](./0000-atomic-workspace-publication.md))
 independently of mutable package state such as tags and deprecations.
 
+npm's registry signatures sign only `${name}@${version}:${integrity}` with a key
+the registry publishes at `/-/npm/v1/keys`. They bind the archive bytes but not
+the dependencies, scripts, or publisher that clients resolve from, and a key
+fetched from the registry it vouches for does not protect against that
+registry.
+
 ### Threat model
 
-This section must be settled before ratification. The record's value depends on
-who can produce an endorsement and who verifies it:
+| Attack | Defense |
+| --- | --- |
+| A network attacker alters a response. | TLS, and the archive's integrity in the lockfile. Records add nothing. |
+| A registry, mirror, or cache serves a client metadata that does not match the archive. | The record binds the archive-derived manifest to the archive's integrity. |
+| A compromised registry serves one client a forged record, or rewrites a record after the fact. | The transparency log: a client accepts a record only with a proof that it is in the log, and witnesses check that the log only ever grows. A forged record must be logged, where monitors see it. This is the protection Go's checksum database gives against a compromised proxy. |
+| A stolen publisher credential publishes a well-formed malicious version. | Publication evidence. In practice this is the attack seen: eslint-scope in 2018 ([npm/npm#21202](https://github.com/npm/npm/issues/21202)) and axios in 2026 ([npm/rfcs#860](https://github.com/npm/rfcs/issues/860), [npm/cli#9242](https://github.com/npm/cli/issues/9242), 68 👍). axios had been publishing with provenance, and the malicious versions were published manually without it. A trust policy that compares how versions were published catches it. |
+| A registry's key is stolen or must be replaced. | TUF root metadata, signed by offline keys, rotates it, and clients stop accepting the old key. |
 
-- Against a network attacker, TLS and `dist.integrity` already protect the
-  archive. Records add nothing there.
-- Against a compromised serving registry, a record endorsed by a key held by
-  that same registry adds nothing; it can forge both metadata and record.
-  Moving the key to a separate signing service helps only if that service
-  validates what it signs. A service that signs any record the serving
-  registry submits is as compromised as the registry.
-- Records help third parties that receive data from a mirror, cache, or export
-  and need to verify it without contacting the authority.
-- Records give snapshots and receipts a stable identity to pin.
-- Against a stolen publisher credential, records add nothing by themselves.
-  This is the attack seen in practice: eslint-scope in 2018
-  ([npm/npm#21202](https://github.com/npm/npm/issues/21202)) and axios in 2026
-  ([npm/rfcs#860](https://github.com/npm/rfcs/issues/860),
-  [npm/cli#9242](https://github.com/npm/cli/issues/9242), 68 👍). The
-  attacker publishes a well-formed archive whose metadata matches it. What
-  catches it is how the version was published: axios had been publishing
-  with provenance attestations, and the malicious versions were published
-  manually from the maintainer's account without them. See
-  [Publication evidence](#publication-evidence).
-
-npm's registry signatures sign only `${name}@${version}:${integrity}`. They
-bind the archive bytes but not the dependencies, scripts, or publisher that
-clients resolve from. A record binds the archive-derived manifest, which closes
-the first gap; publication evidence addresses the second.
-
-The draft should state which of these it targets and size the mechanism to
-match. For a signer separate from the serving registry, it must specify:
-
-- **Who validates the binding.** The signer reads the archive by integrity from
-  artifact storage and derives the manifest under the named profile itself. It
-  does not sign a manifest supplied by the serving registry.
-- **Who authorizes signing.** Which publication or acceptance decision the
-  signer requires before it endorses a record, and how that decision is
-  authenticated to it.
-- **Which trust roots clients already hold.** A key fetched from the same
-  registry it vouches for adds nothing against that registry. The draft must
-  say how clients obtain and rotate trust roots out of band.
+Records do not prove a package is benign. A registry endorsement means the
+registry accepted the manifest-to-archive binding; it is not publisher
+provenance.
 
 ## Detailed Explanation
 
@@ -84,28 +71,30 @@ fields that bind it added:
 | Field | Contract |
 | --- | --- |
 | `schema` | Record format version. |
-| `authority` | The configured origin and its namespace. |
-| `name`, `version`, `revision` | The package identity, with the revision the route names. |
+| `purl` | The version's [Package URL](https://github.com/package-url/purl-spec), such as `pkg:npm/%40example/widgets@1.2.0`. |
+| `revision` | The revision the route names. |
 | `interpretation` | The manifest interpretation profile. |
 | `inputs` | Exact byte digests of the archive manifest and shrinkwrap, if present. |
 | Archive facts | `integrity` (the digest of the uncompressed tar, as for every pnpr archive), `fileCount`, `unpackedSize`, `requiresBuild`, `bins`, and `variants`. |
 | `manifest` | Install-critical metadata derived from the archive. |
 
-A version with [platform variants](./0000-platform-variants.md) has one
+The served record's `name` and `version` stay for the clients that read them
+today. A version with [platform variants](./0000-platform-variants.md) has one
 record covering every archive: each variant entry carries its own tar
 `integrity`, sizes, `bins`, platforms, and the fields of its manifest that
 differ from the version's. A version without a primary has no top-level
 `integrity`.
 
-The record is a deterministic function of the authority, package identity,
-interpretation profile, and archive bytes. It contains no timestamps,
-signatures, provenance, transport locations, deprecation, or `_npmUser`; the
-served record already leaves those out.
+The record is a deterministic function of the package identity,
+interpretation profile, and archive bytes. It names no registry: the log that
+holds it does. It contains no timestamps, signatures, provenance, transport
+locations, deprecation, or `_npmUser`; the served record already leaves those
+out.
 
 ```json
 {
   "schema": "pnpr-release-record/1",
-  "authority": "example-hosted-npm",
+  "purl": "pkg:npm/%40example/widgets@1.2.0",
   "name": "@example/widgets",
   "version": "1.2.0",
   "revision": 0,
@@ -124,68 +113,105 @@ served record already leaves those out.
 }
 ```
 
-The fields this RFC adds are additive: a client that reads the served
-record today ignores them. An artifact digest identifies bytes; a record
-binds them to a package and authority. Identical bytes from separate
-registries do not establish shared ownership. Rebinding an authority to a
-different source requires an explicit operator action.
+The fields this RFC adds are additive: a client that reads the served record
+today ignores them.
 
-### Encoding and transport
+### Bytes, not canonical JSON
 
-These are two separate decisions.
+pnpr stores a record's bytes when it accepts the version and serves them
+unchanged at the record route, which is immutable. Its digest is the SHA-512 of
+those bytes; everything that refers to the record, the log entry and every
+statement, uses that digest. Clients hash the bytes they received, then parse
+them, and never re-serialize. This is how DSSE signs a payload, and why: no
+canonicalization scheme has to be agreed on or implemented. pnpr may compress
+the response; the digest covers the decoded bytes.
 
-**Encoding** is the deterministic production rule. Independent parties that
-derive a record from the same archive and profile must produce the same bytes,
-for example a separate signer or an auditor re-deriving records. The strawman
-is [RFC 8785 JCS](https://www.rfc-editor.org/rfc/rfc8785), with
-`recordIntegrity` = `sha512-` + base64(`SHA512(JCS_UTF8(record))`). JCS input
-rejects duplicate keys, invalid Unicode, and integers outside the JSON safe
-range.
-
-**Transport** is how clients receive the record. pnpr stores the exact
-encoded bytes when it accepts the version and serves them unchanged at the
-record route; the route is immutable, so the bytes never change. Clients
-hash the received bytes, then parse them, and never re-serialize. Clients
-then do not need a JCS implementation. Only producers and auditors that
-rebuild records need one. pnpr may compress the response; the digest covers
-the decoded bytes.
+An auditor that re-derives a record from the archive compares the manifest it
+derives with the record's `manifest` under the record's profile, not the bytes.
 
 The record is addressed by version and revision, not by its digest:
 [split packuments](./0000-split-packuments.md) chose that so the package
-document carries no incompressible digest per version. A client that needs
-the digest computes it from the bytes it received.
+document carries no incompressible digest per version.
 
-### Endorsements and evidence
+### Transparency log
 
-An endorsement authenticates a record's integrity under a release-record
-signing context. Evidence carries source signatures, provenance, publication
-statements, and source-to-tar derivation links, each keeping its original
-subject. They are served apart from the record, at
-`<registry-base>/<name>/<version>+r<revision>/evidence`, as
-`{ "recordIntegrity", "endorsements": [], "evidence": [] }`. Adding evidence
-or rotating signers changes that envelope, not the record or its integrity,
-so the envelope is not immutable: its HTTP validator includes its evidence
-generation. It follows the record's access rules, including
+Each registry runs an append-only log of its records, in the formats Go's
+checksum database uses, now specified by
+[C2SP](https://github.com/C2SP/C2SP): checkpoints signed as
+[signed notes](https://github.com/C2SP/C2SP/blob/main/signed-note.md), the log
+served as [tiles](https://github.com/C2SP/C2SP/blob/main/tlog-tiles.md), and
+[witnesses](https://github.com/C2SP/C2SP/blob/main/tlog-witness.md) that
+co-sign checkpoints after checking that the log only grew.
+
+- A log entry is the record's PURL, revision, profile, and digest. pnpr appends
+  it in the same transaction that accepts the version.
+- A second entry for the same PURL, revision, and profile with another digest is
+  a forged or rewritten record. Clients reject it, and monitors that read the
+  log report it.
+- With each record, pnpr serves an inclusion proof against a recent checkpoint.
+  A client verifies the proof and the checkpoint's signatures, the log's and the
+  witnesses' it requires, before it accepts the record.
+- Clients keep the latest checkpoint they have seen and check that a newer one
+  is consistent with it, so a registry cannot show different clients different
+  logs.
+
+The log holds hosted versions and the versions pnpr derived records for while
+proxying an upstream. It holds digests and identities, not records, so a
+private package's log entries reveal its name and versions; a private registry
+keeps its log, like its records, behind its access rules.
+
+### Statements: in-toto in DSSE
+
+Everything signed about a record is an
+[in-toto Statement](https://github.com/in-toto/attestation/blob/main/spec/v1/statement.md)
+wrapped in a [DSSE](https://github.com/secure-systems-lab/dsse) envelope, the
+format of npm provenance and SLSA. The Statement's subject is the record, by its
+PURL and digest; its `predicateType` says what is claimed:
+
+- **Acceptance**, `https://pnpm.io/pnpr/acceptance/v1`: the registry accepted
+  the binding of this manifest to this archive under this profile. The log
+  entry already proves the record existed; an acceptance statement lets a
+  record travel with a claim that does not need the log to be reachable.
+- **Publication**, `https://pnpm.io/pnpr/publication/v1`: how the version was
+  published (see [Publication evidence](#publication-evidence)).
+
+Publisher provenance keeps its own subject. An npm provenance bundle is a
+Sigstore bundle whose SLSA Statement names the `.tgz` digest; pnpr keeps it as
+it was published and links it to the record through the `.tgz`-to-tar
+derivation it recorded at acceptance.
+
+All of a version's statements and bundles are served beside the record, at
+`<registry-base>/<name>/<version>+r<revision>/evidence`, with the inclusion
+proof:
+
+```json
+{
+  "record": "sha512-<record digest>",
+  "inclusion": { "checkpoint": "<signed note>", "proof": ["<hash>", "..."] },
+  "statements": ["<DSSE envelope>", "..."],
+  "sigstore": ["<Sigstore bundle>", "..."]
+}
+```
+
+Adding a statement, a newer checkpoint, or a re-signature changes this
+response, not the record, so it is not immutable: its HTTP validator includes
+the evidence generation. It follows the record's access rules, including
 `private, no-store` for a caller-gated package.
-
-A registry endorsement means the registry accepted the manifest-to-archive
-binding. It is not publisher provenance and does not prove a package is benign.
 
 ### Publication evidence
 
-At acceptance, the registry writes a publication statement as detached
-evidence for the record. Only the registry produces it; publisher-supplied
-fields with the same names are stripped. It is the evidence form of the
-version's [publication](./0000-atomic-workspace-publication.md#publications),
-which already records the publishing identity, a workload's repository and
-commit, and the commit time, and it names:
+At acceptance, the registry signs a publication statement. Only the registry
+produces it; publisher-supplied fields with the same names are stripped. Its
+predicate is the version's
+[publication](./0000-atomic-workspace-publication.md#publications), which
+already records the publishing identity, a workload's repository and commit,
+and the commit time, plus:
 
-- The principal kind: a user token, an interactive session, or an OIDC
-  workload.
-- For a workload, the issuer, subject, and the claims the workload binding
-  matched, such as repository and workflow.
-- Whether the version was staged, and the principal that approved it.
-- The acceptance time.
+- the principal kind: a user token, an interactive session, or an OIDC
+  workload;
+- for a workload, the issuer, subject, and the claims the workload binding
+  matched, such as repository and workflow;
+- whether the version was staged, and the principal that approved it.
 
 Clients evaluating `trustPolicy` read this statement instead of inferring trust
 from `_npmUser`, and pnpr computes the `trust` rank of each entry in its package
@@ -202,6 +228,30 @@ cannot protect pnpr-hosted packages. The npm-compatible view should also carry
 `_npmUser.trustedPublisher` for workload publications, so existing clients
 work.
 
+### Keys and identity
+
+A registry's keys are distributed as [TUF](https://theupdateframework.io/) root
+metadata, as PyPI specified in
+[PEP 458](https://peps.python.org/pep-0458/). The root, signed by offline keys,
+names the log's checkpoint key, the key that signs statements, and the
+witnesses the registry's clients require. Rotating a key is a new root version
+signed by the previous one; a client follows the chain and stops accepting the
+old key.
+
+- **Public registries.** pnpm ships the TUF roots of the public registries it
+  knows, as Go ships the key of `sum.golang.org`.
+- **Private registries.** The workspace declares the registry's root, by the
+  digest of its first root version, beside the registry's `serverType: pnpr`.
+  pnpm does not trust a root fetched from the registry it vouches for unless the
+  workspace pinned it.
+
+A registry is identified by its log's verifier key, written as Go writes one,
+`<name>+<key hash>+<key>`. The name is an identifier, not a transport location:
+a mirror or another hostname serving the same log is the same authority, and a
+lockfile that records the authority does not change when the registry moves.
+Rebinding an authority to a different log requires an explicit operator action.
+Identical archive bytes in two logs do not establish shared ownership.
+
 ### Interpretation profiles
 
 A correction to derivation creates new records under a new profile; historical
@@ -210,48 +260,36 @@ unsupported profile is a capability error rather than a silent
 reinterpretation. Revision numbers do not change when only the interpretation
 changes.
 
-### Upstream observations and policy
+### Upstream verification
 
-For proxied packages, fetched metadata is an unverified observation. A
-per-version observation holds one version's profile-interpreted install claims
-and claimed artifact integrity; it excludes unrelated versions, tags, and
-signatures, so unrelated upstream changes do not invalidate it. Comparisons
-between observations and archive-derived records are keyed by both
-integrities.
+For proxied packages, upstream metadata is an unverified claim. pnpr fetches
+each version's archive, derives its record under the profile, and serves that,
+as PyPI's index extracts each wheel's metadata and serves it with its hash
+([PEP 658](https://peps.python.org/pep-0658/)). pnpr pays the download once,
+for every client; the client reads archive-derived metadata without fetching
+archives to resolve.
 
-| Mode | Resolution contract |
+| Mode | Contract |
 | --- | --- |
-| Compatibility | Resolves from observed upstream metadata; reports it as unverified. |
-| Verify and match | Requires a verified archive with matching install-critical metadata; disagreements fail closed. |
-| Archive authoritative | Explicitly accepts the archive-derived manifest despite a recorded disagreement. |
+| Verify (default) | Resolves from the archive-derived record. A version whose upstream metadata disagrees with its archive in an install-critical field fails closed. |
+| Archive authoritative | An operator accepts a recorded disagreement for one package, artifact integrity, and profile, and resolves from the archive-derived record. It does not carry over to another artifact, version, or profile, and never waives archive integrity, safety, or identity checks. |
+| Unverified | Resolves from upstream metadata, reported as unverified. Configured for registries or package patterns, as Go's `GONOSUMDB` exempts private modules. |
 
-- An archive-authoritative approval binds the package, the complete artifact
-  integrity, and the interpretation profile. It does not carry over to another
-  artifact, version, or profile. It never waives archive integrity, archive
-  safety, or package identity checks.
-- When verification is required and fails, resolution fails. It never falls
-  back to compatibility mode.
-- Archive-authoritative acceptance changes the metadata used for resolution:
-  the graph is resolved from the archive manifest, never resolved from upstream
+- When verification is required and fails, resolution fails. It never falls back
+  to the unverified mode.
+- Archive-authoritative acceptance changes the metadata used for resolution: the
+  graph is resolved from the archive manifest, never resolved from upstream
   metadata and patched afterwards.
 
-Verification costs downloads. Range selection can nominate candidates from
-observed metadata, but each selected candidate's archive must be fetched before
-its graph contribution is accepted, and rejected candidates can require more
-fetches. Lockfile-only resolution becomes much more expensive. A corpus study
-of upstream mismatches should precede choosing defaults.
-
-A survey compared registry metadata with the archive's `package.json` for
-8,620 versions: the 1,674 registry packages in pnpm/pnpm's lockfile, the latest
+A survey compared registry metadata with the archive's `package.json` for 8,620
+versions: the 1,674 registry packages in pnpm/pnpm's lockfile, the latest
 version of the 5,000 most-downloaded packages, and a random older version of
-each of the top 2,000. Before normalization, 273 differ (about 3%). All 273
-are explained by the publishing client's normalization, mostly `bin` syntax
-and `optionalDependencies` copied into `dependencies`. The full table is in
+each of the top 2,000. Before normalization, 273 differ (about 3%). All 273 are
+explained by the publishing client's normalization, mostly `bin` syntax and
+`optionalDependencies` copied into `dependencies`. The full table is in
 [publish-time manifest verification](./0000-publish-manifest-verification.md).
-No other differences were found. Once the profile defines those
-normalizations, "verify and match" is
-viable without frequent failures, and its cost is the archive downloads rather
-than operator overrides.
+No other differences were found. With those normalizations in the profile,
+verification on by default fails no version in the survey.
 
 ### Client protocol
 
@@ -260,6 +298,7 @@ Extend the `GET /-/pnpr` capability document:
 ```json
 {
   "records": [1],
+  "log": "registry.example+1a2b3c4d+<key>",
   "manifestProfiles": ["npm-install-manifest/1"]
 }
 ```
@@ -267,101 +306,126 @@ Extend the `GET /-/pnpr` capability document:
 - **Records.** Clients read records where they read them today: an entry of
   pnpr's package document (`application/vnd.pnpr.install-v2+json`) that
   carries its manifest is the record's content inline, and a picked version
-  without one is fetched from its record route. A client that verifies
-  records fetches the record route for every version it locks, since only
-  those bytes are the record, and caches them on disk forever.
-- **Evidence.** A client whose policy needs endorsements or evidence fetches
-  the version's envelope from its evidence route.
+  without one is fetched from its record route. A client that verifies records
+  fetches the record route for every version it locks, since only those bytes
+  have the logged digest, and caches them on disk forever.
+- **Evidence and proofs.** A verifying client fetches each locked version's
+  evidence and checks its inclusion proof. Statements are fetched only when the
+  active policy needs them.
+- **Log.** The log's checkpoints and tiles are served at
+  `<registry-base>/-/log/`, as C2SP's tiles specify, for monitors and
+  witnesses.
 
 Paths are relative to the effective registry base (`/npm/` or `/npm/~<name>/`).
-A digest is never a read capability: every record, evidence, and artifact
-read is authorized through its package and registry, and unauthorized
-callers must not learn whether a private record exists.
+A digest is never a read capability: every record, evidence, and artifact read
+is authorized through its package and registry, and unauthorized callers must
+not learn whether a private record exists.
 
-When record support is required, clients do not fall back to ordinary
-metadata. A policy block is an explicit refusal, never a skipped version. If
-the endorsements and evidence the active policy requires exceed response
-limits, the response is an explicit error, never a truncated envelope.
+When record support is required, clients do not fall back to ordinary metadata.
+A policy block is an explicit refusal, never a skipped version. If the evidence
+the active policy requires exceeds response limits, the response is an explicit
+error, never a truncated response.
 
 ### Caching
 
 Records are the per-version fragments of
 [SQL metadata storage](./0000-sql-metadata-storage.md), without their mutable
-state, and are served immutable. Envelopes are cached by the evidence and
-endorsement generation, which joins the fragment-cache key for any view
-that carries them. A record's integrity is not an ETag for its envelope,
-because evidence can change without changing the record.
+state, and are served immutable. Evidence is cached by the evidence
+generation, which joins the fragment-cache key for any view that carries it.
+Log tiles are immutable once full, as C2SP's tiles specify.
 
 ## Rationale and Alternatives
 
-1. **Client-side install-time check only.** pnpm compares the extracted
-   `package.json` with the resolved manifest. Covers every registry with no
-   protocol change, but detects mismatches after resolution and gives no
-   portable, signable unit.
-2. **Sign the whole package document.** Requires re-signing on every tag or
-   annotation change and complicates historical reads.
-3. **OCI artifact manifests.** A standard digest envelope, but does not settle
-   npm manifest interpretation, revision selection, or package authorization.
-4. **A separate record from the served one.** An earlier draft defined its
-   own record shape, served at a digest-addressed route and inline in an
-   extended package document. Two records of one release would have to be
-   kept consistent, and split packuments already serves an immutable record
-   for every version; signing that one costs a few fields.
-5. **A candidate-lookup endpoint.** Returning bounded candidates with inline
+1. **A signing service separate from the registry, with no log.** Helps only if
+   that service validates what it signs, and a client still cannot tell when a
+   compromised registry and signer serve it something no one else sees. A log
+   makes that visible without a trusted second party.
+2. **RFC 8785 JCS canonicalization.** Lets independent parties produce
+   identical bytes, but every producer and verifier must implement it. Signing
+   the stored bytes, as DSSE does, needs neither, and an auditor compares the
+   derived manifest instead.
+3. **A record of pnpr's own, apart from the served one.** An earlier draft
+   defined its own record shape, served at a digest-addressed route and inline
+   in an extended package document. Two records of one release would have to be
+   kept consistent; split packuments already serves an immutable record for
+   every version.
+4. **A candidate-lookup endpoint.** Returning bounded candidates with inline
    records for a range would spare cold resolution separate fetches. Split
    packuments already inlines the likely picks and fetches only the picked
    versions' records.
+5. **Client-side install-time check only.** pnpm compares the extracted
+   `package.json` with the resolved manifest. Covers every registry with no
+   protocol change, but detects mismatches after resolution and gives no
+   portable, verifiable unit.
+6. **Sign the whole package document.** Requires re-signing on every tag or
+   annotation change and complicates historical reads.
+7. **OCI artifact manifests.** A standard digest envelope, but does not settle
+   npm manifest interpretation, revision selection, or package authorization.
 
 ## Implementation
 
 Target pnpr and pnpm v12. Do not add a feature to pnpm v11.
 
-1. Settle the threat model, encoding, authority mapping, and signer trust
-   configuration. Add cross-implementation fixtures.
-2. Produce records during publication acceptance, add the binding fields to
-   the record pnpr already serves, and store the exact bytes in the SQL
-   metadata layer.
-3. Serve evidence envelopes, and add client verification.
-4. Add upstream observations, comparisons, and policy modes.
+1. pnpr: add the binding fields to the record it serves, store the exact bytes
+   in the SQL metadata layer, and append each record to a C2SP log in the
+   acceptance transaction.
+2. pnpr: sign acceptance and publication statements as in-toto Statements in
+   DSSE envelopes, keep Sigstore bundles, and serve evidence with inclusion
+   proofs.
+3. pnpr: publish TUF root metadata, and serve the log's checkpoints and tiles.
+4. pnpm: verify records, proofs, checkpoint consistency, and the statements the
+   trust policy needs; ship the roots of known public registries, and read a
+   pinned root for a private one.
+5. pnpr: derive records for proxied versions and enforce the upstream modes.
 
-Benchmark cold and warm resolution, and the extra downloads required by
-verified lockfile-only resolution. Test that tag changes, deprecations,
-delayed attestations, and re-signing preserve record integrities, and that
+Use existing implementations rather than new ones: Go's `golang.org/x/mod/sumdb`
+packages and their Rust counterparts for notes and tiles, a DSSE library, and a
+TUF client.
+
+Benchmark cold and warm resolution with verification, and pnpr's cost of
+deriving records for proxied packages. Test that tag changes, deprecations,
+delayed attestations, and re-signing preserve record digests; that a second
+record for a logged identity is rejected; that an inconsistent checkpoint is
+rejected; that a rotated key is followed and the old one refused; and that
 private records cannot be read through digest paths.
 
 ## Prior Art
 
-- [Split packuments](./0000-split-packuments.md), which serves the record
-  this RFC signs.
+- [Go's checksum database](https://go.dev/ref/mod#checksum-database) and the
+  [C2SP](https://github.com/C2SP/C2SP) transparency-log specifications.
+- [in-toto attestations](https://github.com/in-toto/attestation),
+  [DSSE](https://github.com/secure-systems-lab/dsse),
+  [SLSA provenance](https://slsa.dev/), and
+  [npm provenance](https://docs.npmjs.com/generating-provenance-statements) on
+  [Sigstore](https://www.sigstore.dev/).
+- [TUF](https://theupdateframework.io/) and its adoption for PyPI in
+  [PEP 458](https://peps.python.org/pep-0458/).
+- [PEP 658](https://peps.python.org/pep-0658/), metadata extracted from the
+  archive and served with its hash.
+- [Package URL](https://github.com/package-url/purl-spec).
+- [npm registry signatures](https://docs.npmjs.com/about-registry-signatures/).
+- [Split packuments](./0000-split-packuments.md), which serves the record this
+  RFC makes verifiable.
 - [Platform variants](./0000-platform-variants.md) and
-  [atomic workspace publication](./0000-atomic-workspace-publication.md),
-  whose variants and publications the record and its evidence describe.
+  [atomic workspace publication](./0000-atomic-workspace-publication.md), whose
+  variants and publications the record and its evidence describe.
 - [Registry mounts and declared namespaces](./0000-pnpr-registry-mounts.md).
 - [Integrity-addressed patch revisions](./0000-integrity-addressed-patch-revisions.md).
 - [Tar integrity for every source](../../text/0000-tar-integrity-for-every-source.md).
-- [npm registry signatures](https://docs.npmjs.com/about-registry-signatures/).
-- [JCS](https://www.rfc-editor.org/rfc/rfc8785).
-- [pnpm agent proposal](https://github.com/pnpm/rfcs/pull/9), for file-level
-  transfer, which this draft does not cover.
 
 ## Unresolved Questions and Bikeshedding
 
-- Which threat does a record endorsement defend against, and who holds the
-  signing key?
-- Is JCS the right production rule, and should any client re-serialize?
-- How are authority identities made portable without embedding deployment
-  hostnames in lockfiles?
-- Which signatures should clients require, and how are trust roots configured
-  and rotated?
-- What does a corpus study show about upstream mismatches and verification
-  downloads, and which upstream mode should be the default? The survey above
-  found only normalization differences across 8,620 versions. Download cost
-  still needs measuring.
-- Should publication evidence be its own RFC, together with a package-level
-  publish policy that the registry enforces at acceptance, such as "only OIDC
-  from this repository"?
-- Should the fields that bind a record be served in every record, or only
-  where a registry signs records?
+- Who witnesses a private registry's log? A registry with no independent witness
+  still gets entries that cannot be rewritten without detection by the clients
+  that saw them, but not split-view protection across clients that never
+  compare checkpoints.
+- Should public pnpr deployments share one log, as Go's ecosystem shares
+  `sum.golang.org`, rather than each running its own?
 - The record route is immutable, so it serves the record of the profile a
   version was accepted under. Where is a record re-derived under a later
   interpretation profile served, and how does a client ask for it?
+- How long does pnpr keep the archives of proxied versions it derived records
+  for, and what does deriving them cost on a large mirror?
+- Should publication evidence, together with a package-level publish policy the
+  registry enforces at acceptance, such as "only OIDC from this repository",
+  be its own RFC?
