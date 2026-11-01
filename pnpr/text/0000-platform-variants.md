@@ -127,7 +127,7 @@ itself and nothing about it is supplied beside the upload:
 {
   "name": "fast-thing",
   "version": "1.4.0",
-  "platformVariant": {
+  "variant": {
     "tag": "linux-x64-static",
     "platforms": ["linux-x64", "linux-x64-musl"]
   },
@@ -140,8 +140,11 @@ itself and nothing about it is supplied beside the upload:
 platform's tag. pnpr reads the declaration from the verified archive and
 derives the version's `variants` from it, as it derives `requiresBuild` and
 `bins`, so the archive's provenance statement covers where the build claims
-to run. The primary archive has no `platformVariant` field. The field name is a
-placeholder.
+to run. The primary archive has no `variant` field. The field is
+top-level rather than under a pnpr key: it describes the package, not the
+registry, and pnpr rejects an archive whose `variant` does not parse, so a
+field npm might add under the same name would fail publication instead of
+being misread.
 
 The variant set is part of the immutable version. It is fixed when the version
 is published, and a [registry revision](./0000-integrity-addressed-patch-revisions.md)
@@ -163,9 +166,9 @@ rejects the version unless:
   (`bundleDependencies`), so the lockfile resolves each name once;
 - no variant requires a build (its `requiresBuild` is false), so a
   variant never needs an `allowBuilds` entry;
-- every variant declares `platformVariant` with at least one platform, and
-  no `os`, `cpu`, or `libc` field, so a variant has one statement of where it
-  runs and it cannot disagree with another;
+- every variant archive declares a `variant` field with at least one
+  platform, and no `os`, `cpu`, or `libc` field, so a variant has one
+  statement of where it runs and it cannot disagree with another;
 - no two variants have the same tag, and no two variants list the same
   platform with the same floors, so no host can tie between them.
 
@@ -213,7 +216,7 @@ an unresolved question.
 A variant's tag is its name in routes and the lockfile. For a variant with one
 platform it is that platform's tag; for one with several, the publisher picks a
 name in the same character set, such as `linux-x64-static` or
-`darwin-universal`, and declares it in `platformVariant.tag`.
+`darwin-universal`, and declares it in `variant.tag`.
 
 `process.arch` reports `arm` for both ARMv6 and ARMv7. napi-rs builds `arm`
 as ARMv7 (`gnueabihf`, `musleabihf`), and the vocabulary keeps that meaning. gh,
@@ -598,7 +601,7 @@ resolution, lockfile, and install parts, without staged publishing, the floor
 and ABI fields, `wasm32`, or dependencies that differ between archives: it
 enforced an earlier, stricter rule that every archive declares the same dependencies. It also took
 each variant's tag and platforms from the publish request rather than from
-`platformVariant`, and checked the variant's `os`, `cpu`, and `libc` against
+the `variant` field, and checked the variant's `os`, `cpu`, and `libc` against
 them. Real packages from npm were converted into a primary and variants and
 published to a local pnpr, then installed by real projects:
 
@@ -681,8 +684,8 @@ falling back to the primary, a frozen install on a platform that did not resolve
 the lockfile, a variant with a dependency the primary lacks (linked only where
 that variant is selected), a name declared with two specifiers by two archives
 (rejected), a variant whose peer dependencies differ (rejected), a variant that
-requires a build (rejected), a variant without `platformVariant` or with an
-`os`, `cpu`, or `libc` field (rejected), npm's documents of a version with
+requires a build (rejected), a variant archive without a `variant` field or
+with an `os`, `cpu`, or `libc` field (rejected), npm's documents of a version with
 variants (no variants listed, the primary installed), a static Linux
 variant selected on a musl host, a version without a primary on an unmatched
 host, two variants that list the same platform (rejected), a stage approved with
@@ -706,9 +709,6 @@ registry revision.
 
 ## Unresolved Questions and Bikeshedding
 
-- The name of the `platformVariant` field. It must not collide with a field
-  npm might add, and a name under a pnpr namespace would say that only pnpr
-  reads it.
 - The string form of floors and ABI fields in tags, for example
   `darwin-arm64-macos_11_0` or `linux-x64-manylinux_2_17-napi8`.
 - Should two archives be allowed different specifiers for one dependency
