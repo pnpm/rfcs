@@ -244,14 +244,16 @@ fetches notes from GitHub or another release page on a reader's behalf.
 ### pnpm
 
 **Publishing.** `pnpm publish` sends notes for what it publishes, in every
-ecosystem it publishes to:
+ecosystem it publishes to. In a workspace that uses
+[pnpm's versioning](../../text/0006-monorepo-versioning.md), the notes come
+from its change intents (see the next section). Elsewhere:
 
-- the publication note from `--release-notes <file>`;
-- each package's version note from its `CHANGELOG.md`, taking the section
-  under the heading whose text is the version, as changesets (`## 1.4.0`) and
-  Keep a Changelog (`## [1.4.0] - 2026-10-28`) write it, up to the next
-  heading of the same level;
-- none with `--no-release-notes`.
+- the publication note comes from `--release-notes <file>`;
+- each package's version note comes from its `CHANGELOG.md`, taking the
+  section under the heading whose text is the version, as changesets
+  (`## 1.4.0`) and Keep a Changelog (`## [1.4.0] - 2026-10-28`) write it, up
+  to the next heading of the same level;
+- `--no-release-notes` sends none.
 
 When pnpm publishes one package, `--release-notes` gives that package's
 version note instead, since the publication has nothing else in it. pnpm
@@ -272,6 +274,42 @@ pnpm prints notes as plain text after removing any control characters a
 registry let through, shows link targets next to their text, and never
 treats a note as an instruction: the notes are the publisher's words, not
 pnpm's.
+
+### Notes from pnpm's versioning
+
+pnpm's [native monorepo versioning](../../text/0006-monorepo-versioning.md)
+already composes each released package's changelog section from the change
+intents that `pnpm version -r` consumed and recorded in its ledger. By
+default it keeps no committed `CHANGELOG.md`: it packs the section, chained
+onto the previous version's `CHANGELOG.md`, into the new tarball. When the
+publish target is a pnpr registry, that `registry` storage mode writes notes
+instead:
+
+- A version note holds the intents that name only that package, plus the
+  intents shared with packages outside the publication. It is the section
+  versioning would have packed, without the history below it: a reader gets
+  the history from a range.
+- The publication note holds the intents that name more than one package of
+  the publication, once each, with the packages each applies to, and the
+  text of `--release-notes <file>` above them for a summary written by hand.
+- The publication is named after the plan: the version of the epic's lead
+  package or of the single fixed group that the release contains, or
+  `--publication-name <name>`, and it has no name otherwise.
+- `pnpm publish -r --batch` sends the whole plan as one publication, so the
+  versions, their notes, and the publication note become visible together.
+
+The tarball then holds only what the tagged sources produce, and no previous
+tarball is fetched. A later `pnpm version -r` deletes a consumed intent once
+the registry holds the notes it went into, which it checks by comparing the
+notes' text with the text it composes. A version that another tool published
+has no such notes, so it blocks deletion, as a tarball without the section
+does today. Registries other than pnpr keep the tarball chain.
+
+A package on a release lane gets a version note for each prerelease, and its
+graduation's stable version gets the note composed from every intent the
+lane consumed, as versioning composes the stable section today. A range
+between stable versions leaves the prereleases out, so it reads that
+aggregated note once.
 
 ## Rationale and Alternatives
 
@@ -334,9 +372,12 @@ ecosystem's protocol unchanged.
 4. pnpm: `--release-notes` and `--no-release-notes` for `pnpm publish`, and
    reading the version's section of each package's `CHANGELOG.md`, in every
    ecosystem pnpm publishes.
-5. pnpm: notes in `pnpm update --interactive`, `pnpm outdated --notes`, and
+5. pnpm: in versioning's `registry` storage mode, compose version and
+   publication notes from the ledgered intents for a pnpr registry, name the
+   publication, and check the notes before deleting intents.
+6. pnpm: notes in `pnpm update --interactive`, `pnpm outdated --notes`, and
    `pnpm view`.
-6. Documentation of the routes for other clients, such as Renovate.
+7. Documentation of the routes for other clients, such as Renovate.
 
 Tests must cover: a publish whose note is rejected (nothing published), a
 staged publish whose notes appear only on approval, a publication of npm,
@@ -367,9 +408,9 @@ and Keep a Changelog forms.
 
 - Container images have tags rather than ordered versions. Should an image
   in a publication get version notes, and how would a range be defined?
-- Should `pnpm publish` read `CHANGELOG.md` by default, or only when asked? A
-  default helps every publisher who keeps one, but publishes text the
-  publisher may not have meant as release notes.
+- Outside pnpm's versioning, should `pnpm publish` read `CHANGELOG.md` by
+  default, or only when asked? A default helps every publisher who keeps
+  one, but publishes text the publisher may not have meant as release notes.
 - Should the range route also accept a semver range, for a reader that wants
   the notes of `^1` without knowing the versions?
 - Should pnpr import notes from a package's GitHub releases when it mirrors a
