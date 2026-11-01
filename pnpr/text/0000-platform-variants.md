@@ -601,8 +601,8 @@ with their archives, so they still need no registry credentials.
 
 npm, Yarn, and Bun read npm's documents, which list no variants, and install
 the primary archive (or, when the version has no primary, the generated minimal
-primary archive served at the version's canonical tarball route with its own
-`dist.tarball` and `dist.integrity`). So does pnpm with a registry that does
+primary archive of the selected revision, at the URL and integrity that
+`dist.tarball` and `dist.integrity` give). So does pnpm with a registry that does
 not serve pnpr's format. For esbuild or biome that primary has no binary, so
 those users get a package that fails when it runs. Until something else exists,
 a publisher whose users are not all on pnpm and pnpr needs a primary that works
