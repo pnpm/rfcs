@@ -199,6 +199,44 @@ The server must advertise both publication support and snapshot-read support
 explicitly. Do not change the meaning of an existing batch capability bit to
 claim the stronger guarantees without a protocol-version change.
 
+### Publications
+
+A committed transaction that publishes at least one package version is also
+recorded as a **publication**, which clients can read. A single-package
+publish is a publication with one member, so every version belongs to
+exactly one publication. A publication has:
+
+- an identifier that pnpr assigns, and optionally a name the publisher
+  chooses, such as `v12.0.0`, unique within the organization;
+- its members: the ecosystem, name, version, and revision of every package
+  version it published, whatever ecosystem each belongs to;
+- the identity that published it, with the source repository and commit of
+  a workload identity, the commit time, and the catalog generation it
+  created.
+
+All of this is fixed at commit. Tag moves and revision selections that commit
+alone are transactions but not publications; they change selections, not the
+set of published versions.
+
+A publication belongs to no single ecosystem, so it is served from the
+server root rather than an ecosystem's prefix:
+
+```text
+GET <pnpr>/-/publications/<org>/<id-or-name>
+GET <pnpr>/-/publications/<org>?member=<ecosystem>:<name>@<version>
+```
+
+The second form finds the publication of one package version. A caller sees
+only the members whose packages it may read, and a publication with none
+answers `404`, so a publication never discloses a package to a caller who
+cannot read it. A version's entry in an ecosystem view may name its
+publication where the view has room for it, as pnpr's release record does
+with a `publication` field.
+
+Publications give a release a place for what belongs to the whole set rather
+than one package, such as its
+[release notes](https://github.com/pnpm/rfcs/pull/56).
+
 ### Crash recovery and garbage collection
 
 Before SQL commit, staged artifacts are not published and may eventually be
@@ -283,7 +321,9 @@ Target pnpr, with new publishing and snapshot-read support in pnpm v12 only.
 3. Make npm and other ecosystem views read the catalog. Remove any competing
    authoritative update path before advertising support for that ecosystem.
 4. Add idempotent transaction status and capability-negotiated batch semantics.
-5. Connect server-side resolution and retained snapshots to pinned generations.
+5. Record publications with their members and serve them from the
+   publication routes, filtered by the caller's read access.
+6. Connect server-side resolution and retained snapshots to pinned generations.
 
 Required validation includes concurrent publications of overlapping versions,
 non-overlapping writers, conflicting tag updates, and policy revocation racing
@@ -318,7 +358,9 @@ claim that atomicity is free or faster than the existing publication path.
 - What versioned SQL catalog schema and policy-epoch locking or validation
   strategy preserve the contract on each supported backend?
 - Is one organization and hosted catalog the right initial transaction scope?
-- How should clients name transactions, query outcomes, and pin read generations?
+- How should clients query transaction outcomes and pin read generations? A
+  publication's name names a committed transaction; should it also serve as
+  the idempotency key?
 - How long should idempotency records and unreferenced generations survive?
 - Should content-keyed idempotency for keyless clients also cover batches,
   where the batch digest is the key?
