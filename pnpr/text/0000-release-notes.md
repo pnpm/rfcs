@@ -141,10 +141,12 @@ every member of that publication, the response includes
 `PNPR-Publication-Name: <name>` when the publication is named, and
 `PNPR-Publication-Initial-Digest: sha256-<base64>` when the publication was
 created with a note), so a per-version lookup also locates the publication note.
-When the version or publication was published with a note, `GET` on its note
-route also includes `PNPR-Note-Initial-Digest: sha256-<base64>` (even on `204`
-or `404` if the note was later deleted). In an ecosystem with dist-tags, a `GET`
-may name a tag instead of a version, as npm's version document route allows
+When the caller may read the package and the version was published with a
+version note, `GET <registry-base>/<name>/<version>/notes` also includes
+`PNPR-Note-Initial-Digest: sha256-<base64>` for that version note (including on
+`204` or `404` after that version note was deleted, and never on an
+authorization-hidden `404`). In an ecosystem with dist-tags, a `GET` may name a
+tag instead of a version, as npm's version document route allows
 (`fast-thing/latest/notes`).
 
 `GET <registry-base>/<name>/-/notes` answers `application/json` with the notes
@@ -214,8 +216,13 @@ For example, `https://pnpr.example.com/-/publications/example/v12.0.0/notes`.
 `<org>` and `<id-or-name>` are single path segments: publication identifiers
 and names use `[a-zA-Z0-9._+-]+` (never `.` or `..`, and containing no `/` or
 `%`), and share one namespace within `<org>` so a publisher-chosen name can
-never collide with a server-assigned identifier. `GET` answers as for a version
-note. The publication's own document lists its members, filtered by what the
+never collide with a server-assigned identifier. `GET` answers `200`
+(`text/markdown; charset=utf-8`) with the publication's note and `404` when it
+has none; when the caller may read every member of the publication and the
+publication was created with a note, `GET` includes
+`PNPR-Note-Initial-Digest: sha256-<base64>` for that publication note (even on
+`404` if the note was later deleted, and never on an authorization-hidden
+`404`). The publication's own document lists its members, filtered by what the
 caller may read, so a reader can see which packages, in which ecosystems, the
 release changed.
 
@@ -278,12 +285,13 @@ package can read its notes, and a caller who cannot gets the response that the
 package's own routes give it. A publication note is readable only by a caller
 who can read every member of the publication (since a publication note may name
 and describe changes across any of its members); a caller who cannot read every
-member gets `404`, `publication` and publication headers (`Link`,
-`PNPR-Publication-Name`, `PNPR-Publication-Initial-Digest`) are omitted from
-`<name>/-/notes` and `<name>/<version>/notes` for that caller, and a version
-that has no version note (or `initialDigest`) of its own is omitted from
-`<name>/-/notes` and answered `404` on `<name>/<version>/notes` so neither
-route reveals that a publication note exists.
+member gets `404` (without `PNPR-Note-Initial-Digest`), `publication` and
+publication headers (`Link`, `PNPR-Publication-Name`,
+`PNPR-Publication-Initial-Digest`) are omitted from `<name>/-/notes` and
+`<name>/<version>/notes` for that caller, and a version that has no version
+note (or `initialDigest`) of its own is omitted from `<name>/-/notes` and
+answered `404` on `<name>/<version>/notes` so no route reveals that a
+publication note exists.
 
 Notes follow the cache rules that the
 [split packuments RFC](./0000-split-packuments.md) gives to mutable
