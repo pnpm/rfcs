@@ -84,8 +84,8 @@ A version has:
 - one **primary** archive, installed when no variant matches. It can contain a
   portable implementation (JavaScript or wasm), a source build, or only an error
   that names the supported platforms;
-- zero or more **variants**, each an archive, a **tag** that names it, and the
-  list of **platforms** it runs on.
+- zero or more **variants**, each an archive and the list of **platforms** it
+  runs on, which also names it.
 
 A platform is one combination of OS, CPU, and C library, with the fields in
 [Platform tags](#platform-tags), and a variant lists its platforms one by one.
@@ -128,7 +128,6 @@ itself and nothing about it is supplied beside the upload:
   "name": "fast-thing",
   "version": "1.4.0",
   "variant": {
-    "tag": "linux-x64-static",
     "platforms": ["linux-x64", "linux-x64-musl"]
   },
   "bin": { "fast-thing": "bin/fast-thing" }
@@ -136,8 +135,7 @@ itself and nothing about it is supplied beside the upload:
 ```
 
 `platforms` lists [platform tags](#platform-tags), each one combination.
-`tag` may be omitted when the variant has one platform, and is then that
-platform's tag. pnpr reads the declaration from the verified archive and
+pnpr reads the declaration from the verified archive and
 derives the version's `variants` from it, as it derives `requiresBuild` and
 `bins`, so the archive's provenance statement covers where the build claims
 to run. The primary archive has no `variant` field. The field is
@@ -169,8 +167,8 @@ rejects the version unless:
 - every variant archive declares a `variant` field with at least one
   platform, and no `os`, `cpu`, or `libc` field, so a variant has one
   statement of where it runs and it cannot disagree with another;
-- no two variants have the same tag, and no two variants list the same
-  platform with the same floors, so no host can tie between them.
+- no two variants list the same platform with the same floors, so no host
+  can tie between them and no two variants get the same tag.
 
 A variant may differ from the primary in its files, its dependencies within
 the rule above, bundled dependencies, `bin`, `main`, `exports`, and
@@ -213,10 +211,13 @@ Examples: `linux-x64`, `linux-x64-musl`, `linux-x64-manylinux_2_28`,
 `darwin-arm64`, `win32-x64`. The string form of the floors and ABI fields is
 an unresolved question.
 
-A variant's tag is its name in routes and the lockfile. For a variant with one
-platform it is that platform's tag; for one with several, the publisher picks a
-name in the same character set, such as `linux-x64-static` or
-`darwin-universal`, and declares it in `variant.tag`.
+A variant's tag is its name in routes and the lockfile. pnpr derives it: the
+variant's platform tags, sorted and joined with `+`, a character platform tags
+do not use. A variant with one platform is named by that platform, such as
+`linux-x64-musl`; a static Linux build is `linux-x64+linux-x64-musl`, and a
+macOS universal binary `darwin-arm64+darwin-x64`. Overlapping platforms are
+rejected, so derived tags are unique within a version, and the publisher has
+no name to choose or keep stable.
 
 `process.arch` reports `arm` for both ARMv6 and ARMv7. napi-rs builds `arm`
 as ARMv7 (`gnueabihf`, `musleabihf`), and the vocabulary keeps that meaning. gh,
@@ -283,7 +284,7 @@ publisher-supplied ones:
           "bins": { "fast-thing": { "path": "bin/fast-thing" } }
         },
         {
-          "tag": "darwin-universal",
+          "tag": "darwin-arm64-macos_11_0+darwin-x64-macos_11_0",
           "platforms": [
             { "os": "darwin", "cpu": "x64", "osVersion": "11.0" },
             { "os": "darwin", "cpu": "arm64", "osVersion": "11.0" }
@@ -385,7 +386,7 @@ packages:
             - os: linux
               cpu: x64
               libcVersion: '2.17'
-        - tag: darwin-universal
+        - tag: darwin-arm64+darwin-x64
           resolution:
             integrity: sha512-<darwin universal digest>
           targets:
@@ -436,7 +437,7 @@ pnpm today.
 
 Four changes to the existing type are needed:
 
-- A variant gains `tag`.
+- A variant gains `tag`, derived from its platforms.
 - `targets` gain the floor and ABI fields from the tag table.
 - A `fallback` resolution holds the primary archive. It is absent when the
   version has no primary.
