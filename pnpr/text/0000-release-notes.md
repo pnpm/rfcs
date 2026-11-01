@@ -4,7 +4,7 @@
 
 pnpr stores release notes at two levels, in the same way for every ecosystem
 it hosts: a note for each package version, and a note for each
-[publication](https://github.com/pnpm/rfcs/pull/46), the set of versions,
+[publication](./0000-atomic-workspace-publication.md), the set of versions,
 npm packages, crates, and wheels alike, that one publish made visible
 together. Notes are Markdown, sent with the publish and editable later. A
 version's notes are served next to its other routes in its ecosystem, one
@@ -61,7 +61,7 @@ time they were last changed and the identity that changed them:
   history record.
 - A **publication note** belongs to one publication: the committed set of
   versions, possibly in several ecosystems, that
-  [atomic workspace publication](https://github.com/pnpm/rfcs/pull/46)
+  [atomic workspace publication](./0000-atomic-workspace-publication.md)
   records. It tells what the release as a whole changes, and its readers reach
   it from any of the publication's members.
 
@@ -364,7 +364,7 @@ ecosystem's protocol unchanged.
    publication, in the SQL metadata storage, written in the publication's
    transaction, with the content rules, the routes above, and audit records.
    Publication notes need the publications of
-   [atomic workspace publication](https://github.com/pnpm/rfcs/pull/46);
+   [atomic workspace publication](./0000-atomic-workspace-publication.md);
    version notes do not, and can come first.
 2. pnpr: accept `notes` in the cross-ecosystem publish body, in a direct npm
    publish, and in staged publishing.
