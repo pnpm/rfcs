@@ -306,7 +306,10 @@ padded standard base64.
   store, in the same transaction that accepts the version, file, or tag, so a
   record is never accepted without its entry or logged without being accepted.
   The log's tiles and checkpoints are built from the sequenced entries after
-  commit, idempotently, as Tessera-style logs integrate them. Metadata commit
+  commit, idempotently, as Tessera-style logs integrate them. Tiles and
+  checkpoints are written to pnpr's blob storage beside archives, not to the SQL
+  store: C2SP tiles are static files, so a log needs no database to serve them,
+  and a public log's tiles can be served from a bucket or CDN. Metadata commit
   and proof readiness are distinct states: publication success means committed,
   not yet witnessed. A verifying read waits for a bounded interval and then
   returns a retryable proof-pending error if the required proof or witness
