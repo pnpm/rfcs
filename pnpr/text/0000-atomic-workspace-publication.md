@@ -110,8 +110,8 @@ that mutates a separate authoritative package document would break the guarantee
    Protect staged objects from garbage collection while commit is pending.
 3. Begin a short authoritative SQL transaction and acquire or recheck the
    idempotency claim. A previously committed identical request returns its
-   recorded outcome instead of publishing again; recovering that outcome
-   does not need the mutation permission checked in step 1 (see below).
+   recorded outcome instead of publishing again, after the same
+   authorization as step 1 (see below).
 4. Read the relevant catalog state and validate binding uniqueness, mutation
    preconditions, and current permissions through the policy conflict gate below.
 5. Insert the immutable release records, the publication and its members,
@@ -181,16 +181,15 @@ and outlives the transaction; the key identifies one attempt. A client that
 lost the response can still find its transaction by name through the
 publications route.
 
-Recovering a committed outcome is a read, not a mutation. pnpr looks the outcome
-up by principal, key, and request digest before it routes or authorizes the
-request; reusing a key for a different request is detected inside the commit,
-scoped to the catalog. When a retry matches a committed transaction, pnpr
-returns the recorded outcome to the same stable principal without requiring its
-current publish permission, so a permission revoked after commit but before the
-response arrived does not hide the result. Authentication is still required,
-the outcome is returned only if the principal can currently read the catalog,
-as for any status query, and any request that would mutate is authorized
-against current permissions as usual.
+A retry is authorized like any publication, against current permissions.
+When an authorized retry matches a committed transaction by principal, key, and
+request digest, pnpr returns the recorded outcome instead of committing again;
+reusing a key for a different request is detected inside the commit, scoped to
+the catalog. A principal whose publish permission was revoked after the commit
+gets the authorization error, as idempotency keys behave elsewhere, and learns
+the outcome by reading the publication or the package under read
+authorization. A mutating route never returns a result its own permission
+check would refuse.
 
 Existing npm clients send no idempotency key, and npm, pnpm, and lerna retry
 a timed-out publish. For a single-package publication without a key, the

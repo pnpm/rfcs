@@ -123,12 +123,15 @@ The npm full, abbreviated, and exact-version responses are views over accepted
 versions and mutable state.
 
 - Cache per-version rendered fragments keyed by catalog, package, version,
-  revision, interpretation profile, representation, renderer version, and,
-  for a representation that embeds mutable state, annotation generation. A
-  version and revision always name the same bytes, because an unpublished
-  version is tombstoned and never accepted again. A tag change reuses all
-  fragments; a new release renders one new fragment; a deprecation re-renders
-  one full-document fragment.
+  revision, interpretation profile, representation, renderer version, and, for a
+  representation that embeds mutable state, annotation generation. A version and
+  revision always name the same bytes, because a removed version is
+  tombstoned and never accepted again. The metadata store enforces this itself:
+  it keeps the identities of removed versions and refuses to accept one again,
+  so every write path, including recovery of an interrupted publication, keeps
+  the invariant the cache relies on. A tag change reuses all fragments; a new
+  release renders one new fragment; a deprecation re-renders one full-document
+  fragment.
 - Large documents are also served in a [split form](0000-split-packuments.md),
   whose release records are a representation without mutable state. Their key
   has no annotation generation, so a deprecation never re-renders one.
