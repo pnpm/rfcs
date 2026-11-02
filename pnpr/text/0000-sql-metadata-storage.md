@@ -63,8 +63,41 @@ a grace period.
 
 pnpr handlers and resolvers depend on domain operations such as accepting a
 release, committing a publication, changing a tag, and reading a package view.
-Each backend owns its queries, migrations, and transaction mechanics. Remote
-SQL connections and vendor-specific types do not leak into registry handlers.
+Remote SQL connections and vendor-specific types do not leak into registry
+handlers.
+
+### Backend adapters
+
+The domain operations are implemented once, over SQL: the schema, the queries,
+removed-version refusal, generations, publication outcomes, and the render
+caches. The queries use the subset of SQL that SQLite, libSQL, and PostgreSQL
+share: plain inserts and selects, `ON CONFLICT`, and `RETURNING`. Under them, a
+small adapter per database supplies only what differs:
+
+- connecting from the configured URL;
+- starting a write transaction: `BEGIN IMMEDIATE` on SQLite and libSQL,
+  `BEGIN ISOLATION LEVEL SERIALIZABLE` on PostgreSQL;
+- recognizing a retryable conflict, such as `SQLITE_BUSY` or PostgreSQL's
+  serialization failure;
+- placeholders and column types, such as `?` against `$1` and `BLOB` against
+  `BYTEA`;
+- read freshness, where reads can come from a replica.
+
+The operator picks the database by URL, and every adapter must pass the same
+conformance suite before it is supported:
+
+```yaml
+metadata:
+  url: sqlite:./metadata.sqlite      # the default, embedded
+  # url: libsql://example.turso.io   # Turso
+  # url: postgres://db.internal/pnpr # PostgreSQL
+```
+
+SQLite and libSQL ship first; they share a dialect. The libSQL adapter also
+chooses between the primary and the embedded replica by the freshness rules in
+[Shared deployments](#shared-deployments); an adapter without replicas reads
+the primary. PostgreSQL follows when a deployment needs it. A per-package
+document store cannot be an adapter, because it has no transactions to start.
 
 ### Backend requirements
 
@@ -84,10 +117,76 @@ All statements in one domain transaction share one database transaction
 through a pinned connection or a documented session handle. Serialization
 failures retry the whole transaction, preserving idempotency.
 
-Embedded SQLite is the initial target for single-instance deployments.
-PostgreSQL and Turso are candidates for shared deployments, subject to the
-conformance suite and workload tests. SQL syntax alone does not establish
-equivalent isolation, durability, or freshness.
+Embedded SQLite is the initial target for single-instance deployments, and
+Turso the first shared backend (see below), subject to the conformance suite
+and workload tests. SQL syntax alone does not establish equivalent isolation,
+durability, or freshness.
+
+### Shared deployments
+
+SQLite on one instance's disk shares no state with other instances, so a
+multi-instance deployment needs a shared transactional store. A shared store
+costs per row, per query, or per instance, so a shared deployment keeps in it
+only what needs a transaction: the index of accepted versions, their small
+accepted manifests, tags, revision selections, deprecations, policy bindings,
+generations, publication outcomes, and sequenced log entries. Its size and cost
+then follow the number of packages and mutations, not the size of what was
+published.
+
+Everything immutable and large goes to object storage, keyed by digest:
+archives, evidence bundles, rendered release records, and the transparency
+log's tiles and checkpoints. Each is written and verified before the
+transaction that references it commits, as archives already are, so a retried
+write is harmless and an unreferenced one is collected after the grace period.
+Public objects can be served from a bucket or CDN without reaching an
+instance. Generated package documents stay a disposable cache, revalidated by
+generation with bounded freshness.
+
+The first shared store is **Turso**. pnpr already keeps users and tokens in
+libSQL, Turso's SQLite-compatible database, with writes going to a Turso
+primary and reads coming from an embedded replica on the instance's disk.
+Metadata reuses that connection code, and because libSQL speaks SQLite's
+dialect, the embedded backend's schema and queries run on it unchanged: one
+metadata implementation with two connection modes, a local file or a libSQL
+primary with its replica. Writes run as `BEGIN IMMEDIATE` transactions on the
+primary, so commits stay serialized as they are on one disk. A replica lags the
+primary by up to its sync interval, so a read that must be current (a version
+just published, or a generation a client sent as its minimum) goes to the
+primary or waits until the replica has synced past the generation it needs. An
+authorization check always reads the primary, since a policy revoked after the
+generation a client knows would not be covered by waiting for that generation.
+Other reads may use the replica within its freshness bound.
+
+A primary serializes its writes, which caps one database's commit rate at its
+round trip to the primary. Publications and tag moves are rare next to reads,
+and reads scale with replicas and the generated-view caches. A deployment that
+outgrows one primary gives each hosted catalog its own database: a catalog is
+already the transaction boundary, generations of different catalogs are never
+compared, and no transaction spans two catalogs. The metadata URL then contains
+a `{catalog}` placeholder, such as `libsql://pnpr-{catalog}.example.turso.io`,
+and pnpr opens a catalog's database on first use, keeps open connections in a
+bounded cache that closes the least recently used, and closes a catalog's
+connection while that catalog is being moved.
+Moving a catalog between databases follows [Backend
+replacement](#backend-replacement): a quiesced export and import of that one
+catalog.
+
+Once Turso passes the conformance suite, pnpr removes its per-package document
+metadata, so every deployment has one metadata model and every feature built
+on it, such as atomic publication and generations, works everywhere.
+
+Other shared stores remain possible, each subject to the same suite:
+
+- **PostgreSQL**, with serializable transactions or explicit row locks.
+- **Cloudflare D1**, which has no interactive transactions: a batch of
+  statements runs as one transaction, so every domain transaction must be
+  expressed as one batch whose writes are conditional on the generation it
+  read.
+- **Cloudflare Durable Objects** with SQLite storage, one object per hosted
+  catalog. An object runs one request at a time, so each catalog's
+  transactions are serialized by construction, and the per-catalog generation
+  needs no further coordination. A catalog's write throughput is then one
+  object's.
 
 ### Relational keys sketch
 
@@ -206,6 +305,10 @@ update reuses unchanged fragments.
 - [PostgreSQL transaction isolation](https://www.postgresql.org/docs/current/transaction-iso.html)
   and [explicit locking](https://www.postgresql.org/docs/current/explicit-locking.html).
 - [Turso's Rust backend options](https://docs.turso.tech/sdk/rust/reference).
+- [Cloudflare D1 batch statements](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch)
+  and [SQLite-backed Durable Objects](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/).
+- [C2SP tiled logs](https://github.com/C2SP/C2SP/blob/main/tlog-tiles.md),
+  served as static files.
 - [npm package metadata](https://github.com/npm/registry/blob/main/docs/responses/package-metadata.md).
 
 ## Unresolved Questions and Bikeshedding
