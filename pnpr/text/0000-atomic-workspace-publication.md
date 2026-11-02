@@ -281,16 +281,17 @@ for an existing version. A publication has:
 All of this is fixed at commit. Versions published before publications are
 recorded receive initial publications when the catalog is first built: each
 existing version becomes a synthetic publication containing its known artifacts,
-with its publish time and, where pnpr
-recorded one, its publisher, and with no name. Versions of an earlier
-batch become separate publications too; grouping them would need a record
-of the batch that the storage does not promise to keep. Synthetic publications
-are marked as imported history, not evidence that all of a version's files
-originally arrived in one transaction. The initial
-publication invariant holds for every version, old or new. Tag moves and
-revision
-selections that commit alone are transactions but not publications; they
-change selections, not the set of published versions.
+with its publish time and, where pnpr recorded one, its publisher, and with no
+name. Versions of an earlier batch become separate publications too; grouping
+them would need a record of the batch that the storage does not promise to keep.
+Synthetic publications are marked as imported history, not evidence that all of
+a version's files originally arrived in one transaction. The build accepts
+existing versions one per generation, in publish-time order with ties broken by
+ecosystem, name, and version, and a synthetic publication's identifier is the
+generation that accepted its version, so it is unique and ordered like any
+other. The initial publication invariant holds for every version, old or new.
+Tag moves and revision selections that commit alone are transactions but not
+publications; they change selections, not the set of published versions.
 
 A publication belongs to no single ecosystem, so it is served from the
 server root rather than an ecosystem's prefix:
