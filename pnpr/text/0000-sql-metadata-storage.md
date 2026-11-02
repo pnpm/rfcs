@@ -123,6 +123,13 @@ check) goes to the primary or waits until the replica has synced past the
 generation it needs; other reads may use the replica within its freshness
 bound.
 
+A primary serializes its writes, which caps one database's commit rate at its
+round trip to the primary. Publications and tag moves are rare next to reads,
+and reads scale with replicas and the generated-view caches. A deployment that
+outgrows one primary gives each hosted catalog its own database: a catalog is
+already the transaction boundary, generations of different catalogs are never
+compared, and no transaction spans two catalogs.
+
 Once Turso passes the conformance suite, pnpr removes its per-package document
 metadata, so every deployment has one metadata model and every feature built
 on it, such as atomic publication and generations, works everywhere.
