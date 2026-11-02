@@ -435,8 +435,11 @@ For example, variant A can list `linux-x64` and `darwin-arm64-napi9`, while B
 lists `linux-x64-napi8` and `darwin-arm64`. Linux with N-API 9 must prefer B;
 macOS arm64 with N-API 9 must prefer A. No single ordering of A and B works.
 Reuse the resolution type and matching utilities, but extend the selector for
-these records; older runtime lockfiles retain their existing selection behavior.
-The required lockfile version marker distinguishes the new semantics.
+these records. The selector chooses its rule from each variant's resolution: a
+runtime's `binary` archives keep first-match selection, and a package's
+registry or tarball variants are ranked. It needs no version check; the
+lockfile version marker is needed only so older releases do not rewrite a
+lockfile without its variants.
 
 For example:
 
@@ -526,7 +529,8 @@ Six changes to the lockfile and its interpretation are needed:
 - `targets` gain the floor and ABI fields from the tag table.
 - The selector ranks the best matching target of every variant at install
   time, independently of serialization order, instead of stopping at the first
-  match. The lockfile version distinguishes this from existing runtime entries.
+    match. Runtime entries, whose variants are `binary` archives, keep
+  first-match selection.
 - A `fallback` resolution holds the primary archive. It is absent when the
   version has no primary.
 - `VariationsResolution` gains an optional `revision` (including `0` for
