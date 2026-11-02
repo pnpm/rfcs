@@ -194,14 +194,17 @@ same archive with different tag changes is a conflict, not a replay. A
 different archive for the same version is still a conflict.
 
 A batch without a key is keyed the same way, by a digest over every entry's
-archive integrity, accepted manifest, and version note, the publication name
-and publication note, and every tag or revision-selection change in the
-request. Note absence and note text are distinct digest inputs; notes are not
-part of the accepted manifest. This whole-request rule also applies to a
-single-package publication without a key. A retry with the same digest
-returns the recorded outcome; a request that shares versions with a committed
-batch but has a
-different digest is a conflict.
+identity, archive integrity, accepted manifest, and version note, the
+publication name and publication note, and every tag or revision-selection
+change in the request. An entry's identity is every field of its publication
+member: registry, ecosystem, name, version, and revision where applicable, plus
+a Python distribution's filename and an OCI manifest's repository, so two
+requests that differ only in which package or file an archive is published as
+never share a digest. Note absence and note text are distinct digest inputs;
+notes are not part of the accepted manifest. This whole-request rule also
+applies to a single-package publication without a key. A retry with the same
+digest returns the recorded outcome; a request that shares versions with a
+committed batch but has a different digest is a conflict.
 
 A timed-out commit has an unknown outcome to the client. The client queries or
 retries the same transaction to learn its durable state. Idempotency results
