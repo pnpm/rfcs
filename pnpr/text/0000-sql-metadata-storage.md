@@ -84,9 +84,9 @@ All statements in one domain transaction share one database transaction
 through a pinned connection or a documented session handle. Serialization
 failures retry the whole transaction, preserving idempotency.
 
-Embedded SQLite is the initial target for single-instance deployments.
-PostgreSQL and Turso are candidates for shared deployments, subject to the
-conformance suite and workload tests. SQL syntax alone does not establish
+Embedded SQLite is the initial target for single-instance deployments, and
+Turso the first shared backend (see below), subject to the conformance suite
+and workload tests. SQL syntax alone does not establish
 equivalent isolation, durability, or freshness.
 
 ### Shared deployments
@@ -109,11 +109,27 @@ Public objects can be served from a bucket or CDN without reaching an
 instance. Generated package documents stay a disposable cache, revalidated by
 generation with bounded freshness.
 
-Candidate shared stores, each subject to the conformance suite:
+The first shared store is **Turso**. pnpr already keeps users and tokens in
+libSQL, Turso's SQLite-compatible database, with writes going to a Turso
+primary and reads coming from an embedded replica on the instance's disk.
+Metadata reuses that connection code, and because libSQL speaks SQLite's
+dialect, the embedded backend's schema and queries run on it unchanged: one
+metadata implementation with two connection modes, a local file or a libSQL
+primary with its replica. Writes run as `BEGIN IMMEDIATE` transactions on the
+primary, so commits stay serialized as they are on one disk. A replica lags the
+primary by up to its sync interval, so a read that must be current (a version
+just published, a generation a client sent as its minimum, an authorization
+check) goes to the primary or waits until the replica has synced past the
+generation it needs; other reads may use the replica within its freshness
+bound.
+
+Once Turso passes the conformance suite, pnpr removes its per-package document
+metadata, so every deployment has one metadata model and every feature built
+on it, such as atomic publication and generations, works everywhere.
+
+Other shared stores remain possible, each subject to the same suite:
 
 - **PostgreSQL**, with serializable transactions or explicit row locks.
-- **Turso**, whose writes go to one primary while replicas serve reads within
-  their freshness bound.
 - **Cloudflare D1**, which has no interactive transactions: a batch of
   statements runs as one transaction, so every domain transaction must be
   expressed as one batch whose writes are conditional on the generation it
