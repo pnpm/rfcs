@@ -425,10 +425,12 @@ unchanged across revisions is stored once.
 ### Lockfile
 
 pnpm records a package with variants using the existing `variations`
-resolution shape, extended with the selection rule above. Serialize variants
-in byte order of their derived tags for a platform-neutral lockfile; array
-order does not choose the archive. At install time, evaluate every variant's
-best matching target for the actual host and rank those matches.
+resolution shape, extended with the selection rule above. Serialize a
+package's variants in byte order of their derived tags for a platform-neutral
+lockfile; array order does not choose its archive. At install time, evaluate
+every variant's best matching target for the actual host and rank those
+matches. A runtime's `binary` variants keep their written order, which their
+first-match selection depends on.
 
 The current first-match implementation cannot express this rule for all hosts.
 For example, variant A can list `linux-x64` and `darwin-arm64-napi9`, while B

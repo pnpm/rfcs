@@ -182,7 +182,7 @@ by its `manifest`, not by its `integrity`.
 
 Publish times that the document coarsens, as npm's abbreviated document does,
 are coarsened relative to the package's last publish, never the current time, so
-the document changes only when the package is published to.
+time passing never changes the document; only a write to the package does.
 
 A minimum release age filters versions by their publish time before it
 picks one, but it only needs to know whether a version is younger than the
@@ -338,10 +338,11 @@ manifests. Below it, every entry has one: leaving manifests out saves little
 there and would cost a request for every package whose resolution picks an
 older version. The prototype used 64 KiB of serialized JSON.
 
-pnpr decides from the document on every read and records nothing. A publish only
-grows the document, so it cannot flip it back below the threshold; only an
-unpublish, or a removed deprecation or tag, can, and clients read both forms the
-same way.
+pnpr decides from the document on every read and records nothing. A document
+can cross the threshold in either direction: a publish after a long gap can
+shrink it, by dropping the publish times that fall out of the window, and so can
+an unpublish or a removed deprecation or tag. Clients read both forms the same
+way.
 
 ### Client behavior
 
@@ -545,7 +546,8 @@ version has its manifest), an older pnpm sharing the home directory, and a froze
 install that reads no metadata. Also test the 30-day release-age boundary,
 a larger policy rejected when consuming this format, and time-based cutoffs
 on either side of `timesSince`, including the documented approximation for an
-older cutoff. None of these cases fetches a second document for timestamps.
+older cutoff, and a publish after a long gap that takes a document back below
+the threshold. None of these cases fetches a second document for timestamps.
 
 ## Prior Art
 
