@@ -197,18 +197,6 @@ capability error. The RFC that adds the second profile defines the request
 signal and puts the profile in the response's URL or cache key, so a shared
 cache never serves one profile's metadata for another.
 
-### Existing hosted versions
-
-Versions published before this check have not been verified, and they have no
-recorded profile, input digests, or accepted metadata. `pnpr verify` already
-walks every hosted version and its stored archive. It is extended to derive
-such a version's manifest under `npm-install-manifest/1`, compare it with the
-stored entry the version is served from, and report disagreements to
-operators. Whether such versions are then served from archive-derived metadata,
-blocked, or left as-is is an operator decision; serving archive-derived
-metadata records the profile, input digests, and accepted metadata as a
-publication would.
-
 ## Rationale and Alternatives
 
 1. **Client-side check at install time.** pnpm already extracts the archive and
@@ -232,8 +220,7 @@ Target pnpr. Do not add a feature to pnpm v11.
    compare manifests, reusing the pnpm manifest implementation.
 3. Write the archive-derived fields into the version's stored entry, with the
    profile and input digests.
-4. Generate version metadata from that entry, and extend `pnpr verify` to
-   re-derive existing versions.
+4. Generate version metadata from that entry.
 
 Tests must cover mismatched dependencies, a script present only in the
 archive, ambiguous archive manifests, unsafe paths, bounded decoding, and
@@ -258,5 +245,4 @@ None. Verification is mandatory: the survey found no difference outside the
 listed normalizations across 8,620 versions. The installer's build trigger stays
 a root `binding.gyp`; npm's broader `*.gyp` match only ever adds the accepted
 `node-gyp rebuild` difference. A rejection names the package, version, profile,
-and differing fields. What to do with an existing version that fails
-re-derivation stays the operator's decision, informed by `pnpr verify`.
+and differing fields.
