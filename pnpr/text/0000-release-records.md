@@ -200,7 +200,9 @@ record, since an OCI Package URL names an image by digest rather than a tag.
 Each time the tag is set, pnpr writes a record whose `revision` counts the
 settings, starting at 0. Its `purl` is the image it points at, in the OCI
 type's form: the last segment of the repository as the name, the manifest
-digest as the version, and the repository and tag as qualifiers.
+digest as the version, and the tag as a qualifier. It has no `repository_url`
+qualifier, because the host depends on how the registry is reached; the record's
+`repository` field and the log's registry identity locate the image.
 
 ```json
 {
@@ -209,7 +211,7 @@ digest as the version, and the repository and tag as qualifiers.
   "tag": "1.0",
   "revision": 3,
   "interpretation": "oci-tag/1",
-  "purl": "pkg:oci/app@sha256%3A<manifest digest>?repository_url=acme/app&tag=1.0"
+  "purl": "pkg:oci/app@sha256:<manifest digest>?tag=1.0"
 }
 ```
 
@@ -271,19 +273,43 @@ document carries no incompressible digest per version.
 ### Transparency log
 
 Each registry runs an append-only log of its records, in the formats Go's
-checksum database uses, now specified by
-[C2SP](https://github.com/C2SP/C2SP): checkpoints signed as
-[signed notes](https://github.com/C2SP/C2SP/blob/main/signed-note.md), the log
-served as [tiles](https://github.com/C2SP/C2SP/blob/main/tlog-tiles.md), and
-[witnesses](https://github.com/C2SP/C2SP/blob/main/tlog-witness.md) that
-co-sign checkpoints after checking that the log only grew.
+checksum database uses, now specified by [C2SP](https://github.com/C2SP/C2SP):
+checkpoints signed as [signed
+notes](https://github.com/C2SP/C2SP/blob/main/signed-note.md), the log served as
+[tiles](https://github.com/C2SP/C2SP/blob/main/tlog-tiles.md), and
+[witnesses](https://github.com/C2SP/C2SP/blob/main/tlog-witness.md) that co-sign
+checkpoints after checking that the log only grew. Witnesses sign with Ed25519
+`cosignature/v1`; a later policy version can add the post-quantum algorithm C2SP
+recommends for new deployments.
+
+A log entry's bytes are a fixed line format, so every implementation encodes
+an entry identically and a parser rejects anything that does not re-encode to
+the same bytes:
+
+```text
+pnpr-log-entry/1
+purl <purl>
+revision <n>
+profile <profile>
+digest sha512-<base64>
+```
+
+An OCI tag entry has `repository <repository>` and `tag <tag>` lines in place of
+`purl`. The `revision` line is omitted in an ecosystem without revisions.
+The bytes are UTF-8, and every line, including the last, ends in one LF. Each
+line after the first is a key, one space, and a value with no whitespace or
+control characters. `<n>` is decimal without leading zeros, and the digest is
+padded standard base64.
 
 - A log entry is the record's identity (its PURL, or an OCI tag's repository and
   tag), revision, profile, and digest. pnpr sequences it in the SQL metadata
   store, in the same transaction that accepts the version, file, or tag, so a
   record is never accepted without its entry or logged without being accepted.
   The log's tiles and checkpoints are built from the sequenced entries after
-  commit, idempotently, as Tessera-style logs integrate them. Metadata commit
+  commit, idempotently, as Tessera-style logs integrate them. Tiles and
+  checkpoints are written to pnpr's blob storage beside archives, not to the SQL
+  store: C2SP tiles are static files, so a log needs no database to serve them,
+  and a public log's tiles can be served from a bucket or CDN. Metadata commit
   and proof readiness are distinct states: publication success means committed,
   not yet witnessed. A verifying read waits for a bounded interval and then
   returns a retryable proof-pending error if the required proof or witness
@@ -393,11 +419,15 @@ with the inclusion proof:
 ```json
 {
   "record": "sha512-<record digest>",
-  "inclusion": { "checkpoint": "<signed note>", "proof": ["<hash>", "..."] },
+  "inclusion": { "checkpoint": "<signed note>", "index": 1234, "proof": ["<hash>", "..."] },
   "statements": ["<DSSE envelope>", "..."],
   "sigstore": ["<Sigstore bundle>", "..."]
 }
 ```
+
+`index` is the record's zero-based leaf index in the tree the checkpoint
+commits to, and `proof` is that leaf's inclusion proof, as in C2SP
+[tlog-proof](https://github.com/C2SP/C2SP/blob/main/tlog-proof.md).
 
 Adding a statement, a newer checkpoint, or a re-signature changes this
 response, not the record, so it is not immutable: its HTTP validator includes
@@ -413,10 +443,7 @@ pnpr did not see that publication. Its evidence is what the upstream provides,
 such as npm provenance, PEP 740 attestations, or OCI referrers, kept as it was
 fetched, and a trust policy evaluates a proxied package from that evidence, as
 it does without pnpr. Only the registry produces a publication statement;
-publisher-supplied fields with the same names are stripped. Synthetic imported
-publications provide historical links only: pnpr must not mint a publication
-statement or trusted-publisher rank from unverified imported identity fields.
-When original evidence is absent, publication evidence is unavailable.
+publisher-supplied fields with the same names are stripped.
 Its predicate is the
 artifact's introducing
 [publication](./0000-atomic-workspace-publication.md#publications),
@@ -458,9 +485,23 @@ The offline root delegates TUF roles; a versioned target,
 names the log, checkpoint and statement keys, required witnesses, and signature
 thresholds. Targets metadata authenticates that file's bytes, snapshot metadata
 binds the metadata versions, and timestamp metadata supplies bounded freshness.
-A standard TUF client verifies the complete chain, expiry, rollback protection,
-and target length and digest before using the policy. Custom fields in a root
+A TUF client verifies the complete chain, expiry, rollback protection, and
+target length and digest before using the policy. Custom fields in a root
 alone would not provide those guarantees.
+
+pnpr uses a TUF profile that keeps the client small enough to build for every
+pnpm target, including WebAssembly, where the maintained Rust TUF clients do
+not build: Ed25519 keys and top-level targets only, no delegated targets. A
+client fails closed on anything outside the profile. Every key the policy
+names, for checkpoints, witnesses, and statements, uses one encoding, the
+signed-note verifier key `<name>+<key hash>+<key>`, and a DSSE signature's
+`keyid` is its `<name>+<key hash>`. Checkpoint and statement keys use the
+signed-note Ed25519 type, `0x01`. Witness keys use `0x04`, the timestamped
+Ed25519 type of [tlog-cosignature](https://github.com/C2SP/C2SP/blob/main/tlog-cosignature.md),
+whose signed message starts with the `cosignature/v1` line. The
+policy names a set of checkpoint keys and a positive threshold, and a client
+accepts a checkpoint only with valid signatures from at least that many
+distinct keys in the set, so a key rotation can overlap.
 
 Root rotation follows TUF's sequential update procedure: each next root must
 meet both the previous root's threshold and its own threshold. Persist trusted
@@ -496,15 +537,15 @@ policy, so history never depends on a retired key:
   workspace pinned it.
 
 A registry is identified by its log's name and the digest of its first TUF root
-version, such as `registry.example+sha256:<root digest>`, the same digest a
-workspace pins. The current checkpoint key, written as Go writes one,
+version, such as `registry.example+sha256:<lowercase hex root digest>`, the same
+digest a workspace pins. The current checkpoint key, written as Go writes one,
 `<name>+<key hash>+<key>`, is verification metadata from the current policy, so
 rotating it does not change the identity. The name is an identifier, not a
 transport location: a mirror or another hostname serving the same log is the
 same authority, and a lockfile that records the authority does not change when
-the registry moves or rotates a key.
-Rebinding an authority to a different log requires an explicit operator action.
-Identical archive bytes in two logs do not establish shared ownership.
+the registry moves or rotates a key. Rebinding an authority to a different log
+requires an explicit operator action. Identical archive bytes in two logs do not
+establish shared ownership.
 
 ### Interpretation profiles
 
@@ -581,7 +622,7 @@ Extend the `GET /-/pnpr` capability document:
 ```json
 {
   "records": [1],
-  "authority": "registry.example+sha256:<first root digest>",
+  "authority": "registry.example+sha256:<first root digest, lowercase hex>",
   "manifestProfiles": [
     "npm-install-manifest/1",
     "cargo-index-entry/1",
@@ -718,8 +759,7 @@ distribution; verification must follow the selected artifact. Test ordinary key
 rotation and regeneration from authoritative publication records after a
 statement-key compromise. A forged envelope for an old record must not influence
 the regenerated publisher claim. Unavailable authoritative data must leave
-evidence unavailable. Imported historical publication links must never create
-trusted-publisher evidence.
+evidence unavailable.
 
 
 ## Prior Art
