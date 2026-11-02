@@ -169,10 +169,11 @@ The profile therefore also normalizes:
   field, as does `engines: {"node": "*"}` added by `normalize-package-data`.
 - `directories.bin` expands into `bin` entries.
 - `version` compares without semver build metadata, which npm's version
-  cleaning drops. pnpm already reserves `+rN` build metadata for
-  [registry revisions](./0000-integrity-addressed-patch-revisions.md), so
-  whether pnpr should accept a publisher's build metadata at all is an open
-  question.
+  cleaning drops. The version is published without it, as npm publishes it,
+  so a publisher can never claim the `+rN` build metadata pnpm reserves for
+  [registry revisions](./0000-integrity-addressed-patch-revisions.md). A
+  fixture covers an archive version `1.0.0-canary.1+abc` published as
+  `1.0.0-canary.1`.
 - A hosted-git shorthand dependency equals its `github:` form.
 
 Registry-generated data such as the publisher identity, `dist.tarball`, and
