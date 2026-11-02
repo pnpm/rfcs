@@ -494,7 +494,9 @@ client fails closed on anything outside the profile. Every key the policy
 names, for checkpoints, witnesses, and statements, uses one encoding, the
 signed-note verifier key `<name>+<key hash>+<key>`, and a DSSE signature's
 `keyid` is its `<name>+<key hash>`. Checkpoint and statement keys use the
-signed-note Ed25519 type, and witness keys use the `cosignature/v1` type. The
+signed-note Ed25519 type, `0x01`. Witness keys use `0x04`, the timestamped
+Ed25519 type of [tlog-cosignature](https://github.com/C2SP/C2SP/blob/main/tlog-cosignature.md),
+whose signed message starts with the `cosignature/v1` line. The
 policy names a set of checkpoint keys with a threshold, so a key rotation can
 overlap.
 
