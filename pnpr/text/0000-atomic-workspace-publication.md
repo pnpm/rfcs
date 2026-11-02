@@ -187,9 +187,10 @@ request; reusing a key for a different request is detected inside the commit,
 scoped to the catalog. When a retry matches a committed transaction, pnpr
 returns the recorded outcome to the same stable principal without requiring its
 current publish permission, so a permission revoked after commit but before the
-response arrived does not hide the result. Authentication is still required, and
-any request that would mutate is authorized against current permissions as
-usual.
+response arrived does not hide the result. Authentication is still required,
+the outcome is returned only if the principal can currently read the catalog,
+as for any status query, and any request that would mutate is authorized
+against current permissions as usual.
 
 Existing npm clients send no idempotency key, and npm, pnpm, and lerna retry
 a timed-out publish. For a single-package publication without a key, the
