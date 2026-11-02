@@ -110,8 +110,8 @@ that mutates a separate authoritative package document would break the guarantee
    Protect staged objects from garbage collection while commit is pending.
 3. Begin a short authoritative SQL transaction and acquire or recheck the
    idempotency claim. A previously committed identical request returns its
-   recorded outcome instead of publishing again; recovering that outcome
-   does not need the mutation permission checked in step 1 (see below).
+   recorded outcome instead of publishing again, after the same
+   authorization as step 1 (see below).
 4. Read the relevant catalog state and validate binding uniqueness, mutation
    preconditions, and current permissions through the policy conflict gate below.
 5. Insert the immutable release records, the publication and its members,
