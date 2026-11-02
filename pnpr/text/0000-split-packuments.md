@@ -180,6 +180,10 @@ by its `manifest`, not by its `integrity`.
 
 ### Publish times
 
+Publish times that the document coarsens, as npm's abbreviated document does,
+are coarsened relative to the package's last publish, never the current time, so
+time passing never changes the document; only a write to the package does.
+
 A minimum release age filters versions by their publish time before it
 picks one, but it only needs to know whether a version is younger than the
 cutoff. So an entry carries its time only if the version was published within
@@ -334,10 +338,11 @@ manifests. Below it, every entry has one: leaving manifests out saves little
 there and would cost a request for every package whose resolution picks an
 older version. The prototype used 64 KiB of serialized JSON.
 
-Once a package's document crosses the threshold, it stays split, even if it
-shrinks below it again (after an unpublish, for example). A document that
-flips between the two near the threshold would change for clients on every
-publish, for no saving. pnpr records the decision with the package.
+pnpr decides from the document on every read and records nothing. A document
+can cross the threshold in either direction: a publish after a long gap can
+shrink it, by dropping the publish times that fall out of the window, and so can
+an unpublish or a removed deprecation or tag. Clients read both forms the same
+way.
 
 ### Client behavior
 
@@ -499,8 +504,8 @@ one function every pick goes through.
 
 1. pnpr: serve the new format under the new media type with `Vary: Accept`,
    with the likely-picks rule, a configurable threshold, and a configurable
-   publish-time window of at least 30 days (30 by default), and record that a
-   package is split.
+      publish-time window of at least 30 days (30 by default), deciding the
+   split from the document on every read.
 2. pnpr: serve release records at `<name>/<version>+r<revision>` for every
    accepted revision, with immutable caching, and remove `dist.pnpr`,
    `variants`, any variant declarations pnpr stores with a version,
@@ -541,7 +546,8 @@ version has its manifest), an older pnpm sharing the home directory, and a froze
 install that reads no metadata. Also test the 30-day release-age boundary,
 a larger policy rejected when consuming this format, and time-based cutoffs
 on either side of `timesSince`, including the documented approximation for an
-older cutoff. None of these cases fetches a second document for timestamps.
+older cutoff, and a publish after a long gap that takes a document back below
+the threshold. None of these cases fetches a second document for timestamps.
 
 ## Prior Art
 
