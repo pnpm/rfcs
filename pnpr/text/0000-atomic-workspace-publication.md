@@ -278,20 +278,11 @@ for an existing version. A publication has:
   a workload identity, the commit time, and the catalog generation it
   created.
 
-All of this is fixed at commit. Versions published before publications are
-recorded receive initial publications when the catalog is first built: each
-existing version becomes a synthetic publication containing its known artifacts,
-with its publish time and, where pnpr recorded one, its publisher, and with no
-name. Versions of an earlier batch become separate publications too; grouping
-them would need a record of the batch that the storage does not promise to keep.
-Synthetic publications are marked as imported history, not evidence that all of
-a version's files originally arrived in one transaction. The build accepts
-existing versions one per generation, in publish-time order with ties broken by
-ecosystem, name, and version, and a synthetic publication's identifier is the
-generation that accepted its version, so it is unique and ordered like any
-other. The initial publication invariant holds for every version, old or new.
-Tag moves and revision selections that commit alone are transactions but not
-publications; they change selections, not the set of published versions.
+All of this is fixed at commit, and every version has its initial publication:
+pnpr is experimental and has no versions from before publications to backfill.
+Tag moves and revision selections that commit alone are
+transactions but not publications; they change selections, not the set of
+published versions.
 
 A publication belongs to no single ecosystem, so it is served from the
 server root rather than an ecosystem's prefix:
@@ -301,23 +292,15 @@ GET <pnpr>/-/publications/<org>/<id-or-name>
 GET <pnpr>/-/publications/<org>?member=<ecosystem>:<name>@<version>
 ```
 
-The second form finds the initial publication of one package version.
-For Python it also accepts `filename=<filename>` to find the publication
-that introduced that distribution. Each distribution record and its publication
-evidence refer to that introducing publication; later uploads do not rewrite
-the initial publication or another file's evidence. For imported history,
-the lookup returns a best-known historical link marked `origin: imported`,
-not a claim that this transaction introduced the distribution. Such a link
-must not produce a verified publication statement or a trusted-publisher rank.
-Where original introduction evidence is unavailable, report it as unavailable;
-known historical publisher fields remain explicitly unverified observations.
-The same restriction applies to synthetic publications in every ecosystem.
-A caller sees only the members whose packages it may read, and a publication
-with none
-answers `404`, so a publication never discloses a package to a caller who
-cannot read it. A version's entry in an ecosystem view may name its
-publication where the view has room for it, as pnpr's release record does
-with a `publication` field.
+The second form finds the initial publication of one package version. For Python
+it also accepts `filename=<filename>` to find the publication that introduced
+that distribution. Each distribution record and its publication evidence refer
+to that introducing publication; later uploads do not rewrite the initial
+publication or another file's evidence. A caller sees only the members whose
+packages it may read, and a publication with none answers `404`, so a
+publication never discloses a package to a caller who cannot read it. A
+version's entry in an ecosystem view may name its publication where the view has
+room for it, as pnpr's release record does with a `publication` field.
 
 Publications give a release a place for what belongs to the whole set rather
 than one package, such as its
