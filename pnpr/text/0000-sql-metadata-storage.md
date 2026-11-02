@@ -91,7 +91,9 @@ equivalent isolation, durability, or freshness.
 
 ### Relational keys sketch
 
-`package_key` abbreviates `(registry, ecosystem, name)`. `revision_key` is
+`package_key` abbreviates `(catalog, ecosystem, name)`: the hosted catalog,
+which is the organization's storage, not the registry route, since registries
+that share an organization already share its storage. `revision_key` is
 `ordinary` outside the revision protocol, or `rN` for an explicit registry
 revision, including `r0`; it is an internal key, not new version syntax.
 
@@ -118,18 +120,24 @@ operations.
 The npm full, abbreviated, and exact-version responses are views over accepted
 versions and mutable state.
 
-- Cache per-version rendered fragments keyed by registry, package, version,
-  revision, interpretation profile, representation, renderer version, and
-  annotation generation. A tag change reuses all
-  fragments; a new release renders one new fragment; a deprecation re-renders
-  one fragment.
+- Cache per-version rendered fragments keyed by catalog, package, version,
+  revision, the generation that accepted the version, interpretation profile,
+  representation, renderer version, and annotation generation. The accepted
+  generation keeps a version that was unpublished and published again with
+  different content from being served a fragment of its earlier bytes. A tag
+  change reuses all fragments; a new release renders one new fragment; a
+  deprecation re-renders one fragment.
 - Large documents are also served in a [split form](0000-split-packuments.md)
   whose release records are these fragments, without the mutable state.
 - Cache assembled full and abbreviated responses keyed by representation and
   committed package generation, plus any authorization context the existing
   cache contract requires. Coalesce concurrent misses.
-- Give cached views bounded freshness and revalidate their generation on
-  expiry or startup, so a lost invalidation cannot pin an old view forever.
+- An embedded backend checks the package's generation, one primary-key
+  lookup, in the read transaction of every read, so a cached view is never
+  stale and a lost invalidation has no effect. Caches in front of a shared or
+  replicated backend, which cannot check on every read, give cached views
+  bounded freshness and revalidate their generation on expiry or startup, so a
+  lost invalidation cannot pin an old view forever.
 
 ### Read-after-write
 

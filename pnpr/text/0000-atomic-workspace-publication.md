@@ -119,7 +119,10 @@ that mutates a separate authoritative package document would break the guarantee
    transaction outcome. Advance the catalog's
    current reference to the new generation in the same transaction, only if
    the reference still names the generation read in step 4; a mismatch rolls
-   back the transaction.
+   back the transaction. An embedded backend whose write transaction holds the
+   database's write lock from step 4 to commit, as SQLite's `BEGIN IMMEDIATE`
+   does, cannot see a mismatch and needs no explicit check; a shared backend
+   does.
 6. Commit the SQL transaction. This is the publication's commit point. A
    constraint or policy conflict rolls back the entire transaction. A lost
    commit acknowledgement requires outcome recovery before claiming success
@@ -178,12 +181,15 @@ and outlives the transaction; the key identifies one attempt. A client that
 lost the response can still find its transaction by name through the
 publications route.
 
-Recovering a committed outcome is a read, not a mutation. When a retry
-matches a committed transaction, pnpr returns the recorded outcome to the
-same stable principal without requiring its current publish permission, so a
-permission revoked after commit but before the response arrived does not hide
-the result. Authentication is still required, and any request that would
-mutate is authorized against current permissions as usual.
+Recovering a committed outcome is a read, not a mutation. pnpr looks the outcome
+up by principal, key, and request digest before it routes or authorizes the
+request; reusing a key for a different request is detected inside the commit,
+scoped to the catalog. When a retry matches a committed transaction, pnpr
+returns the recorded outcome to the same stable principal without requiring its
+current publish permission, so a permission revoked after commit but before the
+response arrived does not hide the result. Authentication is still required, and
+any request that would mutate is authorized against current permissions as
+usual.
 
 Existing npm clients send no idempotency key, and npm, pnpm, and lerna retry
 a timed-out publish. For a single-package publication without a key, the
@@ -193,18 +199,21 @@ recorded success, not a conflict. The match covers the whole request: the
 same archive with different tag changes is a conflict, not a replay. A
 different archive for the same version is still a conflict.
 
-A batch without a key is keyed the same way, by a digest over every entry's
-identity, archive integrity, accepted manifest, and version note, the
-publication name and publication note, and every tag or revision-selection
-change in the request. An entry's identity is every field of its publication
-member: registry, ecosystem, name, version, and revision where applicable, plus
-a Python distribution's filename and an OCI manifest's repository, so two
-requests that differ only in which package or file an archive is published as
-never share a digest. Note absence and note text are distinct digest inputs;
-notes are not part of the accepted manifest. This whole-request rule also
-applies to a single-package publication without a key. A retry with the same
-digest returns the recorded outcome; a request that shares versions with a
-committed batch but has a different digest is a conflict.
+A batch without a key is keyed the same way, by a digest over the whole request:
+its canonical JSON with sorted keys and its archives' integrities, so it covers
+every entry's identity, archive integrity, accepted manifest, and version note,
+the publication name and publication note, and every tag or revision-selection
+change in the request. A retry that differs in any field, even one outside
+install metadata such as a README, is a new request, not a replay. An entry's
+identity is every field of its publication member: registry, ecosystem, name,
+version, and revision where applicable, plus a Python distribution's filename
+and an OCI manifest's repository, so two requests that differ only in which
+package or file an archive is published as never share a digest. Note absence
+and note text are distinct digest inputs; notes are not part of the accepted
+manifest. This whole-request rule also applies to a single-package publication
+without a key. A retry with the same digest returns the recorded outcome; a
+request that shares versions with a committed batch but has a different digest
+is a conflict.
 
 A timed-out commit has an unknown outcome to the client. The client queries or
 retries the same transaction to learn its durable state. Idempotency results
@@ -254,8 +263,10 @@ artifact belongs to the publication that introduced that artifact. These
 coincide for npm and Cargo, but Python permits later distribution uploads
 for an existing version. A publication has:
 
-- an identifier that pnpr assigns, and optionally a name the publisher
-  chooses, such as `v12.0.0`, unique within the organization;
+- an identifier, which is the catalog generation the transaction committed:
+  it is unique in the organization and ordered with every other commit, so no
+  second sequence is needed; and optionally a name the publisher chooses, such
+  as `v12.0.0`, unique within the organization;
 - its members: registry, ecosystem, name, version, revision where applicable,
   and the accepted artifact identity. A Python member names its distribution
   filename and digest; an OCI member names its repository and manifest digest.
