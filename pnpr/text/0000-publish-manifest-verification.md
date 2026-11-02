@@ -199,12 +199,15 @@ cache never serves one profile's metadata for another.
 
 ### Existing hosted versions
 
-Versions published before this check have not been verified. `pnpr verify`
-already walks every hosted version and its stored archive. It is extended to
-re-derive each version's manifest under the recorded profile, compare it with
-the accepted metadata, and report disagreements to operators. Whether such versions
-are then served from archive-derived metadata, blocked, or left as-is is an
-operator decision.
+Versions published before this check have not been verified, and they have no
+recorded profile, input digests, or accepted metadata. `pnpr verify` already
+walks every hosted version and its stored archive. It is extended to derive
+such a version's manifest under `npm-install-manifest/1`, compare it with the
+stored entry the version is served from, and report disagreements to
+operators. Whether such versions are then served from archive-derived metadata,
+blocked, or left as-is is an operator decision; serving archive-derived
+metadata records the profile, input digests, and accepted metadata as a
+publication would.
 
 ## Rationale and Alternatives
 
