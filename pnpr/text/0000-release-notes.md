@@ -174,12 +174,13 @@ per-request filtering. Each version is listed when it has a note (or
       "version": "12.0.0",
       "modified": "2026-10-28T09:12:44Z",
       "text": "- `install` reads lockfiles from 11.x.\n",
-      "initialDigest": "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=",
+      "initialDigest": "sha256-<digest of the version note's initial text>",
       "publication": {
         "org": "example",
         "id": "9f2c41",
         "name": "v12.0.0",
-        "initialDigest": "sha256-LCa0a2j/xo/5m0U8HTBBNBNCLXBkg7+g+YpeiGJm564="
+        "initialDigest": "sha256-<digest of the publication note's initial text>",
+        "url": "/-/publications/example/9f2c41/notes"
       }
     },
     { "version": "11.4.0", "modified": "2026-09-30T17:01:02Z", "text": "…" }
@@ -187,9 +188,12 @@ per-request filtering. Each version is listed when it has a note (or
 }
 ```
 
-`initialDigest` is present when the note was created with the publication and
-records the immutable SHA-256 digest of that initial text, even if the note is
-later edited or deleted (when deleted, `text` is omitted). `publication` is
+A `publication` entry carries the `url` of its note as an absolute path on the
+server, as the `Link` header of the version route does, so a client behind a
+pnpr served under a path prefix does not have to derive it from the registry
+base. `initialDigest` is present when the note was created with the publication
+and records the immutable SHA-256 digest of that initial text, even if the note
+is later edited or deleted (when deleted, `text` is omitted). `publication` is
 present when the version's publication has a note (or `initialDigest`) and the
 caller may read every member of that publication, so a client fetches each
 publication note once, however many of the upgraded packages, in whatever
@@ -338,19 +342,20 @@ from its change intents (see the next section). Elsewhere:
 
 - the publication note comes from `--release-notes <file>`;
 - each package's version note comes from its `CHANGELOG.md`, taking the
-  section under the heading whose text is the version, as changesets
+    section under the heading whose text is the version, as changesets
   (`## 1.4.0`) and Keep a Changelog (`## [1.4.0] - 2026-10-28`) write it, up
-  to the next heading of the same level;
+  to the next heading of the same level, without the heading itself, since
+  the route already names the version;
 - pnpm normalizes CRLF and CR line endings to LF in notes read from
   `CHANGELOG.md`, `--release-notes <file>`, and change intents before
   validation and submission;
 - `--no-release-notes` sends none.
 
-When pnpm publishes one package, `--release-notes` gives that package's
-version note instead, since the publication has nothing else in it. pnpm
-prints which source it used for each note. It sends notes only to registries
-declared with `serverType: pnpr`, and sends the same documents without them
-elsewhere.
+When pnpm publishes one package outside versioning, `--release-notes` gives that
+package's version note instead, since the publication has nothing else in it.
+pnpm prints which source it used for each note. It sends notes only to
+registries declared with `serverType: pnpr`, and sends the same documents
+without them elsewhere.
 
 **Reading.** pnpm shows notes where it offers an upgrade:
 
@@ -378,11 +383,17 @@ instead:
 
 - A version note holds the intents that name only that package, plus the
   intents shared with packages outside the publication. It is the section
-  versioning would have packed, without the history below it: a reader gets
-  the history from `<name>/-/notes`.
+  versioning would have packed, without its version heading and without the
+  history below it: a reader gets the history from `<name>/-/notes`.
 - The publication note holds the intents that name more than one package of
-  the publication, once each, with the packages each applies to, and the
-  text of `--release-notes <file>` above them for a summary written by hand.
+  the publication, once each, with the packages each applies to.
+- A summary written by hand is given to `pnpm version -r --release-notes
+  <file>`, not to `pnpm publish`, and goes above the composed text of the
+  publication note, or of the version note when the release has one package.
+  pnpm composes all notes when `pnpm version -r` runs, as it already composes
+  the changelog section, and keeps them until publish, so every published note
+  is known in full before publication and the intent check below can verify
+  its digest.
 - The publication is named after the plan: the version of the epic's lead
   package or of the single fixed group that the release contains, or
   `--publication-name <name>`, and it has no name otherwise.
