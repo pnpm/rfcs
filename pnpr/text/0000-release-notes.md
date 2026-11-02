@@ -177,10 +177,10 @@ per-request filtering. Each version is listed when it has a note (or
       "initialDigest": "sha256-<digest of the version note's initial text>",
       "publication": {
         "org": "example",
-        "id": "9f2c41",
+        "id": "4182",
         "name": "v12.0.0",
         "initialDigest": "sha256-<digest of the publication note's initial text>",
-        "url": "/-/publications/example/9f2c41/notes"
+        "url": "/-/publications/example/4182/notes"
       }
     },
     { "version": "11.4.0", "modified": "2026-09-30T17:01:02Z", "text": "…" }
@@ -189,9 +189,11 @@ per-request filtering. Each version is listed when it has a note (or
 ```
 
 A `publication` entry carries the `url` of its note as an absolute path on the
-server, as the `Link` header of the version route does, so a client behind a
-pnpr served under a path prefix does not have to derive it from the registry
-base. `initialDigest` is present when the note was created with the publication
+server, including any path prefix pnpr is served under, as the `Link` header of
+the version route does, so a client never derives it from the registry base. A
+client finds the note by `url`; `org`, `id`, and `name` only identify the
+publication for display. The `id` is the catalog generation that committed the
+publication. `initialDigest` is present when the note was created with the publication
 and records the immutable SHA-256 digest of that initial text, even if the note
 is later edited or deleted (when deleted, `text` is omitted). `publication` is
 present when the version's publication has a note (or `initialDigest`) and the

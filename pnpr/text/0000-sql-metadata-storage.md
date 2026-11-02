@@ -126,7 +126,9 @@ versions and mutable state.
   revision, interpretation profile, representation, renderer version, and,
   for a representation that embeds mutable state, annotation generation. A
   version and revision always name the same bytes, because an unpublished
-  version is tombstoned and never accepted again. A tag change reuses all
+  version is tombstoned and never accepted again. The publish path checks the
+  tombstone before a version reaches the metadata store, and the cache relies
+  on that check. A tag change reuses all
   fragments; a new release renders one new fragment; a deprecation re-renders
   one full-document fragment.
 - Large documents are also served in a [split form](0000-split-packuments.md),
