@@ -193,15 +193,16 @@ server, including any path prefix pnpr is served under, as the `Link` header of
 the version route does, so a client never derives it from the registry base. A
 client finds the note by `url`; `org`, `id`, and `name` only identify the
 publication for display. The `id` is the catalog generation that committed the
-publication. `initialDigest` is present when the note was created with the publication
-and records the immutable SHA-256 digest of that initial text, even if the note
-is later edited or deleted (when deleted, `text` is omitted). `publication` is
-present when the version's publication has a note (or `initialDigest`) and the
-caller may read every member of that publication, so a client fetches each
-publication note once, however many of the upgraded packages, in whatever
-ecosystems, came out of it. `text` is absent when only the publication has a
-note; a version that has no version note (or `initialDigest`) of its own and
-whose publication note the caller cannot read is omitted from `notes`.
+publication. `initialDigest` is present when the note was created with the
+publication and records the immutable SHA-256 digest of that initial text, even
+if the note is later edited or deleted (when deleted, `text` is omitted).
+`publication` is present when the version's publication has a note (or
+`initialDigest`) and the caller may read every member of that publication, so a
+client fetches each publication note once, however many of the upgraded
+packages, in whatever ecosystems, came out of it. `text` is absent when only the
+publication has a note; a version that has no version note (or `initialDigest`)
+of its own and whose publication note the caller cannot read is omitted from
+`notes`.
 
 To bound both entry count and response size without query parameters,
 `<name>/-/notes` returns at most the newest 100 entries and 1 MiB of serialized
