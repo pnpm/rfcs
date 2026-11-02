@@ -164,7 +164,9 @@ outgrows one primary gives each hosted catalog its own database: a catalog is
 already the transaction boundary, generations of different catalogs are never
 compared, and no transaction spans two catalogs. The metadata URL then contains
 a `{catalog}` placeholder, such as `libsql://pnpr-{catalog}.example.turso.io`,
-and pnpr opens a catalog's database on first use and keeps its connection.
+and pnpr opens a catalog's database on first use, keeps open connections in a
+bounded cache that closes the least recently used, and closes a catalog's
+connection while that catalog is being moved.
 Moving a catalog between databases follows [Backend
 replacement](#backend-replacement): a quiesced export and import of that one
 catalog.
