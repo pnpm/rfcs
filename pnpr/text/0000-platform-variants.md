@@ -283,12 +283,16 @@ matching platform:
    primary archive. The primary is selected only when no variant matches.
 
 A variant's score is the maximum of its matching target scores under this
-lexicographic rule. Unknown host floors or ABI values cannot satisfy an
-explicit constraint. Targets normalize implicit Linux glibc before counting
-or comparing fields, so spelling it explicitly cannot change specificity.
-Reject a publication if distinct variants can share the highest score on any
-host. Clients also reject ties in malformed metadata rather than use array
-order or a tag as an arbitrary tie-breaker.
+lexicographic rule. When choosing the archive to link, an unknown floor or ABI
+value cannot satisfy an explicit constraint: linking an archive the host may not
+run is worse than linking the primary. A platform named in
+`supportedArchitectures` states its floors and ABI in the platform tag syntax,
+such as `linux-x64-manylinux_2_26-node127`; any it does not state are unknown.
+Fetching is looser (see [Install](#install)). Targets normalize implicit Linux
+glibc before counting or comparing fields, so spelling it explicitly cannot
+change specificity. Reject a publication if distinct variants can share the
+highest score on any host. Clients also reject ties in malformed metadata rather
+than use array order or a tag as an arbitrary tie-breaker.
 
 ### Metadata
 
@@ -555,11 +559,17 @@ as a new `lockfileVersion`.
 - `supportedArchitectures` decides which variants are fetched into the store,
   for `pnpm fetch`, Docker images, and Lambda bundles: every variant that
   matches one of its platforms, and the primary when one of those platforms
-  matches none. Its list form names each platform; its `os`, `cpu`, and
-  `libc` form stands for every combination of its values. Only one variant
-  can be linked under a package's name. The linked one is the host's, or, if
-  `supportedArchitectures` lists exactly one platform and omits `current`,
-  that platform's.
+  matches none. For a platform other than the host, a variant matches when its
+  `os`, `cpu`, and `libc` match, whatever its floors and ABI, unless the
+  platform states them: fetching an archive the eventual host cannot use only
+  costs disk, while skipping the one it needs makes an offline install fail. Its
+  list form names each platform; its `os`, `cpu`, and `libc` form stands for
+  every combination of its values. Only one variant can be linked under a
+  package's name. The linked one is the host's, or, if `supportedArchitectures`
+  lists exactly one platform and omits `current`, that platform's, chosen by the
+  linking rule: a variant whose floor or ABI that platform does not state is not
+  linked, so a Lambda bundle built on another machine names its target's floors,
+  such as `linux-x64-manylinux_2_26`.
 - For a package with variants, the installer walks the selected variant's
   snapshot (`<name>@<version>/variants/<tag>`, falling back to
   `<name>@<version>`), or `<name>@<version>` when the primary archive is
@@ -821,11 +831,14 @@ fallback routes).
 Also test the A/B multi-target example above on both hosts after reversing
 lockfile array order, and two projects selecting identical archive bytes but
 different versions of a ranged dependency. Their virtual store entries must
-preserve the different resolved graphs. Cover equal constraint counts with
-an absent versus present libc floor, numeric floor ordering, exact ABI versus
-N-API overlaps, implicit versus explicit glibc, rejected score ties, and missing
-or incompatible `acceptedLockfileFormats`. Unsupported clients must receive
-the existing incompatibility error without a downgraded lockfile.
+preserve the different resolved graphs. Cover equal constraint counts with an
+absent versus present libc floor, numeric floor ordering, exact ABI versus N-API
+overlaps, implicit versus explicit glibc, rejected score ties, and missing or
+incompatible `acceptedLockfileFormats`. Unsupported clients must receive the
+existing incompatibility error without a downgraded lockfile. Also cover
+`supportedArchitectures` naming another platform without floors: every variant
+matching its `os`, `cpu`, and `libc` is fetched, and none with a floor is
+linked for it.
 
 ## Prior Art
 
