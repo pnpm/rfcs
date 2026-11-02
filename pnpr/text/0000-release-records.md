@@ -314,8 +314,10 @@ an upstream. It holds digests and identities, not records. Raw entry tiles
 therefore disclose package names and versions. Registry authentication alone
 is insufficient when two packages in that registry have different readers.
 
-Entry-data tiles and bulk enumeration require an explicit log-auditor
-permission covering every entry in that log. They are public only for a log
+Entry-data tiles and bulk enumeration use the existing package read policy:
+a caller must be authorized to read every entry returned. Deny a whole tile
+when it contains an unauthorized entry; do not serve a filtered tile that
+would fail log verification. They are public only for a log
 that contains exclusively public identities and whose operator has committed
 to keeping that history public. Ordinary readers obtain their authorized leaf
 and its inclusion proof from the package's evidence route, and checkpoints
@@ -328,9 +330,9 @@ confidentiality boundary. Full-log monitors are trusted with all its identities;
 witnessing append-only growth alone does not detect duplicate identities.
 
 A log that has published entry data cannot make that history secret through
-a cache purge. Refuse public-to-gated transitions that promise to conceal such
-history; operators must acknowledge its permanent disclosure or use a new
-private namespace. Package record and artifact access remains separately gated.
+a cache purge. Changing package visibility gates future package reads, but
+cannot conceal already published log history. Package record and artifact
+access remains separately gated.
 
 Each deployment runs its own logs, identified by log name and first-root
 digest. A shared log, as Go's ecosystem shares `sum.golang.org`, would need an
@@ -471,44 +473,19 @@ policy, so history never depends on a retired key:
 
 - **Statements.** Before a policy update retires a statement key, pnpr
   re-signs every statement with the new key. That changes evidence, not
-  records, so record digests and log entries stay. Compromise recovery requires
-  the authenticated archive contract below; an old record alone never
-  authorizes re-signing a statement about its publisher.
+  records, so record digests and log entries stay. After a statement-key
+  compromise, regenerate registry statements from the authoritative SQL
+  acceptance and publication records, not from envelopes signed by the
+  compromised key. Reuse the normal statement-generation path. If the
+  authoritative data is unavailable or cannot be trusted, report the evidence
+  as unavailable. An old release record's inclusion alone cannot authenticate
+  its publisher. A regenerated statement is a current registry endorsement,
+  not proof that an earlier statement existed before the compromise.
+  Publisher-supplied provenance remains unchanged and independently verified.
 - **Checkpoints.** A log's checkpoint key signs new checkpoints only. Older
   ones stay valid through consistency: a client checks a new checkpoint,
   signed by the current key, against the one it kept, so an entry proven
   under an old checkpoint is proven under the new one.
-
-For statement-key compromise recovery, use a TUF target named
-`pnpr-statement-recovery.json`, signed through a dedicated delegated recovery
-role with an offline key threshold. The delegation is authenticated by the
-TUF targets chain; recovery keys must be distinct from statement keys and
-online evidence-service keys. The registry's authenticated policy identifies
-the recovery role. A statement key cannot authorize its own recovery.
-
-The recovery target identifies the authority, compromised key IDs, a UTC
-compromise cutoff, and entries containing the exact original statement payload
-digest, archive snapshot digest, and time that an independent archive observed
-those bytes. Offline recovery signers audit the archive and attest that each
-listed observation precedes the cutoff. This is an explicit trust assertion
-by the offline recovery authority, not a timestamp proved by record inclusion
-or by the compromised statement key. If the compromise start is unknown, no
-statement from that key is recoverable until the offline authority establishes
-a conservative cutoff.
-
-Evidence for a recovered statement includes the original payload, the archive
-snapshot bytes referenced by the recovery target, and a re-signature by the
-current statement key. Clients use their standard TUF client to authenticate
-the recovery target through the designated offline role, verify authority and
-key IDs, hash the payload and snapshot, check that the snapshot contains that
-exact payload, and require the authenticated observation time to precede the
-cutoff. They then verify the new signature over the unchanged payload. A
-missing target, archive, digest match, or pre-cutoff observation makes the
-publication evidence unavailable. The new signature alone cannot restore it.
-Each supplied archive snapshot contains only the statement being recovered
-and its audit metadata, never neighboring private statements. Recovery targets
-and snapshots follow the package's access rules. Specify their formats and
-test vectors before advertising compromise recovery.
 
 - **Public registries.** pnpm ships the TUF roots of the public registries it
   knows, as Go ships the key of `sum.golang.org`.
@@ -735,12 +712,11 @@ policy rollback, and a fresh installation after key rotation. A forged
 publication statement for an old logged record must not become trusted through
 re-signing after a key compromise. Python tests
 must cover wheels of one version with different dependencies and a dynamic
-source distribution; verification must follow the selected artifact. Test a
-valid archived pre-cutoff payload and its current-key re-signature, a changed
-payload, a mismatched archive digest, an observation at or after the cutoff,
-a recovery target outside the designated offline role, and ordinary rotation
-without compromise. Only evidence meeting the applicable recovery checks may
-restore a compromised key's claim. Imported historical publication links must
+source distribution; verification must follow the selected artifact. Test
+ordinary key rotation and regeneration from authoritative publication records
+after a statement-key compromise. A forged envelope for an old record must
+not influence the regenerated publisher claim. Unavailable authoritative data
+must leave evidence unavailable. Imported historical publication links must
 never create trusted-publisher evidence.
 
 

@@ -590,18 +590,14 @@ as a new `lockfileVersion`.
   `supportedArchitectures` from the store through an API that this RFC leaves
   open; they are not linked under the package's name.
 - Server-side resolution through pnpr already produces platform-neutral
-  lockfiles. Its request must include a `capabilities` array containing
-  `platform-variants/1` and a `lockfileVersions` array containing the new
-  lockfile version marker. The capability covers host-ranked selection,
-  per-variant snapshots, and fallback semantics together. The resolver
-  advertises the capability and supported marker in its capability document
-  and echoes the selected capability and marker in a successful response.
-  When the selected graph contains variants and either advertisement is
-  absent or incompatible, return HTTP 409 with error code
-  `PNPR_RESOLVER_CAPABILITY_REQUIRED`, naming the required capability and
-  marker. Never return unsupported entries or silently downgrade to the
-  primary. Clients validate the echoed values before accepting a lockfile;
-  absence of variant support does not block graphs containing no variants.
+  lockfiles. Reuse the request's existing `acceptedLockfileFormats` field:
+  the new lockfile version covers host-ranked selection, per-variant snapshots,
+  and fallback semantics together. When the selected graph requires variants
+  and the client has not explicitly accepted that format, return the existing
+  HTTP 400 `ERR_PNPR_INCOMPATIBLE_LOCKFILE_FORMAT` error. The returned
+  lockfile's version identifies its semantics; no separate capability or echo
+  is needed. Never silently downgrade to the primary. Clients accepting only
+  older formats can still resolve graphs that require no variants.
 
 ### Publication
 
@@ -828,8 +824,8 @@ different versions of a ranged dependency. Their virtual store entries must
 preserve the different resolved graphs. Cover equal constraint counts with
 an absent versus present libc floor, numeric floor ordering, exact ABI versus
 N-API overlaps, implicit versus explicit glibc, rejected score ties, and missing
-or incompatible resolver capabilities and lockfile versions. Unsupported
-clients must receive the incompatibility error without a downgraded lockfile.
+or incompatible `acceptedLockfileFormats`. Unsupported clients must receive
+the existing incompatibility error without a downgraded lockfile.
 
 ## Prior Art
 

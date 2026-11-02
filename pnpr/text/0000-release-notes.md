@@ -82,12 +82,11 @@ For Python, version-note routes and their publication links refer to the
 version's initial publication. A later distribution upload has its own
 publication and may supply a publication note, discoverable through that
 distribution's record and publication lookup. It does not replace the version
-note or its immutable `initialDigest`. Changing an existing version note is
-an explicit note edit, even when submitted alongside a later upload; it must
-use the same authorization and audit path as an ordinary edit. The commit
-request must distinguish this edit from an initial note, and a replay must
-never repeat it over a subsequent edit. Later artifact publications may carry
-new publication notes without changing any version-note digest.
+note or its immutable `initialDigest`. A later upload may supply its own
+publication note, but must not include a version note for an existing version.
+To change that version note, use the existing note-edit routes and their
+authorization and audit rules. No second edit mechanism is needed in the
+artifact-upload transaction.
 
 Notes are mutable. The publisher can fix a typo, add a migration step found
 after release, or remove a note, and readers see the change after the note's

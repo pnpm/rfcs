@@ -207,16 +207,15 @@ A timed-out commit has an unknown outcome to the client. The client queries or
 retries the same transaction to learn its durable state. Idempotency results
 must survive crashes and the retry period, which is at least 7 days, well
 past any client's retry window. A retry must not create another catalog
-generation for an already committed transaction. Retain a compact commitment
-to the complete accepted request, stable
-principal, catalog, and publication outcome for as long as its release
-bindings are retained, even after expiring the larger retry response.
-Release bytes alone cannot establish a replay: they do not identify the
-original tag changes, publication name, notes, or batch membership. Compare
-against this commitment, never against the current tags or edited notes.
-A matching replay returns the original outcome without reapplying selections
-or creating a generation. If the commitment is unavailable, return an
-explicit conflict rather than infer success from matching archives.
+generation for an already committed transaction. During the retry period,
+compare against the stored whole-request digest and outcome, never against
+current tags or edited notes. After that record expires, an existing
+publication may still carry enough information to recover the original
+outcome; otherwise return an explicit conflict. Release bytes alone cannot
+establish a replay: they do not identify the original tag changes, publication
+name, notes, or batch membership. Expiry must never cause selections to be
+reapplied or success to be inferred from matching archives. This uses the
+existing outcome-retention policy, without permanent retry-record storage.
 
 ### Publication visibility and read consistency
 
@@ -404,6 +403,11 @@ cache and journal. Readers pinned to old and new generations must each see a
 complete batch. Garbage collection must never delete an active transaction's
 objects or a retained generation. Test existing clients separately from
 snapshot-aware clients and report their actual consistency guarantees.
+Test an identical retry within the retention period and one after its outcome
+record expires; the latter must return a conflict unless the original request
+and outcome remain recoverable. Neither may reapply tags. Python uploads of
+two files in separate transactions must preserve each file's publication and
+the version's initial publication.
 
 Run the same publication conformance suite against each SQL backend, including
 replica lag and policy write skew. Verify that replacing a backend through
