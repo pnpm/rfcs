@@ -209,7 +209,7 @@ digest as the version, and the repository and tag as qualifiers.
   "tag": "1.0",
   "revision": 3,
   "interpretation": "oci-tag/1",
-  "purl": "pkg:oci/app@sha256%3A<manifest digest>?repository_url=acme/app&tag=1.0"
+  "purl": "pkg:oci/app@sha256:<manifest digest>?repository_url=registry.example%2Facme%2Fapp&tag=1.0"
 }
 ```
 
@@ -271,12 +271,29 @@ document carries no incompressible digest per version.
 ### Transparency log
 
 Each registry runs an append-only log of its records, in the formats Go's
-checksum database uses, now specified by
-[C2SP](https://github.com/C2SP/C2SP): checkpoints signed as
-[signed notes](https://github.com/C2SP/C2SP/blob/main/signed-note.md), the log
-served as [tiles](https://github.com/C2SP/C2SP/blob/main/tlog-tiles.md), and
-[witnesses](https://github.com/C2SP/C2SP/blob/main/tlog-witness.md) that
-co-sign checkpoints after checking that the log only grew.
+checksum database uses, now specified by [C2SP](https://github.com/C2SP/C2SP):
+checkpoints signed as [signed
+notes](https://github.com/C2SP/C2SP/blob/main/signed-note.md), the log served as
+[tiles](https://github.com/C2SP/C2SP/blob/main/tlog-tiles.md), and
+[witnesses](https://github.com/C2SP/C2SP/blob/main/tlog-witness.md) that co-sign
+checkpoints after checking that the log only grew. Witnesses sign with Ed25519
+`cosignature/v1`; a later policy version can add the post-quantum algorithm C2SP
+recommends for new deployments.
+
+A log entry's bytes are a fixed line format, so every implementation encodes
+an entry identically and a parser rejects anything that does not re-encode to
+the same bytes:
+
+```text
+pnpr-log-entry/1
+purl <purl>
+revision <n>
+profile <profile>
+digest sha512-<base64>
+```
+
+An OCI tag entry has `repository <repository>` and `tag <tag>` lines in place of
+`purl`. The `revision` line is omitted in an ecosystem without revisions.
 
 - A log entry is the record's identity (its PURL, or an OCI tag's repository and
   tag), revision, profile, and digest. pnpr sequences it in the SQL metadata
@@ -393,7 +410,7 @@ with the inclusion proof:
 ```json
 {
   "record": "sha512-<record digest>",
-  "inclusion": { "checkpoint": "<signed note>", "proof": ["<hash>", "..."] },
+  "inclusion": { "checkpoint": "<signed note>", "index": 1234, "proof": ["<hash>", "..."] },
   "statements": ["<DSSE envelope>", "..."],
   "sigstore": ["<Sigstore bundle>", "..."]
 }
@@ -458,9 +475,18 @@ The offline root delegates TUF roles; a versioned target,
 names the log, checkpoint and statement keys, required witnesses, and signature
 thresholds. Targets metadata authenticates that file's bytes, snapshot metadata
 binds the metadata versions, and timestamp metadata supplies bounded freshness.
-A standard TUF client verifies the complete chain, expiry, rollback protection,
-and target length and digest before using the policy. Custom fields in a root
+A TUF client verifies the complete chain, expiry, rollback protection, and
+target length and digest before using the policy. Custom fields in a root
 alone would not provide those guarantees.
+
+pnpr uses a TUF profile that keeps the client small enough to build for every
+pnpm target, including WebAssembly, where the maintained Rust TUF clients do
+not build: Ed25519 keys and top-level targets only, no delegated targets. A
+client fails closed on anything outside the profile. Every key the policy
+names, for checkpoints, witnesses, and statements, uses one encoding, the
+signed-note verifier key `<name>+<key hash>+<key>`, and a DSSE signature's
+`keyid` is its `<name>+<key hash>`. The policy names a set of checkpoint keys
+with a threshold, so a key rotation can overlap.
 
 Root rotation follows TUF's sequential update procedure: each next root must
 meet both the previous root's threshold and its own threshold. Persist trusted
@@ -496,15 +522,15 @@ policy, so history never depends on a retired key:
   workspace pinned it.
 
 A registry is identified by its log's name and the digest of its first TUF root
-version, such as `registry.example+sha256:<root digest>`, the same digest a
-workspace pins. The current checkpoint key, written as Go writes one,
+version, such as `registry.example+sha256:<lowercase hex root digest>`, the same
+digest a workspace pins. The current checkpoint key, written as Go writes one,
 `<name>+<key hash>+<key>`, is verification metadata from the current policy, so
 rotating it does not change the identity. The name is an identifier, not a
 transport location: a mirror or another hostname serving the same log is the
 same authority, and a lockfile that records the authority does not change when
-the registry moves or rotates a key.
-Rebinding an authority to a different log requires an explicit operator action.
-Identical archive bytes in two logs do not establish shared ownership.
+the registry moves or rotates a key. Rebinding an authority to a different log
+requires an explicit operator action. Identical archive bytes in two logs do not
+establish shared ownership.
 
 ### Interpretation profiles
 
@@ -581,7 +607,7 @@ Extend the `GET /-/pnpr` capability document:
 ```json
 {
   "records": [1],
-  "authority": "registry.example+sha256:<first root digest>",
+  "authority": "registry.example+sha256:<first root digest, lowercase hex>",
   "manifestProfiles": [
     "npm-install-manifest/1",
     "cargo-index-entry/1",
