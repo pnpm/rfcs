@@ -62,12 +62,14 @@ For a hosted npm publication, pnpr:
    the publication with the package and differing fields named, except for
    the one benign direction defined under
    [Publisher-side normalization](#publisher-side-normalization).
-5. Stores the archive-derived manifest as the accepted metadata for the
-   version, together with the exact byte digests of the archive manifest and
-   shrinkwrap, if present.
+5. Writes the archive-derived install-critical fields into the version's
+   stored entry, with a record of the profile and the exact byte digests of
+   the archive manifest and shrinkwrap, if present.
 
-Metadata responses for the accepted version are generated from the stored
-archive-derived manifest, not from the submitted document.
+A hosted version's entry is immutable after publication except for its
+deprecation, so the stored entry is the accepted metadata: responses are
+generated from it, never from the submitted document, and no separate copy of
+the derived manifest is kept.
 
 ### Install-critical fields
 
@@ -83,12 +85,14 @@ Install-critical fields include:
 - Lifecycle scripts (`preinstall`, `install`, `postinstall`) and derived
   `hasInstallScript` (true when any of those scripts is present, or when a root
   `binding.gyp` is in the archive without those scripts and without
-  `gypfile: false`). pnpr's `requiresBuild` already derives this from the
-  verified archive.
-- Shrinkwrap presence and contents.
+  `gypfile: false`). This is not pnpr's `requiresBuild`, which also counts a
+  `.hooks/` directory that npm does not.
 
-The exact field set, and how absent and empty values compare, must be fixed
-before ratification.
+Shrinkwrap presence is derived from the archive and recorded by digest, not
+compared: submitted metadata never carries a shrinkwrap's contents, and
+`_hasShrinkwrap` is an underscore field the comparison excludes. The fixtures of
+`npm-install-manifest/1` fix the exact field set and how absent and empty values
+compare.
 
 Generated metadata always carries the derived `hasInstallScript` and
 `_hasShrinkwrap`. A registry that omits them makes clients skip scripts or
@@ -116,17 +120,18 @@ published that way still exists, so a profile that reads historical versions
 must treat a name present in both maps with the same range as optional.
 
 The profile defines each of these as a normalization, applied to both sides
-before comparison. The `gypfile` step is the one case where the normalized
-sides still differ: the submitted manifest claims a build that the archive
-cannot run. That direction is benign. pnpr accepts it, serves the
-archive-derived verdict, and reports the difference to the publisher. This
-exception applies only to an added `install: "node-gyp rebuild"` and its
-associated `gypfile` flag, when the submitted manifest has no other lifecycle
-script difference and archive inspection proves no implicit build would run.
-It does not allow arbitrary added scripts, changed script bodies, or additional
-dependencies just because they overstate what the archive requires. The
-reverse direction, where the archive declares a script or dependency that the
-submitted manifest omits, is the attack and is always rejected.
+before comparison. The `gypfile` step is the one case where the normalized sides
+still differ: the submitted manifest claims a build that the archive cannot run.
+That direction is benign. pnpr accepts it, serves the archive-derived verdict,
+and reports the difference to the publisher in the `npm-notice` response header,
+which npm already prints. This exception applies only to an added `install:
+"node-gyp rebuild"` and its associated `gypfile` flag, when the submitted
+manifest has no other lifecycle script difference and archive inspection proves
+no implicit build would run. It does not allow arbitrary added scripts, changed
+script bodies, or additional dependencies just because they overstate what the
+archive requires. The reverse direction, where the archive declares a script or
+dependency that the submitted manifest omits, is the attack and is always
+rejected.
 
 A survey compared each version's registry metadata with its archive's
 `package.json` in three samples: the 1,674 registry packages in pnpm/pnpm's
@@ -184,16 +189,18 @@ the Rust implementation, while the fixtures define the behavior.
 A later profile that changes derivation does not silently reinterpret existing
 versions. pnpr re-derives from the stored archive under the new profile and
 stores the result as a new immutable accepted manifest beside the existing one.
-It never overwrites accepted metadata. Which profile a response uses is an
-explicit selection, and a client that does not support it gets a capability
-error.
+It never overwrites accepted metadata. Until a second profile exists, recording
+the profile with each version is enough. Once one does, which profile a response
+uses is an explicit selection, and a client that does not support it gets a
+capability error.
 
 ### Existing hosted versions
 
-Versions published before this check have not been verified. pnpr can
-re-derive their manifests from the stored archives and report disagreements to
-operators. Whether such versions are then served from archive-derived metadata,
-blocked, or left as-is is an operator decision.
+Versions published before this check have not been verified. `pnpr verify`,
+which already walks every hosted version and its stored archive, re-derives
+their manifests and reports disagreements to operators. Whether such versions
+are then served from archive-derived metadata, blocked, or left as-is is an
+operator decision.
 
 ## Rationale and Alternatives
 
@@ -216,8 +223,10 @@ Target pnpr. Do not add a feature to pnpm v11.
 1. Fix the install-critical field set and comparison rules. Add fixtures.
 2. Extend pnpr's publication staging and archive-reading code to derive and
    compare manifests, reusing the pnpm manifest implementation.
-3. Store the archive-derived manifest and input digests with the version.
-4. Generate version metadata from the stored archive-derived manifest.
+3. Write the archive-derived fields into the version's stored entry, with the
+   profile and input digests.
+4. Generate version metadata from that entry, and extend `pnpr verify` to
+   re-derive existing versions.
 
 Tests must cover mismatched dependencies, a script present only in the
 archive, ambiguous archive manifests, unsafe paths, bounded decoding, and
@@ -238,13 +247,9 @@ ordinary publication from a supported client is never rejected.
 
 ## Unresolved Questions and Bikeshedding
 
-- What is the complete install-critical field set, including absent-versus-empty
-  rules and shrinkwrap treatment?
-- Should verification be mandatory immediately, or opt-in per hosted registry
-  for an initial period? The survey above found no difference outside the
-  listed normalizations across 8,620 versions, which argues for mandatory once
-  they are in the profile.
-- Does the installer-selected build file stay `binding.gyp`, while npm's
-  `gypfile` step matches any `*.gyp`?
-- What diagnostics help publishers repair a rejected package?
-- How should operators handle existing hosted versions that fail re-derivation?
+None. Verification is mandatory: the survey found no difference outside the
+listed normalizations across 8,620 versions. The installer's build trigger stays
+a root `binding.gyp`; npm's broader `*.gyp` match only ever adds the accepted
+`node-gyp rebuild` difference. A rejection names the package, version, profile,
+and differing fields. What to do with an existing version that fails
+re-derivation stays the operator's decision, informed by `pnpr verify`.
