@@ -63,8 +63,40 @@ a grace period.
 
 pnpr handlers and resolvers depend on domain operations such as accepting a
 release, committing a publication, changing a tag, and reading a package view.
-Each backend owns its queries, migrations, and transaction mechanics. Remote
-SQL connections and vendor-specific types do not leak into registry handlers.
+Remote SQL connections and vendor-specific types do not leak into registry
+handlers.
+
+### Backend adapters
+
+The domain operations are implemented once, over SQL: the schema, the queries,
+removed-version refusal, generations, publication outcomes, and the render
+caches. The queries use the subset of SQL that SQLite, libSQL, and PostgreSQL
+share: plain inserts and selects, `ON CONFLICT`, and `RETURNING`. Under them, a
+small adapter per database supplies only what differs:
+
+- connecting from the configured URL;
+- starting a write transaction: `BEGIN IMMEDIATE` on SQLite and libSQL,
+  `SERIALIZABLE` on PostgreSQL;
+- recognizing a retryable conflict, such as `SQLITE_BUSY` or PostgreSQL's
+  serialization failure;
+- placeholders and column types, such as `?` against `$1` and `BLOB` against
+  `BYTEA`;
+- read freshness, where reads can come from a replica.
+
+The operator picks the database by URL, and every adapter must pass the same
+conformance suite before it is supported:
+
+```yaml
+metadata:
+  url: sqlite:./metadata.sqlite      # the default, embedded
+  # url: libsql://example.turso.io   # Turso
+  # url: postgres://db.internal/pnpr # PostgreSQL
+```
+
+SQLite and libSQL ship first; they share a dialect, so libSQL's adapter is
+little more than its connection. PostgreSQL follows when a deployment needs
+it. A per-package document store cannot be an adapter, because it has no
+transactions to start.
 
 ### Backend requirements
 
@@ -86,8 +118,8 @@ failures retry the whole transaction, preserving idempotency.
 
 Embedded SQLite is the initial target for single-instance deployments, and
 Turso the first shared backend (see below), subject to the conformance suite
-and workload tests. SQL syntax alone does not establish
-equivalent isolation, durability, or freshness.
+and workload tests. SQL syntax alone does not establish equivalent isolation,
+durability, or freshness.
 
 ### Shared deployments
 
