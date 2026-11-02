@@ -294,6 +294,10 @@ digest sha512-<base64>
 
 An OCI tag entry has `repository <repository>` and `tag <tag>` lines in place of
 `purl`. The `revision` line is omitted in an ecosystem without revisions.
+The bytes are UTF-8, and every line, including the last, ends in one LF. Each
+line after the first is a key, one space, and a value with no whitespace or
+control characters. `<n>` is decimal without leading zeros, and the digest is
+padded standard base64.
 
 - A log entry is the record's identity (its PURL, or an OCI tag's repository and
   tag), revision, profile, and digest. pnpr sequences it in the SQL metadata
@@ -416,6 +420,10 @@ with the inclusion proof:
 }
 ```
 
+`index` is the record's zero-based leaf index in the tree the checkpoint
+commits to, and `proof` is that leaf's inclusion proof, as in C2SP
+[tlog-proof](https://github.com/C2SP/C2SP/blob/main/tlog-proof.md).
+
 Adding a statement, a newer checkpoint, or a re-signature changes this
 response, not the record, so it is not immutable: its HTTP validator includes
 the evidence generation. It follows the record's access rules, including
@@ -485,8 +493,10 @@ not build: Ed25519 keys and top-level targets only, no delegated targets. A
 client fails closed on anything outside the profile. Every key the policy
 names, for checkpoints, witnesses, and statements, uses one encoding, the
 signed-note verifier key `<name>+<key hash>+<key>`, and a DSSE signature's
-`keyid` is its `<name>+<key hash>`. The policy names a set of checkpoint keys
-with a threshold, so a key rotation can overlap.
+`keyid` is its `<name>+<key hash>`. Checkpoint and statement keys use the
+signed-note Ed25519 type, and witness keys use the `cosignature/v1` type. The
+policy names a set of checkpoint keys with a threshold, so a key rotation can
+overlap.
 
 Root rotation follows TUF's sequential update procedure: each next root must
 meet both the previous root's threshold and its own threshold. Persist trusted
