@@ -440,10 +440,7 @@ pnpr did not see that publication. Its evidence is what the upstream provides,
 such as npm provenance, PEP 740 attestations, or OCI referrers, kept as it was
 fetched, and a trust policy evaluates a proxied package from that evidence, as
 it does without pnpr. Only the registry produces a publication statement;
-publisher-supplied fields with the same names are stripped. Synthetic imported
-publications provide historical links only: pnpr must not mint a publication
-statement or trusted-publisher rank from unverified imported identity fields.
-When original evidence is absent, publication evidence is unavailable.
+publisher-supplied fields with the same names are stripped.
 Its predicate is the
 artifact's introducing
 [publication](./0000-atomic-workspace-publication.md#publications),
@@ -759,8 +756,7 @@ distribution; verification must follow the selected artifact. Test ordinary key
 rotation and regeneration from authoritative publication records after a
 statement-key compromise. A forged envelope for an old record must not influence
 the regenerated publisher claim. Unavailable authoritative data must leave
-evidence unavailable. Imported historical publication links must never create
-trusted-publisher evidence.
+evidence unavailable.
 
 
 ## Prior Art
