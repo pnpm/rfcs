@@ -204,14 +204,28 @@ its timestamps; continue resolving from the split document and verified
 records under the active policy. For hosted packages, the full and split
 views must identify the same committed package generation (and catalog when
 snapshot reads are in use). For proxied packages, both views must derive from
-the same cached upstream document, identified by its upstream validator, such
-as its ETag. Carry that source validator separately from each representation's
-own ETag; full and split representations need not have equal ETags. If the
-upstream supplies no validator, use a digest of the cached source document as
-the shared identity. Retry a mismatched pair. A server without a consistent
-exact-time path returns an explicit capability error for that lookup. An
-actually unknown
-publish time remains unknown and follows `minimumReleaseAgeIgnoreMissingTime`.
+the same cached upstream document. Both responses MUST carry
+`PNPR-Source-Document: sha256-<base64>`, where the value is the SHA-256 digest
+of that cached upstream document's exact bytes after HTTP content decoding,
+encoded as standard padded Base64. The two views MUST carry the same value
+when used together. This source digest is distinct from each representation's
+own ETag; full and split representations need not have equal ETags. Upstream
+validators such as ETags still revalidate the source cache; using a digest on
+the client-facing path also covers missing or weak upstream validators.
+
+Capture the header value from the source snapshot used to render each view,
+not from the latest upstream state when serving a cached response. Caches
+retain the header beside the body. A 304 response MUST carry the source
+identity of the validated representation, which the client saves with its
+cached body. Clients compare identities only within the same declared
+registry and package. On a mismatch they MUST revalidate both views and
+retry, without evaluating older cutoffs from the mismatched pair. A missing
+or malformed header, or a pair that still differs after one revalidation
+attempt, is an explicit exact-time capability or consistency error; never
+combine the timestamps or silently approximate them. A server without a
+consistent exact-time path returns an explicit capability error for that
+lookup. An actually unknown publish time remains unknown and follows
+`minimumReleaseAgeIgnoreMissingTime`.
 Do not globally reject `minimumReleaseAge` values above 30 days, including
 when using other registries. Counting the window from the last publish rather
 than the current time keeps the document unchanged until the next publish,
@@ -551,7 +565,10 @@ time-based resolution with an older cutoff, and mismatched generations while
 fetching exact times; the graph must equal the unsplit representation's graph.
 For proxied packages, test an upstream refresh between the two reads, distinct
 representation ETags derived from one source validator, and a source document
-without an upstream validator. Mismatched source identities must be retried.
+without an upstream validator. Check the `PNPR-Source-Document` header on
+both representations and on 304 responses, retention beside cached bodies,
+missing and malformed headers, and retry exhaustion under concurrent upstream
+refreshes. Mismatched source identities must be retried without mixing views.
 
 ## Prior Art
 
