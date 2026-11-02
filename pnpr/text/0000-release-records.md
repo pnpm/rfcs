@@ -497,8 +497,9 @@ signed-note verifier key `<name>+<key hash>+<key>`, and a DSSE signature's
 signed-note Ed25519 type, `0x01`. Witness keys use `0x04`, the timestamped
 Ed25519 type of [tlog-cosignature](https://github.com/C2SP/C2SP/blob/main/tlog-cosignature.md),
 whose signed message starts with the `cosignature/v1` line. The
-policy names a set of checkpoint keys with a threshold, so a key rotation can
-overlap.
+policy names a set of checkpoint keys and a positive threshold, and a client
+accepts a checkpoint only with valid signatures from at least that many
+distinct keys in the set, so a key rotation can overlap.
 
 Root rotation follows TUF's sequential update procedure: each next root must
 meet both the previous root's threshold and its own threshold. Persist trusted
