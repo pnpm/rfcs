@@ -119,7 +119,10 @@ that mutates a separate authoritative package document would break the guarantee
    transaction outcome. Advance the catalog's
    current reference to the new generation in the same transaction, only if
    the reference still names the generation read in step 4; a mismatch rolls
-   back the transaction.
+   back the transaction. An embedded backend whose write transaction holds the
+   database's write lock from step 4 to commit, as SQLite's `BEGIN IMMEDIATE`
+   does, cannot see a mismatch and needs no explicit check; a shared backend
+   does.
 6. Commit the SQL transaction. This is the publication's commit point. A
    constraint or policy conflict rolls back the entire transaction. A lost
    commit acknowledgement requires outcome recovery before claiming success
@@ -178,33 +181,40 @@ and outlives the transaction; the key identifies one attempt. A client that
 lost the response can still find its transaction by name through the
 publications route.
 
-Recovering a committed outcome is a read, not a mutation. When a retry
-matches a committed transaction, pnpr returns the recorded outcome to the
-same stable principal without requiring its current publish permission, so a
-permission revoked after commit but before the response arrived does not hide
-the result. Authentication is still required, and any request that would
-mutate is authorized against current permissions as usual.
+Recovering a committed outcome is a read, not a mutation. pnpr looks the outcome
+up by principal, key, and request digest before it routes or authorizes the
+request; reusing a key for a different request is detected inside the commit,
+scoped to the catalog. When a retry matches a committed transaction, pnpr
+returns the recorded outcome to the same stable principal without requiring its
+current publish permission, so a permission revoked after commit but before the
+response arrived does not hide the result. Authentication is still required,
+the outcome is returned only if the principal can currently read the catalog,
+as for any status query, and any request that would mutate is authorized
+against current permissions as usual.
 
 Existing npm clients send no idempotency key, and npm, pnpm, and lerna retry
 a timed-out publish. For a single-package publication without a key, the
-request's content is the key: a publication of `name@version` whose archive
-integrity and accepted manifest equal the committed release returns the
-recorded success, not a conflict. The match covers the whole request: the
-same archive with different tag changes is a conflict, not a replay. A
-different archive for the same version is still a conflict.
+request's content is the key: a retry whose whole-request digest, defined
+below, equals the committed one returns the recorded success, not a conflict.
+The same archive with a different tag change or version note is a conflict,
+not a replay, and so is a different archive for the same version.
 
-A batch without a key is keyed the same way, by a digest over every entry's
-identity, archive integrity, accepted manifest, and version note, the
-publication name and publication note, and every tag or revision-selection
-change in the request. An entry's identity is every field of its publication
-member: registry, ecosystem, name, version, and revision where applicable, plus
-a Python distribution's filename and an OCI manifest's repository, so two
-requests that differ only in which package or file an archive is published as
-never share a digest. Note absence and note text are distinct digest inputs;
-notes are not part of the accepted manifest. This whole-request rule also
-applies to a single-package publication without a key. A retry with the same
-digest returns the recorded outcome; a request that shares versions with a
-committed batch but has a different digest is a conflict.
+A batch without a key is keyed the same way, by a digest over the whole request:
+its canonical JSON with sorted keys and its archives' integrities, so it covers
+every entry's identity, archive integrity, accepted manifest, and version note,
+the publication name and publication note, and every tag or revision-selection
+change in the request. A retry that differs in any field, even one outside
+install metadata such as a README, is a new request, not a replay. An entry's
+identity is every field of its publication member: registry, ecosystem, name,
+version, and revision where applicable, plus a Python distribution's filename
+and an OCI manifest's repository, so two requests that differ only in which
+package or file an archive is published as never share a digest. Note absence
+and note text are distinct digest inputs; notes are not part of the accepted
+manifest. This whole-request rule also applies to a single-package publication
+without a key. A retry with the same digest returns the recorded outcome; a
+request that reuses a committed member identity with a different digest is a
+conflict. A later Python upload of a new distribution filename for an existing
+version has a new member identity, so it is a new publication, not a conflict.
 
 A timed-out commit has an unknown outcome to the client. The client queries or
 retries the same transaction to learn its durable state. Idempotency results
@@ -254,8 +264,11 @@ artifact belongs to the publication that introduced that artifact. These
 coincide for npm and Cargo, but Python permits later distribution uploads
 for an existing version. A publication has:
 
-- an identifier that pnpr assigns, and optionally a name the publisher
-  chooses, such as `v12.0.0`, unique within the organization;
+- an identifier, which is the catalog generation the transaction committed:
+  it is unique in the organization and ordered with every other commit, so no
+  second sequence is needed; and optionally a name the publisher chooses, such
+  as `v12.0.0`, unique within the organization. A name is never a decimal
+  number, so a route segment reads as one or the other;
 - its members: registry, ecosystem, name, version, revision where applicable,
   and the accepted artifact identity. A Python member names its distribution
   filename and digest; an OCI member names its repository and manifest digest.
@@ -265,19 +278,11 @@ for an existing version. A publication has:
   a workload identity, the commit time, and the catalog generation it
   created.
 
-All of this is fixed at commit. Versions published before publications are
-recorded receive initial publications when the catalog is first built: each
-existing version becomes a synthetic publication containing its known artifacts,
-with its publish time and, where pnpr
-recorded one, its publisher, and with no name. Versions of an earlier
-batch become separate publications too; grouping them would need a record
-of the batch that the storage does not promise to keep. Synthetic publications
-are marked as imported history, not evidence that all of a version's files
-originally arrived in one transaction. The initial
-publication invariant holds for every version, old or new. Tag moves and
-revision
-selections that commit alone are transactions but not publications; they
-change selections, not the set of published versions.
+All of this is fixed at commit, and every version has its initial publication:
+pnpr is experimental and has no versions from before publications to backfill.
+Tag moves and revision selections that commit alone are
+transactions but not publications; they change selections, not the set of
+published versions.
 
 A publication belongs to no single ecosystem, so it is served from the
 server root rather than an ecosystem's prefix:
@@ -287,23 +292,15 @@ GET <pnpr>/-/publications/<org>/<id-or-name>
 GET <pnpr>/-/publications/<org>?member=<ecosystem>:<name>@<version>
 ```
 
-The second form finds the initial publication of one package version.
-For Python it also accepts `filename=<filename>` to find the publication
-that introduced that distribution. Each distribution record and its publication
-evidence refer to that introducing publication; later uploads do not rewrite
-the initial publication or another file's evidence. For imported history,
-the lookup returns a best-known historical link marked `origin: imported`,
-not a claim that this transaction introduced the distribution. Such a link
-must not produce a verified publication statement or a trusted-publisher rank.
-Where original introduction evidence is unavailable, report it as unavailable;
-known historical publisher fields remain explicitly unverified observations.
-The same restriction applies to synthetic publications in every ecosystem.
-A caller sees only the members whose packages it may read, and a publication
-with none
-answers `404`, so a publication never discloses a package to a caller who
-cannot read it. A version's entry in an ecosystem view may name its
-publication where the view has room for it, as pnpr's release record does
-with a `publication` field.
+The second form finds the initial publication of one package version. For Python
+it also accepts `filename=<filename>` to find the publication that introduced
+that distribution. Each distribution record and its publication evidence refer
+to that introducing publication; later uploads do not rewrite the initial
+publication or another file's evidence. A caller sees only the members whose
+packages it may read, and a publication with none answers `404`, so a
+publication never discloses a package to a caller who cannot read it. A
+version's entry in an ecosystem view may name its publication where the view has
+room for it, as pnpr's release record does with a `publication` field.
 
 Publications give a release a place for what belongs to the whole set rather
 than one package, such as its
