@@ -184,52 +184,31 @@ A minimum release age filters versions by their publish time before it
 picks one, but it only needs to know whether a version is younger than the
 cutoff. So an entry carries its time only if the version was published within
 a window before the package's last publish, 30 days by default, and
-`timesSince` says where that window starts. An entry without `time` was
-published before `timesSince`; this is an upper bound, not its publication
-timestamp. The client uses the bound only when it suffices for the cutoff,
-and otherwise fetches exact times as described below.
+`timesSince` says where that window starts. An entry without `time` is known
+to have been published before `timesSince`; that is an upper bound, not its
+exact publication timestamp. An explicit `time: null` remains unknown.
 
-A registry can make the window longer, which costs bytes, but not shorter
-than 30 days. This is a compression choice, not a limit on client policy.
-For a cutoff at or after `timesSince`, every omitted time is old enough.
-For an earlier cutoff, an omitted time is an upper bound, not an exact time;
-the client must obtain exact times before deciding which versions qualify.
-The same rule applies to time-based resolution. Substituting `timesSince`
-for an unknown older time can change the dependency graph, so it is not an
-acceptable approximation.
+The format supports `minimumReleaseAge` values up to 30 days (43200 minutes).
+A registry may retain a longer window, but clients do not depend on that.
+Because the window ends at the last publish rather than now, `timesSince`
+is at least 30 days ago, so every omitted time is old enough for any supported
+release-age policy. A larger policy is an explicit unsupported-setting error
+when consuming this format; it does not trigger another metadata read. This
+limit does not change release-age support for other registry formats.
 
-Clients needing earlier times fetch the existing full package document's
-`time` map, with ordinary conditional GET caching and access rules. Use only
-its timestamps; continue resolving from the split document and verified
-records under the active policy. For hosted packages, the full and split
-views must identify the same committed package generation (and catalog when
-snapshot reads are in use). For proxied packages, both views must derive from
-the same cached upstream document. Both responses MUST carry
-`PNPR-Source-Document: sha256-<base64>`, where the value is the SHA-256 digest
-of that cached upstream document's exact bytes after HTTP content decoding,
-encoded as standard padded Base64. The two views MUST carry the same value
-when used together. This source digest is distinct from each representation's
-own ETag; full and split representations need not have equal ETags. Upstream
-validators such as ETags still revalidate the source cache; using a digest on
-the client-facing path also covers missing or weak upstream validators.
+[Time-based resolution](https://pnpm.io/settings#resolutionmode) uses
+`timesSince` as the effective time of an entry whose time was omitted. It
+picks a subdependency published before the newest of the direct dependencies.
+For a cutoff at or after `timesSince`, the result is exact. For an earlier
+cutoff, qualifying older versions can appear newer than the cutoff, so pnpm
+uses its existing behavior for a package with no version before that cutoff.
+This is a deliberate approximation outside the retained window and can
+produce a different graph from full historical timestamps. The format does
+not promise exact time-based resolution outside that window or fetch another
+document to reconstruct it.
 
-Capture the header value from the source snapshot used to render each view,
-not from the latest upstream state when serving a cached response. Caches
-retain the header beside the body. A 304 response MUST carry the source
-identity of the validated representation, which the client saves with its
-cached body. Clients compare identities only within the same declared
-registry and package. On a mismatch they MUST revalidate both views and
-retry, without evaluating older cutoffs from the mismatched pair. A missing
-or malformed header, or a pair that still differs after one revalidation
-attempt, is an explicit exact-time capability or consistency error; never
-combine the timestamps or silently approximate them. A server without a
-consistent exact-time path returns an explicit capability error for that
-lookup. An actually unknown publish time remains unknown and follows
-`minimumReleaseAgeIgnoreMissingTime`.
-Do not globally reject `minimumReleaseAge` values above 30 days, including
-when using other registries. Counting the window from the last publish rather
-than the current time keeps the document unchanged until the next publish,
-so it caches as well as today's.
+Counting the window from the last publish rather than the current time keeps
+the document unchanged until the next publish, so it caches as well as today's.
 
 The times are most of the size of the entries without a manifest. For 8
 popular packages (react, typescript, `@types/node`, next, eslint, webpack,
@@ -366,9 +345,9 @@ A client that opts in:
 
 1. Reads every entry into its list of versions, with their deprecations
    and trust ranks, and picks a version as today. An entry without a `time`
-   field is known to predate `timesSince`; that bound suffices only for a
-   cutoff at or after it. Earlier cutoffs fetch exact times as above. An entry
-   with `time: null` has an unknown
+   field is known to be old enough for every supported minimum release age;
+   time-based resolution uses `timesSince` as its effective time as above.
+   An entry with `time: null` has an unknown
    publish time and goes through `minimumReleaseAgeIgnoreMissingTime`, as a
    missing time does today.
 2. If the picked version has no manifest in the document, fetches its
@@ -532,17 +511,16 @@ one function every pick goes through.
    manifest and of `+rN` overrides, cache them on disk, and keep these
    documents in a metadata cache directory of their own. Warn about an
    undeclared registry that sends `pnpr-registry`.
-4. pnpm: fetch consistent exact publish times when a release-age or time-based
-   cutoff predates `timesSince`, without imposing a global 30-day policy limit.
+4. pnpm: reject a `minimumReleaseAge` above 30 days (43200 minutes) when
+   consuming this format, with an explicit unsupported-setting error.
 5. pnpm: when the user points pnpm at a registry that does not serve the type,
    nothing changes, since it answers with the abbreviated document.
 
 Tests must cover an entry without a manifest, with and without flags; npm's
 documents of the same package (no pnpr facts); one with a time
-inside the window (filtered by it), one without a time (passes a cutoff at or
-after `timesSince`, and fetches
-exact times for an earlier cutoff), and one with a `null` time (handled as a
-missing time, passing
+inside the window (filtered by it), one without a time (passes every supported
+minimum release age), and one with a `null` time (handled as a missing time,
+passing
 or failing with `minimumReleaseAgeIgnoreMissingTime`); a caller-gated package
 (its records and document are `private, no-store`); a public package made
 caller-gated (its records are purged, or the change is refused); a
@@ -560,15 +538,10 @@ pick of a likely pick (no second request), a pick under `overrides` and under
 time-based resolution (one request), a trust downgrade detected across
 versions with and without a manifest, a document under the threshold (every
 version has its manifest), an older pnpm sharing the home directory, and a frozen
-install that reads no metadata. Also test a 60-day release-age policy,
-time-based resolution with an older cutoff, and mismatched generations while
-fetching exact times; the graph must equal the unsplit representation's graph.
-For proxied packages, test an upstream refresh between the two reads, distinct
-representation ETags derived from one source validator, and a source document
-without an upstream validator. Check the `PNPR-Source-Document` header on
-both representations and on 304 responses, retention beside cached bodies,
-missing and malformed headers, and retry exhaustion under concurrent upstream
-refreshes. Mismatched source identities must be retried without mixing views.
+install that reads no metadata. Also test the 30-day release-age boundary,
+a larger policy rejected when consuming this format, and time-based cutoffs
+on either side of `timesSince`, including the documented approximation for an
+older cutoff. None of these cases fetches a second document for timestamps.
 
 ## Prior Art
 
