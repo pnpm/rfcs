@@ -443,11 +443,12 @@ packages:
       type: variations
       variants:
         - resolution:
-            integrity: sha512-<linux-x64 musl digest>
+            integrity: sha512-<darwin universal digest>
           targets:
-            - os: linux
+            - os: darwin
+              cpu: arm64
+            - os: darwin
               cpu: x64
-              libc: musl
         - resolution:
             integrity: sha512-<linux-x64 glibc digest>
           targets:
@@ -456,12 +457,11 @@ packages:
               libcVersion: '2.17'
               napi: 8
         - resolution:
-            integrity: sha512-<darwin universal digest>
+            integrity: sha512-<linux-x64 musl digest>
           targets:
-            - os: darwin
+            - os: linux
               cpu: x64
-            - os: darwin
-              cpu: arm64
+              libc: musl
       fallback:
         integrity: sha512-<primary digest>
 ```
