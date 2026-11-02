@@ -93,7 +93,9 @@ equivalent isolation, durability, or freshness.
 
 `package_key` abbreviates `(catalog, ecosystem, name)`: the hosted catalog,
 which is the organization's storage, not the registry route, since registries
-that share an organization already share its storage. `revision_key` is
+that share an organization already share its storage. These relations hold
+only hosted packages, never proxied ones, and a catalog has one log, so the
+catalog already identifies the registry whose bytes a row records. `revision_key` is
 `ordinary` outside the revision protocol, or `rN` for an explicit registry
 revision, including `r0`; it is an internal key, not new version syntax.
 

@@ -194,11 +194,10 @@ against current permissions as usual.
 
 Existing npm clients send no idempotency key, and npm, pnpm, and lerna retry
 a timed-out publish. For a single-package publication without a key, the
-request's content is the key: a publication of `name@version` whose archive
-integrity and accepted manifest equal the committed release returns the
-recorded success, not a conflict. The match covers the whole request: the
-same archive with different tag changes is a conflict, not a replay. A
-different archive for the same version is still a conflict.
+request's content is the key: a retry whose whole-request digest, defined
+below, equals the committed one returns the recorded success, not a conflict.
+The same archive with a different tag change or version note is a conflict,
+not a replay, and so is a different archive for the same version.
 
 A batch without a key is keyed the same way, by a digest over the whole request:
 its canonical JSON with sorted keys and its archives' integrities, so it covers
