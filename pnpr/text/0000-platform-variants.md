@@ -558,18 +558,18 @@ as a new `lockfileVersion`.
   so CLIs need no spawning shim.
 - `supportedArchitectures` decides which variants are fetched into the store,
   for `pnpm fetch`, Docker images, and Lambda bundles: every variant that
-  matches one of its platforms, and the primary when one of those platforms
-  matches none. For a platform other than the host, a variant matches when its
-  `os`, `cpu`, and `libc` match, whatever its floors and ABI, unless the
-  platform states them: fetching an archive the eventual host cannot use only
-  costs disk, while skipping the one it needs makes an offline install fail. Its
-  list form names each platform; its `os`, `cpu`, and `libc` form stands for
-  every combination of its values. Only one variant can be linked under a
-  package's name. The linked one is the host's, or, if `supportedArchitectures`
-  lists exactly one platform and omits `current`, that platform's, chosen by the
-  linking rule: a variant whose floor or ABI that platform does not state is not
-  linked, so a Lambda bundle built on another machine names its target's floors,
-  such as `linux-x64-manylinux_2_26`.
+  matches one of its platforms, and the primary when no variant can be linked
+  for one of those platforms under the linking rule below. For a platform other
+  than the host, a variant matches when its `os`, `cpu`, and `libc` match,
+  whatever its floors and ABI, unless the platform states them: fetching an
+  archive the eventual host cannot use only costs disk, while skipping the one
+  it needs makes an offline install fail. Its list form names each platform; its
+  `os`, `cpu`, and `libc` form stands for every combination of its values. Only
+  one variant can be linked under a package's name. The linked one is the
+  host's, or, if `supportedArchitectures` lists exactly one platform and omits
+  `current`, that platform's, chosen by the linking rule: a variant whose floor
+  or ABI that platform does not state is not linked, so a Lambda bundle built on
+  another machine names its target's floors, such as `linux-x64-manylinux_2_26`.
 - For a package with variants, the installer walks the selected variant's
   snapshot (`<name>@<version>/variants/<tag>`, falling back to
   `<name>@<version>`), or `<name>@<version>` when the primary archive is
@@ -837,8 +837,9 @@ overlaps, implicit versus explicit glibc, rejected score ties, and missing or
 incompatible `acceptedLockfileFormats`. Unsupported clients must receive the
 existing incompatibility error without a downgraded lockfile. Also cover
 `supportedArchitectures` naming another platform without floors: every variant
-matching its `os`, `cpu`, and `libc` is fetched, and none with a floor is
-linked for it.
+matching its `os`, `cpu`, and `libc` is fetched, none with a floor is linked
+for it, and the primary is fetched and linked when no variant without a floor
+matches it.
 
 ## Prior Art
 

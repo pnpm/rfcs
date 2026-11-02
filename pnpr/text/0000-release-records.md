@@ -314,20 +314,21 @@ an upstream. It holds digests and identities, not records. Raw entry tiles
 therefore disclose package names and versions. Registry authentication alone
 is insufficient when two packages in that registry have different readers.
 
-Entry-data tiles and bulk enumeration use the existing package read policy:
-a caller must be authorized to read every entry returned. Deny a whole tile
-when it contains an unauthorized entry; do not serve a filtered tile that
-would fail log verification. They are public only for a log
-that contains exclusively public identities and whose operator has committed
-to keeping that history public. Ordinary readers obtain their authorized leaf
-and its inclusion proof from the package's evidence route, and checkpoints
-and hash tiles for consistency verification; they never receive neighboring
-leaves in a data tile. These proof-only reads still reveal log size and
-activity,
-and leaf hashes can permit guesses of predictable entries. Deployments needing
-isolation of those facts must use separate named registries and logs per
-confidentiality boundary. Full-log monitors are trusted with all its identities;
-witnessing append-only growth alone does not detect duplicate identities.
+Entry-data tiles and bulk enumeration use the existing package read policy at
+the scope of the whole log: a caller may read them only when it may read every
+package the log can hold, such as an organization owner or a full-log monitor.
+Deciding per tile would leak, since a caller could tell a tile it is refused
+from one it is served and so locate unreadable entries. They are public only for
+a log that contains exclusively public identities and whose operator has
+committed to keeping that history public. Ordinary readers obtain their
+authorized leaf and its inclusion proof from the package's evidence route, and
+checkpoints and hash tiles for consistency verification; they never receive
+neighboring leaves in a data tile. These proof-only reads still reveal log size
+and activity, and leaf hashes can permit guesses of predictable entries.
+Deployments needing isolation of those facts must use separate named registries
+and logs per confidentiality boundary. Full-log monitors are trusted with all
+its identities; witnessing append-only growth alone does not detect duplicate
+identities.
 
 A log that has published entry data cannot make that history secret through
 a cache purge. Changing package visibility gates future package reads, but
@@ -704,20 +705,21 @@ private records cannot be read through digest paths.
 ### Cross-feature conformance cases
 
 Test restricted readers of two packages in one log: neither data tiles nor
-lookup routes may reveal the other's identity. Test an authorized full-log
-monitor independently from a hash-only witness. Exercise commit followed by
-integration or witness failure and recovery without duplicate publication.
-Test a root signed only by the old threshold, expired timestamp metadata,
-policy rollback, and a fresh installation after key rotation. A forged
-publication statement for an old logged record must not become trusted through
-re-signing after a key compromise. Python tests
-must cover wheels of one version with different dependencies and a dynamic
-source distribution; verification must follow the selected artifact. Test
-ordinary key rotation and regeneration from authoritative publication records
-after a statement-key compromise. A forged envelope for an old record must
-not influence the regenerated publisher claim. Unavailable authoritative data
-must leave evidence unavailable. Imported historical publication links must
-never create trusted-publisher evidence.
+lookup routes may reveal the other's identity, and a reader of one package gets
+the same refusal for every data tile, whether or not the tile holds a private
+entry. Test an authorized full-log monitor independently from a hash-only
+witness. Exercise commit followed by integration or witness failure and recovery
+without duplicate publication. Test a root signed only by the old threshold,
+expired timestamp metadata, policy rollback, and a fresh installation after key
+rotation. A forged publication statement for an old logged record must not
+become trusted through re-signing after a key compromise. Python tests must
+cover wheels of one version with different dependencies and a dynamic source
+distribution; verification must follow the selected artifact. Test ordinary key
+rotation and regeneration from authoritative publication records after a
+statement-key compromise. A forged envelope for an old record must not influence
+the regenerated publisher claim. Unavailable authoritative data must leave
+evidence unavailable. Imported historical publication links must never create
+trusted-publisher evidence.
 
 
 ## Prior Art
