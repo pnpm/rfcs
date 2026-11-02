@@ -66,10 +66,11 @@ For a hosted npm publication, pnpr:
    stored entry, with a record of the profile and the exact byte digests of
    the archive manifest and shrinkwrap, if present.
 
-A hosted version's entry is immutable after publication except for its
-deprecation, so the stored entry is the accepted metadata: responses are
-generated from it, never from the submitted document, and no separate copy of
-the derived manifest is kept.
+The stored archive-derived fields, profile, and input digests are the accepted
+metadata and are insert-only. Mutable version state, such as deprecation and a
+selected registry revision, is kept beside them. Responses combine the two and
+are never generated from the submitted document, and no separate copy of the
+derived manifest is kept.
 
 ### Install-critical fields
 
@@ -192,13 +193,16 @@ stores the result as a new immutable accepted manifest beside the existing one.
 It never overwrites accepted metadata. Until a second profile exists, recording
 the profile with each version is enough. Once one does, which profile a response
 uses is an explicit selection, and a client that does not support it gets a
-capability error.
+capability error. The RFC that adds the second profile defines the request
+signal and puts the profile in the response's URL or cache key, so a shared
+cache never serves one profile's metadata for another.
 
 ### Existing hosted versions
 
-Versions published before this check have not been verified. `pnpr verify`,
-which already walks every hosted version and its stored archive, re-derives
-their manifests and reports disagreements to operators. Whether such versions
+Versions published before this check have not been verified. `pnpr verify`
+already walks every hosted version and its stored archive. It is extended to
+re-derive each version's manifest under the recorded profile, compare it with
+the accepted metadata, and report disagreements to operators. Whether such versions
 are then served from archive-derived metadata, blocked, or left as-is is an
 operator decision.
 
