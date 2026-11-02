@@ -121,11 +121,10 @@ The npm full, abbreviated, and exact-version responses are views over accepted
 versions and mutable state.
 
 - Cache per-version rendered fragments keyed by catalog, package, version,
-  revision, the generation that accepted the version, interpretation profile,
-  representation, renderer version, and, for a representation that embeds
-  mutable state, annotation generation. The accepted generation keeps a
-  version that was unpublished and published again with different content
-  from being served a fragment of its earlier bytes. A tag change reuses all
+  revision, interpretation profile, representation, renderer version, and,
+  for a representation that embeds mutable state, annotation generation. A
+  version and revision always name the same bytes, because an unpublished
+  version is tombstoned and never accepted again. A tag change reuses all
   fragments; a new release renders one new fragment; a deprecation re-renders
   one full-document fragment.
 - Large documents are also served in a [split form](0000-split-packuments.md),
