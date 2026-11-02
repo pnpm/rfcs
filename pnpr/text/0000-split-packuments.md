@@ -503,8 +503,8 @@ one function every pick goes through.
 
 1. pnpr: serve the new format under the new media type with `Vary: Accept`,
    with the likely-picks rule, a configurable threshold, and a configurable
-      publish-time window of at least 30 days (30 by default), deciding the split
-   from the document on every read.
+      publish-time window of at least 30 days (30 by default), deciding the
+   split from the document on every read.
 2. pnpr: serve release records at `<name>/<version>+r<revision>` for every
    accepted revision, with immutable caching, and remove `dist.pnpr`,
    `variants`, any variant declarations pnpr stores with a version,
