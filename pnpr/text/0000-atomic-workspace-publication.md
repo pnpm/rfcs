@@ -212,8 +212,9 @@ package or file an archive is published as never share a digest. Note absence
 and note text are distinct digest inputs; notes are not part of the accepted
 manifest. This whole-request rule also applies to a single-package publication
 without a key. A retry with the same digest returns the recorded outcome; a
-request that shares versions with a committed batch but has a different digest
-is a conflict.
+request that reuses a committed member identity with a different digest is a
+conflict. A later Python upload of a new distribution filename for an existing
+version has a new member identity, so it is a new publication, not a conflict.
 
 A timed-out commit has an unknown outcome to the client. The client queries or
 retries the same transaction to learn its durable state. Idempotency results
@@ -266,7 +267,8 @@ for an existing version. A publication has:
 - an identifier, which is the catalog generation the transaction committed:
   it is unique in the organization and ordered with every other commit, so no
   second sequence is needed; and optionally a name the publisher chooses, such
-  as `v12.0.0`, unique within the organization;
+  as `v12.0.0`, unique within the organization. A name is never a decimal
+  number, so a route segment reads as one or the other;
 - its members: registry, ecosystem, name, version, revision where applicable,
   and the accepted artifact identity. A Python member names its distribution
   filename and digest; an OCI member names its repository and manifest digest.
