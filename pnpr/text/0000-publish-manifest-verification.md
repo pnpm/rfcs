@@ -69,8 +69,12 @@ For a hosted npm publication, pnpr:
 The stored archive-derived fields, profile, and input digests are the accepted
 metadata and are insert-only. Mutable version state, such as deprecation and a
 selected registry revision, is kept beside them. Responses combine the two and
-are never generated from the submitted document, and no separate copy of the
-derived manifest is kept.
+are never generated from the submitted document. In
+[SQL storage](./0000-sql-metadata-storage.md), the accepted metadata is the
+version's `accepted_manifests` row, beside the `versions` row that holds the
+published archive's integrity, and the
+[release record](./0000-release-records.md) is rendered from both, with its
+complete `inputs`. No second serialization of the derived manifest is kept.
 
 ### Install-critical fields
 
