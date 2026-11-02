@@ -180,6 +180,10 @@ by its `manifest`, not by its `integrity`.
 
 ### Publish times
 
+Publish times that the document coarsens, as npm's abbreviated document does,
+are coarsened relative to the package's last publish, never the current time, so
+the document changes only when the package is published to.
+
 A minimum release age filters versions by their publish time before it
 picks one, but it only needs to know whether a version is younger than the
 cutoff. So an entry carries its time only if the version was published within
@@ -334,10 +338,10 @@ manifests. Below it, every entry has one: leaving manifests out saves little
 there and would cost a request for every package whose resolution picks an
 older version. The prototype used 64 KiB of serialized JSON.
 
-Once a package's document crosses the threshold, it stays split, even if it
-shrinks below it again (after an unpublish, for example). A document that
-flips between the two near the threshold would change for clients on every
-publish, for no saving. pnpr records the decision with the package.
+pnpr decides from the document on every read and records nothing. A publish only
+grows the document, so it cannot flip it back below the threshold; only an
+unpublish, or a removed deprecation or tag, can, and clients read both forms the
+same way.
 
 ### Client behavior
 
@@ -499,8 +503,8 @@ one function every pick goes through.
 
 1. pnpr: serve the new format under the new media type with `Vary: Accept`,
    with the likely-picks rule, a configurable threshold, and a configurable
-   publish-time window of at least 30 days (30 by default), and record that a
-   package is split.
+      publish-time window of at least 30 days (30 by default), deciding the split
+   from the document on every read.
 2. pnpr: serve release records at `<name>/<version>+r<revision>` for every
    accepted revision, with immutable caching, and remove `dist.pnpr`,
    `variants`, any variant declarations pnpr stores with a version,
