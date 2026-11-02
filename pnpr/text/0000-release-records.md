@@ -200,7 +200,9 @@ record, since an OCI Package URL names an image by digest rather than a tag.
 Each time the tag is set, pnpr writes a record whose `revision` counts the
 settings, starting at 0. Its `purl` is the image it points at, in the OCI
 type's form: the last segment of the repository as the name, the manifest
-digest as the version, and the repository and tag as qualifiers.
+digest as the version, and the tag as a qualifier. It has no `repository_url`
+qualifier, because the host depends on how the registry is reached; the record's
+`repository` field and the log's registry identity locate the image.
 
 ```json
 {
@@ -209,7 +211,7 @@ digest as the version, and the repository and tag as qualifiers.
   "tag": "1.0",
   "revision": 3,
   "interpretation": "oci-tag/1",
-  "purl": "pkg:oci/app@sha256:<manifest digest>?repository_url=registry.example%2Facme%2Fapp&tag=1.0"
+  "purl": "pkg:oci/app@sha256:<manifest digest>?tag=1.0"
 }
 ```
 
