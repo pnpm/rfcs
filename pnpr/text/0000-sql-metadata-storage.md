@@ -76,7 +76,7 @@ small adapter per database supplies only what differs:
 
 - connecting from the configured URL;
 - starting a write transaction: `BEGIN IMMEDIATE` on SQLite and libSQL,
-  `SERIALIZABLE` on PostgreSQL;
+  `BEGIN ISOLATION LEVEL SERIALIZABLE` on PostgreSQL;
 - recognizing a retryable conflict, such as `SQLITE_BUSY` or PostgreSQL's
   serialization failure;
 - placeholders and column types, such as `?` against `$1` and `BLOB` against
@@ -93,10 +93,11 @@ metadata:
   # url: postgres://db.internal/pnpr # PostgreSQL
 ```
 
-SQLite and libSQL ship first; they share a dialect, so libSQL's adapter is
-little more than its connection. PostgreSQL follows when a deployment needs
-it. A per-package document store cannot be an adapter, because it has no
-transactions to start.
+SQLite and libSQL ship first; they share a dialect. The libSQL adapter also
+chooses between the primary and the embedded replica by the freshness rules in
+[Shared deployments](#shared-deployments); an adapter without replicas reads
+the primary. PostgreSQL follows when a deployment needs it. A per-package
+document store cannot be an adapter, because it has no transactions to start.
 
 ### Backend requirements
 
@@ -150,17 +151,23 @@ metadata implementation with two connection modes, a local file or a libSQL
 primary with its replica. Writes run as `BEGIN IMMEDIATE` transactions on the
 primary, so commits stay serialized as they are on one disk. A replica lags the
 primary by up to its sync interval, so a read that must be current (a version
-just published, a generation a client sent as its minimum, an authorization
-check) goes to the primary or waits until the replica has synced past the
-generation it needs; other reads may use the replica within its freshness
-bound.
+just published, or a generation a client sent as its minimum) goes to the
+primary or waits until the replica has synced past the generation it needs. An
+authorization check always reads the primary, since a policy revoked after the
+generation a client knows would not be covered by waiting for that generation.
+Other reads may use the replica within its freshness bound.
 
 A primary serializes its writes, which caps one database's commit rate at its
 round trip to the primary. Publications and tag moves are rare next to reads,
 and reads scale with replicas and the generated-view caches. A deployment that
 outgrows one primary gives each hosted catalog its own database: a catalog is
 already the transaction boundary, generations of different catalogs are never
-compared, and no transaction spans two catalogs.
+compared, and no transaction spans two catalogs. The metadata URL then contains
+a `{catalog}` placeholder, such as `libsql://pnpr-{catalog}.example.turso.io`,
+and pnpr opens a catalog's database on first use and keeps its connection.
+Moving a catalog between databases follows [Backend
+replacement](#backend-replacement): a quiesced export and import of that one
+catalog.
 
 Once Turso passes the conformance suite, pnpr removes its per-package document
 metadata, so every deployment has one metadata model and every feature built
