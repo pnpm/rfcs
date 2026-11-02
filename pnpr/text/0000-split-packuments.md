@@ -184,27 +184,31 @@ A minimum release age filters versions by their publish time before it
 picks one, but it only needs to know whether a version is younger than the
 cutoff. So an entry carries its time only if the version was published within
 a window before the package's last publish, 30 days by default, and
-`timesSince` says where that window starts. An entry without `time` was
-published before `timesSince`, and the client treats it as published at
-`timesSince`.
+`timesSince` says where that window starts. An entry without `time` is known
+to have been published before `timesSince`; that is an upper bound, not its
+exact publication timestamp. An explicit `time: null` remains unknown.
 
-A registry can make the window longer, which costs bytes, but not shorter
-than 30 days: pnpm accepts a minimum release age of at most 30 days. The window ends at
-the last publish, which is never later than now, so `timesSince` is at least
-30 days ago and every version without a time is old enough for any cutoff
-pnpm accepts.
+The format supports `minimumReleaseAge` values up to 30 days (43200 minutes).
+A registry may retain a longer window, but clients do not depend on that.
+Because the window ends at the last publish rather than now, `timesSince`
+is at least 30 days ago, so every omitted time is old enough for any supported
+release-age policy. A larger policy is an explicit unsupported-setting error
+when consuming this format; it does not trigger another metadata read. This
+limit does not change release-age support for other registry formats.
 
-[Time-based resolution](https://pnpm.io/settings#resolutionmode) treats a
-version without a time as published at `timesSince` too. It picks a
-subdependency published before the newest of the direct dependencies, and
-for a cutoff at or after `timesSince` the result is exact. For an earlier
-cutoff, when the package was published to more than the window after it, the
-versions published before the cutoff have no time, so they look newer than
-it, and pnpm resolves the package as it does when no version was published
-before the cutoff. This is accepted: time-based resolution is rarely used, and
-it stays exact within the window. Counting the window from the last publish rather than from the
-current time keeps the document unchanged until the next publish, so it
-caches as well as today's.
+[Time-based resolution](https://pnpm.io/settings#resolutionmode) uses
+`timesSince` as the effective time of an entry whose time was omitted. It
+picks a subdependency published before the newest of the direct dependencies.
+For a cutoff at or after `timesSince`, the result is exact. For an earlier
+cutoff, qualifying older versions can appear newer than the cutoff, so pnpm
+uses its existing behavior for a package with no version before that cutoff.
+This is a deliberate approximation outside the retained window and can
+produce a different graph from full historical timestamps. The format does
+not promise exact time-based resolution outside that window or fetch another
+document to reconstruct it.
+
+Counting the window from the last publish rather than the current time keeps
+the document unchanged until the next publish, so it caches as well as today's.
 
 The times are most of the size of the entries without a manifest. For 8
 popular packages (react, typescript, `@types/node`, next, eslint, webpack,
@@ -341,8 +345,9 @@ A client that opts in:
 
 1. Reads every entry into its list of versions, with their deprecations
    and trust ranks, and picks a version as today. An entry without a `time`
-   field is recorded as published at `timesSince`, so it passes any minimum
-   release age pnpm accepts. An entry with `time: null` has an unknown
+   field is known to be old enough for every supported minimum release age;
+   time-based resolution uses `timesSince` as its effective time as above.
+   An entry with `time: null` has an unknown
    publish time and goes through `minimumReleaseAgeIgnoreMissingTime`, as a
    missing time does today.
 2. If the picked version has no manifest in the document, fetches its
@@ -506,14 +511,16 @@ one function every pick goes through.
    manifest and of `+rN` overrides, cache them on disk, and keep these
    documents in a metadata cache directory of their own. Warn about an
    undeclared registry that sends `pnpr-registry`.
-4. pnpm: reject a `minimumReleaseAge` above 30 days (43200 minutes).
+4. pnpm: reject a `minimumReleaseAge` above 30 days (43200 minutes) when
+   consuming this format, with an explicit unsupported-setting error.
 5. pnpm: when the user points pnpm at a registry that does not serve the type,
    nothing changes, since it answers with the abbreviated document.
 
 Tests must cover an entry without a manifest, with and without flags; npm's
 documents of the same package (no pnpr facts); one with a time
-inside the window (filtered by it), one without a time (passes any minimum
-release age), and one with a `null` time (handled as a missing time, passing
+inside the window (filtered by it), one without a time (passes every supported
+minimum release age), and one with a `null` time (handled as a missing time,
+passing
 or failing with `minimumReleaseAgeIgnoreMissingTime`); a caller-gated package
 (its records and document are `private, no-store`); a public package made
 caller-gated (its records are purged, or the change is refused); a
@@ -531,7 +538,10 @@ pick of a likely pick (no second request), a pick under `overrides` and under
 time-based resolution (one request), a trust downgrade detected across
 versions with and without a manifest, a document under the threshold (every
 version has its manifest), an older pnpm sharing the home directory, and a frozen
-install that reads no metadata.
+install that reads no metadata. Also test the 30-day release-age boundary,
+a larger policy rejected when consuming this format, and time-based cutoffs
+on either side of `timesSince`, including the documented approximation for an
+older cutoff. None of these cases fetches a second document for timestamps.
 
 ## Prior Art
 

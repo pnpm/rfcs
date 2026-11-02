@@ -104,7 +104,7 @@ revision, including `r0`; it is an internal key, not new version syntax.
 | `tag_history` | `(package_key, tag, generation)` | Insert-only: previous and new target, principal, and time. Release-age and downgrade policies can then see when a tag moved, not only where it points. |
 | `annotations` | `(package_key, version)` | Deprecations and other mutable annotations. |
 | `readmes` | `(package_key, version, revision_key)` | Kept out of version fragments, so a README never inflates resolution metadata. |
-| `publication_outcomes` | `(registry, principal, idempotency_key)` | Request integrity and committed result. |
+| `publication_outcomes` | `(catalog, principal, idempotency_key)` | Request integrity and committed result. |
 
 All key columns are non-null, so a nullable revision column cannot weaken
 duplicate-publication protection. A new interpretation profile adds
@@ -133,9 +133,12 @@ versions and mutable state.
 
 ### Read-after-write
 
-Every committed mutation advances a monotonic registry generation and records
-it as the affected package's generation (or across all packages in a
-multi-package transaction). Package responses carry it in a response header,
+Every committed mutation advances a monotonic generation within its hosted
+catalog and records it as the affected package's generation (or across all
+packages in a multi-package transaction). A generation token includes its
+catalog identity; counters from different catalogs are never compared. This
+is the organization-scoped counter of atomic workspace publication, not a
+second registry-wide counter. Package responses carry it in a response header,
 and a publication or tag change returns the generation it committed. A client
 that has just published can send the generation as a minimum. A cache holding
 an older view revalidates instead of answering, so a version the client just

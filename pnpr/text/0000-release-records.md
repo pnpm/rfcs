@@ -19,16 +19,21 @@ with the standards other ecosystems already use, instead of a scheme of
 pnpr's own:
 
 - Each record is appended to the registry's **transparency log**, in the
-  formats Go's checksum database uses, so a registry, mirror, or cache cannot
-  serve one client a different record than it serves everyone else.
+  formats Go's checksum database uses. With the required witness quorum and
+  consistent checkpoint tracking, clients reject split log histories. A
+  private policy with no witnesses detects rewrites of each client's observed
+  history, but cannot rule out different histories served to different clients.
+  Even a witnessed log can contain conflicting records; monitors detect
+  duplicate identities as described below.
 - Endorsements and publication statements are **in-toto Statements in DSSE
   envelopes**, the format npm provenance, Sigstore, and SLSA use. They sign the
   exact bytes served, so nothing is canonicalized.
 - Publisher provenance stays **Sigstore** evidence, as npm provenance and PyPI
   attestations are today.
-- Clients obtain a registry's keys through **TUF** root metadata, which handles
-  rotation and revocation.
-- A registry is identified by its **log's verifier key**, not by a hostname, and
+- Clients obtain a registry's keys through **TUF** authenticated policy, rooted
+  in pinned offline keys, with rotation and bounded revocation freshness.
+- A registry is identified by its **log name and pinned first TUF root**,
+  stable across key rotation, and
   a package by its **Package URL**.
 - For proxied packages, pnpr serves **archive-derived metadata**, as PyPI's
   index serves metadata extracted from each wheel, and verification is **on by
@@ -278,8 +283,14 @@ co-sign checkpoints after checking that the log only grew.
   store, in the same transaction that accepts the version, file, or tag, so a
   record is never accepted without its entry or logged without being accepted.
   The log's tiles and checkpoints are built from the sequenced entries after
-  commit, idempotently, as Tessera-style logs integrate them; pnpr serves a
-  record only once its entry is integrated and has an inclusion proof.
+  commit, idempotently, as Tessera-style logs integrate them. Metadata commit
+  and proof readiness are distinct states: publication success means committed,
+  not yet witnessed. A verifying read waits for a bounded interval and then
+  returns a retryable proof-pending error if the required proof or witness
+  quorum is unavailable; it never treats the version as missing or silently
+  downgrades verification. Compatibility views may expose the committed release
+  before proofs are ready. A client must recover the committed outcome before
+  starting a new publication when integration is delayed.
 - A second entry for the same identity, revision, and profile with another
   digest is a forged or rewritten record. An inclusion proof shows only that an
   entry exists, not that no other does, so this is caught as Go's checksum
@@ -299,22 +310,45 @@ co-sign checkpoints after checking that the log only grew.
 Each configured registry has its own log, so `/npm/~internal/` and
 `/cargo/~internal/` are separate logs, as they are separate registries. A log
 holds hosted versions and the versions pnpr derived records for while proxying
-an upstream. It holds digests and identities, not records, so a
-private package's log entries reveal its name and versions; a private registry
-keeps its log, like its records, behind its access rules.
+an upstream. It holds digests and identities, not records. Raw entry tiles
+therefore disclose package names and versions. Registry authentication alone
+is insufficient when two packages in that registry have different readers.
 
-Each deployment runs its own logs, and a log's verifier key is its identity. A
-shared log, as Go's ecosystem shares `sum.golang.org`, would need an operator
+Entry-data tiles and bulk enumeration use the existing package read policy at
+the scope of the whole log: a caller may read them only when it may read every
+package the log can hold, such as an organization owner or a full-log monitor.
+Deciding per tile would leak, since a caller could tell a tile it is refused
+from one it is served and so locate unreadable entries. They are public only for
+a log that contains exclusively public identities and whose operator has
+committed to keeping that history public. Ordinary readers obtain their
+authorized leaf and its inclusion proof from the package's evidence route, and
+checkpoints and hash tiles for consistency verification; they never receive
+neighboring leaves in a data tile. These proof-only reads still reveal log size
+and activity, and leaf hashes can permit guesses of predictable entries.
+Deployments needing isolation of those facts must use separate named registries
+and logs per confidentiality boundary. Full-log monitors are trusted with all
+its identities; witnessing append-only growth alone does not detect duplicate
+identities.
+
+A log that has published entry data cannot make that history secret through
+a cache purge. Changing package visibility gates future package reads, but
+cannot conceal already published log history. Package record and artifact
+access remains separately gated.
+
+Each deployment runs its own logs, identified by log name and first-root
+digest. A shared log, as Go's ecosystem shares `sum.golang.org`, would need an
+operator
 every deployment trusts and would expose private names; deployments that want
 one can agree on a log later without changing the record or the protocol.
 
 Witnesses are what protect a client against a registry that shows different
-clients different logs. A public registry's TUF root names the witnesses its
-clients require. A private registry may name none. Its clients then still
+clients different logs. A public registry's TUF-authenticated policy names
+the witnesses its clients require. A private registry may name none. Its clients
+then still
 detect a rewrite of what each has seen, but not a registry that shows them
 different logs: that needs a witness, such as a CI job that co-signs
 checkpoints or a second pnpr deployment, which an organization that needs the
-guarantee names in its root.
+guarantee names in that policy.
 
 ### Statements: in-toto in DSSE
 
@@ -379,8 +413,13 @@ pnpr did not see that publication. Its evidence is what the upstream provides,
 such as npm provenance, PEP 740 attestations, or OCI referrers, kept as it was
 fetched, and a trust policy evaluates a proxied package from that evidence, as
 it does without pnpr. Only the registry produces a publication statement;
-publisher-supplied fields with the same names are stripped. Its predicate is the
-version's [publication](./0000-atomic-workspace-publication.md#publications),
+publisher-supplied fields with the same names are stripped. Synthetic imported
+publications provide historical links only: pnpr must not mint a publication
+statement or trusted-publisher rank from unverified imported identity fields.
+When original evidence is absent, publication evidence is unavailable.
+Its predicate is the
+artifact's introducing
+[publication](./0000-atomic-workspace-publication.md#publications),
 which already records the publishing identity, a workload's repository and
 commit, and the commit time, plus:
 
@@ -412,22 +451,38 @@ work.
 
 ### Keys and identity
 
-A registry's keys are distributed as [TUF](https://theupdateframework.io/) root
-metadata, as PyPI specified in
-[PEP 458](https://peps.python.org/pep-0458/). The root, signed by offline keys,
-names the log's checkpoint key, the key that signs statements, and the
-witnesses the registry's clients require. Rotating a key is a new root version
-signed by the previous one; a client follows the chain and stops accepting the
-old key.
+Distribute registry verification policy through a standard
+[TUF repository](https://theupdateframework.github.io/specification/latest/).
+The offline root delegates TUF roles; a versioned target,
+`pnpr-log-policy.json`,
+names the log, checkpoint and statement keys, required witnesses, and signature
+thresholds. Targets metadata authenticates that file's bytes, snapshot metadata
+binds the metadata versions, and timestamp metadata supplies bounded freshness.
+A standard TUF client verifies the complete chain, expiry, rollback protection,
+and target length and digest before using the policy. Custom fields in a root
+alone would not provide those guarantees.
 
-A client verifies every signature against the current root only, so history
-never depends on a retired key:
+Root rotation follows TUF's sequential update procedure: each next root must
+meet both the previous root's threshold and its own threshold. Persist trusted
+versions and reject expired metadata for online refresh. Rotating a log or
+statement key normally updates the policy target, not the offline root.
+Frozen offline installs may use previously verified evidence under an explicit
+offline policy, but cannot claim to have checked current key revocations.
 
-- **Statements.** Before a root retires a statement key, pnpr re-signs every
-  statement with the new key. That changes evidence, not records, so record
-  digests and log entries stay. After a compromise, pnpr re-signs only the
-  statements whose records the log shows were integrated before the
-  compromise, at a checkpoint the witnesses co-signed.
+A client verifies registry signatures against the current authenticated
+policy, so history never depends on a retired key:
+
+- **Statements.** Before a policy update retires a statement key, pnpr
+  re-signs every statement with the new key. That changes evidence, not
+  records, so record digests and log entries stay. After a statement-key
+  compromise, regenerate registry statements from the authoritative SQL
+  acceptance and publication records, not from envelopes signed by the
+  compromised key. Reuse the normal statement-generation path. If the
+  authoritative data is unavailable or cannot be trusted, report the evidence
+  as unavailable. An old release record's inclusion alone cannot authenticate
+  its publisher. A regenerated statement is a current registry endorsement,
+  not proof that an earlier statement existed before the compromise.
+  Publisher-supplied provenance remains unchanged and independently verified.
 - **Checkpoints.** A log's checkpoint key signs new checkpoints only. Older
   ones stay valid through consistency: a client checks a new checkpoint,
   signed by the current key, against the one it kept, so an entry proven
@@ -443,7 +498,7 @@ never depends on a retired key:
 A registry is identified by its log's name and the digest of its first TUF root
 version, such as `registry.example+sha256:<root digest>`, the same digest a
 workspace pins. The current checkpoint key, written as Go writes one,
-`<name>+<key hash>+<key>`, is verification metadata from the current root, so
+`<name>+<key hash>+<key>`, is verification metadata from the current policy, so
 rotating it does not change the identity. The name is an identifier, not a
 transport location: a mirror or another hostname serving the same log is the
 same authority, and a lockfile that records the authority does not change when
@@ -491,9 +546,15 @@ archives to resolve.
 
 - When verification is required and fails, resolution fails. It never falls back
   to the unverified mode.
-- A Python source distribution whose metadata is dynamic cannot be verified:
-  under the verify mode it resolves only when a wheel of the same release
-  provides the metadata, or under an unverified exemption.
+- A Python source distribution whose resolver metadata is dynamic cannot
+  borrow verification from a wheel merely because the version matches.
+  [PEP 643](https://peps.python.org/pep-0643/#specification) permits dynamic
+  values to depend on the build environment, and different wheels may disagree.
+  Verify mode may select and resolve a compatible wheel from that wheel's own
+  record. Installing the dynamic source distribution requires an explicit
+  unverified exemption until a separate protocol binds a verified build result
+  to that exact source digest and target environment. Registry verification
+  never executes an untrusted build to fill in the missing metadata.
 - OCI has nothing to derive: pnpr verifies a proxied manifest and its blobs by
   digest, as it does today, and logs the tag binding it observed upstream.
 - Archive-authoritative acceptance changes the metadata used for resolution: the
@@ -616,7 +677,8 @@ Target pnpr and pnpm v12. Do not add a feature to pnpm v11.
 2. pnpr: sign acceptance and publication statements as in-toto Statements in
    DSSE envelopes, keep Sigstore bundles, and serve evidence with inclusion
    proofs.
-3. pnpr: publish TUF root metadata, and serve the log's checkpoints and tiles.
+3. pnpr: publish the TUF repository and authenticated log-policy target, and
+   serve checkpoints and tiles under the disclosure rules above.
 4. pnpm: verify records, proofs, checkpoint consistency, and the statements the
    trust policy needs; ship the roots of known public registries, and read a
    pinned root for a private one.
@@ -639,6 +701,26 @@ delayed attestations, and re-signing preserve record digests; that a second
 record for a logged identity is rejected; that an inconsistent checkpoint is
 rejected; that a rotated key is followed and the old one refused; and that
 private records cannot be read through digest paths.
+
+### Cross-feature conformance cases
+
+Test restricted readers of two packages in one log: neither data tiles nor
+lookup routes may reveal the other's identity, and a reader of one package gets
+the same refusal for every data tile, whether or not the tile holds a private
+entry. Test an authorized full-log monitor independently from a hash-only
+witness. Exercise commit followed by integration or witness failure and recovery
+without duplicate publication. Test a root signed only by the old threshold,
+expired timestamp metadata, policy rollback, and a fresh installation after key
+rotation. A forged publication statement for an old logged record must not
+become trusted through re-signing after a key compromise. Python tests must
+cover wheels of one version with different dependencies and a dynamic source
+distribution; verification must follow the selected artifact. Test ordinary key
+rotation and regeneration from authoritative publication records after a
+statement-key compromise. A forged envelope for an old record must not influence
+the regenerated publisher claim. Unavailable authoritative data must leave
+evidence unavailable. Imported historical publication links must never create
+trusted-publisher evidence.
+
 
 ## Prior Art
 
@@ -673,6 +755,11 @@ private records cannot be read through digest paths.
 
 ## Unresolved Questions and Bikeshedding
 
-None. A package-level publish policy that the registry enforces at
+The protocol must fix maximum integration wait, checkpoint age, and TUF policy
+refresh intervals before advertising verification. The implementation benchmarks
+must include the default verifying path, which fetches every selected record
+and proof rather than only the non-inline records of the split prototype.
+
+A package-level publish policy that the registry enforces at
 acceptance, such as "only OIDC from this repository", reads the publication
 evidence defined here and belongs in an RFC of its own.

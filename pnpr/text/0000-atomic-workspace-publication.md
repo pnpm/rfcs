@@ -167,8 +167,10 @@ Existing releases never change their bytes. An identical request retry may
 return its earlier result, but a new transaction cannot quietly adopt another
 publisher's competing release to make its batch appear successful.
 
-Clients supply an idempotency key scoped to the organization and publisher
-identity. Bind that key to a digest of the complete request. Reusing it with a
+Clients supply an idempotency key scoped to the hosted catalog and publisher
+identity. The catalog identifies the organization as well as the transaction
+boundary; a key from another catalog is a different key. Bind that key to a
+digest of the complete request. Reusing it with a
 different request is a conflict. The request identity is scoped to a stable
 principal, not a bearer-token string that changes during token rotation.
 A publication's name is not an idempotency key. The name is chosen to be read
@@ -192,18 +194,31 @@ same archive with different tag changes is a conflict, not a replay. A
 different archive for the same version is still a conflict.
 
 A batch without a key is keyed the same way, by a digest over every entry's
-archive integrity and accepted manifest and every tag or revision-selection
-change in the request. A retry with the same digest returns the recorded
-outcome; a request that shares versions with a committed batch but has a
-different digest is a conflict.
+identity, archive integrity, accepted manifest, and version note, the
+publication name and publication note, and every tag or revision-selection
+change in the request. An entry's identity is every field of its publication
+member: registry, ecosystem, name, version, and revision where applicable, plus
+a Python distribution's filename and an OCI manifest's repository, so two
+requests that differ only in which package or file an archive is published as
+never share a digest. Note absence and note text are distinct digest inputs;
+notes are not part of the accepted manifest. This whole-request rule also
+applies to a single-package publication without a key. A retry with the same
+digest returns the recorded outcome; a request that shares versions with a
+committed batch but has a different digest is a conflict.
 
 A timed-out commit has an unknown outcome to the client. The client queries or
 retries the same transaction to learn its durable state. Idempotency results
 must survive crashes and the retry period, which is at least 7 days, well
 past any client's retry window. A retry must not create another catalog
-generation for an already committed transaction. Content-keyed outcomes need
-no separate record after that period: the committed releases themselves
-decide whether a later identical request is a replay.
+generation for an already committed transaction. During the retry period,
+compare against the stored whole-request digest and outcome, never against
+current tags or edited notes. After that record expires, an existing
+publication may still carry enough information to recover the original
+outcome; otherwise return an explicit conflict. Release bytes alone cannot
+establish a replay: they do not identify the original tag changes, publication
+name, notes, or batch membership. Expiry must never cause selections to be
+reapplied or success to be inferred from matching archives. This uses the
+existing outcome-retention policy, without permanent retry-record storage.
 
 ### Publication visibility and read consistency
 
@@ -231,26 +246,36 @@ claim the stronger guarantees without a protocol-version change.
 
 ### Publications
 
-A committed transaction that publishes at least one package version is also
-recorded as a **publication**, which clients can read. A single-package
-publish is a publication with one member, so every version belongs to
-exactly one publication. A publication has:
+A committed transaction that accepts at least one new release artifact is
+also recorded as a **publication**, which clients can read. A single-package
+publish is a publication with one member. Each version has one **initial
+publication**, the transaction that first introduced it; every accepted
+artifact belongs to the publication that introduced that artifact. These
+coincide for npm and Cargo, but Python permits later distribution uploads
+for an existing version. A publication has:
 
 - an identifier that pnpr assigns, and optionally a name the publisher
   chooses, such as `v12.0.0`, unique within the organization;
-- its members: the ecosystem, name, version, and revision of every package
-  version it published, whatever ecosystem each belongs to;
+- its members: registry, ecosystem, name, version, revision where applicable,
+  and the accepted artifact identity. A Python member names its distribution
+  filename and digest; an OCI member names its repository and manifest digest.
+  The membership records what this transaction added, not all files that may
+  eventually share a Python version. OCI tag moves alone remain selections;
 - the identity that published it, with the source repository and commit of
   a workload identity, the commit time, and the catalog generation it
   created.
 
 All of this is fixed at commit. Versions published before publications are
-recorded receive them when the catalog is first built: each such version
-becomes a publication of one member, with its publish time and, where pnpr
+recorded receive initial publications when the catalog is first built: each
+existing version becomes a synthetic publication containing its known artifacts,
+with its publish time and, where pnpr
 recorded one, its publisher, and with no name. Versions of an earlier
 batch become separate publications too; grouping them would need a record
-of the batch that the storage does not promise to keep. The invariant
-therefore holds for every version, old or new. Tag moves and revision
+of the batch that the storage does not promise to keep. Synthetic publications
+are marked as imported history, not evidence that all of a version's files
+originally arrived in one transaction. The initial
+publication invariant holds for every version, old or new. Tag moves and
+revision
 selections that commit alone are transactions but not publications; they
 change selections, not the set of published versions.
 
@@ -262,8 +287,19 @@ GET <pnpr>/-/publications/<org>/<id-or-name>
 GET <pnpr>/-/publications/<org>?member=<ecosystem>:<name>@<version>
 ```
 
-The second form finds the publication of one package version. A caller sees
-only the members whose packages it may read, and a publication with none
+The second form finds the initial publication of one package version.
+For Python it also accepts `filename=<filename>` to find the publication
+that introduced that distribution. Each distribution record and its publication
+evidence refer to that introducing publication; later uploads do not rewrite
+the initial publication or another file's evidence. For imported history,
+the lookup returns a best-known historical link marked `origin: imported`,
+not a claim that this transaction introduced the distribution. Such a link
+must not produce a verified publication statement or a trusted-publisher rank.
+Where original introduction evidence is unavailable, report it as unavailable;
+known historical publisher fields remain explicitly unverified observations.
+The same restriction applies to synthetic publications in every ecosystem.
+A caller sees only the members whose packages it may read, and a publication
+with none
 answers `404`, so a publication never discloses a package to a caller who
 cannot read it. A version's entry in an ecosystem view may name its
 publication where the view has room for it, as pnpr's release record does
@@ -370,6 +406,11 @@ cache and journal. Readers pinned to old and new generations must each see a
 complete batch. Garbage collection must never delete an active transaction's
 objects or a retained generation. Test existing clients separately from
 snapshot-aware clients and report their actual consistency guarantees.
+Test an identical retry within the retention period and one after its outcome
+record expires; the latter must return a conflict unless the original request
+and outcome remain recoverable. Neither may reapply tags. Python uploads of
+two files in separate transactions must preserve each file's publication and
+the version's initial publication.
 
 Run the same publication conformance suite against each SQL backend, including
 replica lag and policy write skew. Verify that replacing a backend through

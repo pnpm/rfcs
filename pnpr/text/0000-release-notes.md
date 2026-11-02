@@ -73,10 +73,20 @@ time they were last changed and the identity that changed them:
   records. It tells what the release as a whole changes, and its readers reach
   it from any of the publication's members.
 
-Every version belongs to exactly one publication, a single-package publish
+Every version has exactly one initial publication, a single-package publish
 being a publication of one member, so the two levels never compete: a
 publisher of one package writes a version note, and a workspace writes a
 publication note and, where a package has its own story, version notes too.
+
+For Python, version-note routes and their publication links refer to the
+version's initial publication. A later distribution upload has its own
+publication and may supply a publication note, discoverable through that
+distribution's record and publication lookup. It does not replace the version
+note or its immutable `initialDigest`. A later upload may supply its own
+publication note, but must not include a version note for an existing version.
+To change that version note, use the existing note-edit routes and their
+authorization and audit rules. No second edit mechanism is needed in the
+artifact-upload transaction.
 
 Notes are mutable. The publisher can fix a typo, add a migration step found
 after release, or remove a note, and readers see the change after the note's

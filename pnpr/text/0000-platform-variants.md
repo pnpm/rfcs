@@ -267,14 +267,32 @@ For a host, the client keeps the variants with a platform whose every field
 matches, then picks one in this order, comparing each variant by its best
 matching platform:
 
-1. Variants with more matched fields, without `wasm32`.
-2. Among those, the highest `libcVersion`, then the highest `osVersion`, then
-   the highest `napi`.
-3. A `wasm32` variant.
-4. The primary archive, if the version has one.
+1. Native targets rank above `wasm32`. Among native targets, prefer the
+   greatest number of explicit constraints after normalization. Count `os`,
+   `cpu`, Linux `libc` (including implicit glibc), each version floor, and the
+   ABI constraint once each; do not count absent fields.
+2. Among equal counts, compare `libcVersion`, then `osVersion`, with absent
+   floors below every present floor. Compare numeric `(major, minor)` pairs,
+   never strings.
+3. Among remaining ties, prefer an exact `nodeAbi` match over a `napi` match,
+   and a `napi` match over no ABI constraint. For two `napi` matches, prefer
+   the greatest numeric N-API floor. `napi` and `nodeAbi` are mutually
+   exclusive within one target. Two matching `nodeAbi` values must be equal
+   because the host has one runtime family and ABI.
+4. A `wasm32` variant ranks below every matching native target, and above the
+   primary archive. The primary is selected only when no variant matches.
 
-If two variants still tie, publication should have rejected the version. The
-client fails rather than pick one.
+A variant's score is the maximum of its matching target scores under this
+lexicographic rule. When choosing the archive to link, an unknown floor or ABI
+value cannot satisfy an explicit constraint: linking an archive the host may not
+run is worse than linking the primary. A platform named in
+`supportedArchitectures` states its floors and ABI in the platform tag syntax,
+such as `linux-x64-manylinux_2_26-node127`; any it does not state are unknown.
+Fetching is looser (see [Install](#install)). Targets normalize implicit Linux
+glibc before counting or comparing fields, so spelling it explicitly cannot
+change specificity. Reject a publication if distinct variants can share the
+highest score on any host. Clients also reject ties in malformed metadata rather
+than use array order or a tag as an arbitrary tie-breaker.
 
 ### Metadata
 
@@ -407,8 +425,20 @@ unchanged across revisions is stored once.
 ### Lockfile
 
 pnpm records a package with variants using the existing `variations`
-resolution, ordered by the selection rule so that its first-match semantics
-pick the best variant:
+resolution shape, extended with the selection rule above. Serialize variants
+in byte order of their derived tags for a platform-neutral lockfile; array
+order does not choose the archive. At install time, evaluate every variant's
+best matching target for the actual host and rank those matches.
+
+The current first-match implementation cannot express this rule for all hosts.
+For example, variant A can list `linux-x64` and `darwin-arm64-napi9`, while B
+lists `linux-x64-napi8` and `darwin-arm64`. Linux with N-API 9 must prefer B;
+macOS arm64 with N-API 9 must prefer A. No single ordering of A and B works.
+Reuse the resolution type and matching utilities, but extend the selector for
+these records; older runtime lockfiles retain their existing selection behavior.
+The required lockfile version marker distinguishes the new semantics.
+
+For example:
 
 ```yaml
 packages:
@@ -417,11 +447,12 @@ packages:
       type: variations
       variants:
         - resolution:
-            integrity: sha512-<linux-x64 musl digest>
+            integrity: sha512-<darwin universal digest>
           targets:
-            - os: linux
+            - os: darwin
+              cpu: arm64
+            - os: darwin
               cpu: x64
-              libc: musl
         - resolution:
             integrity: sha512-<linux-x64 glibc digest>
           targets:
@@ -430,12 +461,11 @@ packages:
               libcVersion: '2.17'
               napi: 8
         - resolution:
-            integrity: sha512-<darwin universal digest>
+            integrity: sha512-<linux-x64 musl digest>
           targets:
-            - os: darwin
+            - os: linux
               cpu: x64
-            - os: darwin
-              cpu: arm64
+              libc: musl
       fallback:
         integrity: sha512-<primary digest>
 ```
@@ -491,9 +521,12 @@ lockfile is still the same on every machine, because every archive's
 dependencies are resolved on every machine, as every platform package is in pnpm
 today.
 
-Five changes to the lockfile are needed:
+Six changes to the lockfile and its interpretation are needed:
 
 - `targets` gain the floor and ABI fields from the tag table.
+- The selector ranks the best matching target of every variant at install
+  time, independently of serialization order, instead of stopping at the first
+  match. The lockfile version distinguishes this from existing runtime entries.
 - A `fallback` resolution holds the primary archive. It is absent when the
   version has no primary.
 - `VariationsResolution` gains an optional `revision` (including `0` for
@@ -525,12 +558,18 @@ as a new `lockfileVersion`.
   so CLIs need no spawning shim.
 - `supportedArchitectures` decides which variants are fetched into the store,
   for `pnpm fetch`, Docker images, and Lambda bundles: every variant that
-  matches one of its platforms, and the primary when one of those platforms
-  matches none. Its list form names each platform; its `os`, `cpu`, and
-  `libc` form stands for every combination of its values. Only one variant
-  can be linked under a package's name. The linked one is the host's, or, if
-  `supportedArchitectures` lists exactly one platform and omits `current`,
-  that platform's.
+  matches one of its platforms, and the primary when no variant can be linked
+  for one of those platforms under the linking rule below. For a platform other
+  than the host, a variant matches when its `os`, `cpu`, and `libc` match,
+  whatever its floors and ABI, unless the platform states them: fetching an
+  archive the eventual host cannot use only costs disk, while skipping the one
+  it needs makes an offline install fail. Its list form names each platform; its
+  `os`, `cpu`, and `libc` form stands for every combination of its values. Only
+  one variant can be linked under a package's name. The linked one is the
+  host's, or, if `supportedArchitectures` lists exactly one platform and omits
+  `current`, that platform's, chosen by the linking rule: a variant whose floor
+  or ABI that platform does not state is not linked, so a Lambda bundle built on
+  another machine names its target's floors, such as `linux-x64-manylinux_2_26`.
 - For a package with variants, the installer walks the selected variant's
   snapshot (`<name>@<version>/variants/<tag>`, falling back to
   `<name>@<version>`), or `<name>@<version>` when the primary archive is
@@ -539,9 +578,11 @@ as a new `lockfileVersion`.
   optional packages today. `supportedArchitectures` fetches the dependencies of
   every archive it fetches.
 - The linked variant depends on the host, so the virtual store directory of a
-  package with variants is keyed by the selected archive's integrity, not only
-  by name and version. That key also covers the archive's dependencies,
-  which follow from the selection. A global virtual store shared by an arm64
+  package with variants includes the selected archive's integrity in addition
+  to the existing resolved dependency-graph and peer-context identity. Archive
+  integrity alone does not identify dependencies: the same archive's ranges
+  may resolve differently in two projects or after an update. A global virtual
+  store shared by an arm64
   Node.js and an x64 Node.js under Rosetta, or by two Node.js versions that
   select different `nodeAbi` variants, then keeps both.
 - The installer records which archive it linked for each package with
@@ -559,7 +600,14 @@ as a new `lockfileVersion`.
   `supportedArchitectures` from the store through an API that this RFC leaves
   open; they are not linked under the package's name.
 - Server-side resolution through pnpr already produces platform-neutral
-  lockfiles. It writes `variations` entries without change to its protocol.
+  lockfiles. Reuse the request's existing `acceptedLockfileFormats` field:
+  the new lockfile version covers host-ranked selection, per-variant snapshots,
+  and fallback semantics together. When the selected graph requires variants
+  and the client has not explicitly accepted that format, return the existing
+  HTTP 400 `ERR_PNPR_INCOMPATIBLE_LOCKFILE_FORMAT` error. The returned
+  lockfile's version identifies its semantics; no separate capability or echo
+  is needed. Never silently downgrade to the primary. Clients accepting only
+  older formats can still resolve graphs that require no variants.
 
 ### Publication
 
@@ -779,6 +827,19 @@ it), a variant-only dependency with a peer dependency (the variant's snapshot
 records its own `transitivePeerDependencies`), and variants under a registry
 revision (including a frozen install rebuilding `+r<revision>` variant and
 fallback routes).
+
+Also test the A/B multi-target example above on both hosts after reversing
+lockfile array order, and two projects selecting identical archive bytes but
+different versions of a ranged dependency. Their virtual store entries must
+preserve the different resolved graphs. Cover equal constraint counts with an
+absent versus present libc floor, numeric floor ordering, exact ABI versus N-API
+overlaps, implicit versus explicit glibc, rejected score ties, and missing or
+incompatible `acceptedLockfileFormats`. Unsupported clients must receive the
+existing incompatibility error without a downgraded lockfile. Also cover
+`supportedArchitectures` naming another platform without floors: every variant
+matching its `os`, `cpu`, and `libc` is fetched, none with a floor is linked
+for it, and the primary is fetched and linked when no variant without a floor
+matches it.
 
 ## Prior Art
 
