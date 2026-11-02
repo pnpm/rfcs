@@ -89,6 +89,41 @@ PostgreSQL and Turso are candidates for shared deployments, subject to the
 conformance suite and workload tests. SQL syntax alone does not establish
 equivalent isolation, durability, or freshness.
 
+### Shared deployments
+
+SQLite on one instance's disk shares no state with other instances, so a
+multi-instance deployment needs a shared transactional store. A shared store
+costs per row, per query, or per instance, so a shared deployment keeps in it
+only what needs a transaction: the index of accepted versions, their small
+accepted manifests, tags, revision selections, deprecations, policy bindings,
+generations, publication outcomes, and sequenced log entries. Its size and cost
+then follow the number of packages and mutations, not the size of what was
+published.
+
+Everything immutable and large goes to object storage, keyed by digest:
+archives, evidence bundles, rendered release records, and the transparency
+log's tiles and checkpoints. Each is written and verified before the
+transaction that references it commits, as archives already are, so a retried
+write is harmless and an unreferenced one is collected after the grace period.
+Public objects can be served from a bucket or CDN without reaching an
+instance. Generated package documents stay a disposable cache, revalidated by
+generation with bounded freshness.
+
+Candidate shared stores, each subject to the conformance suite:
+
+- **PostgreSQL**, with serializable transactions or explicit row locks.
+- **Turso**, whose writes go to one primary while replicas serve reads within
+  their freshness bound.
+- **Cloudflare D1**, which has no interactive transactions: a batch of
+  statements runs as one transaction, so every domain transaction must be
+  expressed as one batch whose writes are conditional on the generation it
+  read.
+- **Cloudflare Durable Objects** with SQLite storage, one object per hosted
+  catalog. An object runs one request at a time, so each catalog's
+  transactions are serialized by construction, and the per-catalog generation
+  needs no further coordination. A catalog's write throughput is then one
+  object's.
+
 ### Relational keys sketch
 
 `package_key` abbreviates `(catalog, ecosystem, name)`: the hosted catalog,
@@ -206,6 +241,10 @@ update reuses unchanged fragments.
 - [PostgreSQL transaction isolation](https://www.postgresql.org/docs/current/transaction-iso.html)
   and [explicit locking](https://www.postgresql.org/docs/current/explicit-locking.html).
 - [Turso's Rust backend options](https://docs.turso.tech/sdk/rust/reference).
+- [Cloudflare D1 batch statements](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch)
+  and [SQLite-backed Durable Objects](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/).
+- [C2SP tiled logs](https://github.com/C2SP/C2SP/blob/main/tlog-tiles.md),
+  served as static files.
 - [npm package metadata](https://github.com/npm/registry/blob/main/docs/responses/package-metadata.md).
 
 ## Unresolved Questions and Bikeshedding
