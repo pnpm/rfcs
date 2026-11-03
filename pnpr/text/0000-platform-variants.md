@@ -710,6 +710,19 @@ the package:
 }
 ```
 
+The archives of this version contain:
+
+| Archive | Files |
+| --- | --- |
+| `any` | `index.js`, `lib/**` |
+| `linux-x64-manylinux_2_17-napi8` | `index.js`, `example-native-addon.linux-x64-gnu.node` |
+| `linux-x64-musl-napi8` | `index.js`, `example-native-addon.linux-x64-musl.node` |
+| `darwin-arm64-macos_11_0-napi8` | `index.js`, `example-native-addon.darwin-arm64.node` |
+| `win32-x64-napi8` | `index.js`, `example-native-addon.win32-x64-msvc.node` |
+
+Each also contains `package.json` and the README and license files, which
+npm and pnpm always pack.
+
 An entry has three fields:
 
 - `targets`: a non-empty array. Each target is the tag of one platform, as
@@ -748,17 +761,47 @@ One target names its archive wherever pnpm takes one on the command line:
 `--variant-integrity linux-x64-musl-napi8=<integrity>`. Any one of an
 entry's targets names it, because no target appears in two entries. `any`
 names the `any` entry in the same way, as in `pnpm pack --variant any`. pnpm
-prints the derived tag beside the target in its output and in its JSON. An
-error about an entry shows the entry by its targets as written.
+prints a platform variant's derived tag beside the target in its output and
+in its JSON. The `any` archive has no derived tag, so its output and JSON
+name it by the target `any` alone. An error about an entry shows the entry by
+its targets as written.
 
-pnpm lists the package's files as `pnpm pack` does today. It then adds every
-file that a `files` pattern of an entry matches, even when the package's own
-`files` field leaves the file out. A file that one of these patterns matches
-goes only into the archives of the entries whose patterns match it. Every
-file that no pattern claims is shared and goes into every archive, the `any`
-archive included. A pattern that matches no file fails the pack of its
-archive, so a missing build output never publishes a variant without its
-binary.
+The package's top-level `files` field keeps its usual meaning, and with
+variants it lists what every archive shares. Each entry's `files` adds that
+archive's own files. pnpm lists each archive's files as `pnpm pack` does
+today, from the top-level `files`, and adds every file that a `files` pattern
+of an entry matches, even when the top-level `files` leaves the file out. A
+file that one of these patterns matches goes only into the archives of the
+entries whose patterns match it. Every file that no pattern claims is shared
+and goes into every archive, the `any` archive included. A pattern that
+matches no file fails the pack of its archive, so a missing build output
+never publishes a variant without its binary.
+
+As npm does, every archive also contains `package.json`, the README and
+license files, and the files that its own manifest's `main`, `browser`, and
+`bin` name. pnpm reads those fields from the archive's manifest, after its
+entry's `manifest` is applied, so a variant whose `bin` names its executable
+does not also get the shim that the base manifest's `bin` names.
+
+What the top-level `files` lists depends on the package:
+
+- A native addon with a shared loader lists the loader, as
+  `example-native-addon` lists `index.js`.
+- A package of native executables shares nothing. It sets `"files": []`,
+  which npm and pnpm both read as "only what is always packed", and gives
+  any JavaScript shim to its `any` entry.
+
+Without a top-level `files`, a package packs every file that is not ignored,
+and with variants every such file that no entry claims ships in every
+archive: a build directory, test fixtures, or another platform's binary that
+a pattern missed. pnpm warns when a declaration has platform variants and
+the package has no top-level `files` field. The rule depends only on the
+manifest, so the same package warns, or does not, on every machine and in
+every CI job. A rule that warned about large unclaimed files would depend on
+what the build left in the directory and on a size threshold, and a file
+just under it would ship once per platform without a word. The warning
+protects disk use and download size for every installer, and costs the
+publisher one field, which also documents what the archives share.
 
 The **base manifest** is the manifest that pnpm publishes for the package
 today: `publishConfig` overrides hoisted, `workspace:` and `catalog:`
@@ -791,19 +834,20 @@ A version with variants usually needs no manifest difference at all. An
 addon whose loader tries a local `.node` file first works unchanged in every
 variant, as the [Prototype](#prototype) found for napi-rs packages. In the
 example above, `index.js` loads the host's `.node` file and falls back to
-`lib/`, which only the `any` archive contains. A CLI points `bin` at its
-executable:
+`lib/`, which only the `any` archive contains. A CLI shares nothing and
+points `bin` at its executable:
 
 ```json
 {
   "name": "example-cli",
   "version": "4.0.0",
   "bin": { "example-cli": "bin/example-cli.js" },
+  "files": [],
   "publishConfig": {
     "variants": [
       {
         "targets": ["any"],
-        "files": ["lib/**"]
+        "files": ["bin/**", "lib/**"]
       },
       {
         "targets": ["linux-x64", "linux-x64-musl"],
@@ -827,10 +871,13 @@ executable:
 
 The second entry is one static Linux build for glibc and musl hosts, and pnpm
 names it `linux-x64+linux-x64-musl`; the third is a macOS universal binary,
-`darwin-arm64+darwin-x64`. The `any` archive keeps `bin/example-cli.js` with
-a portable implementation in `lib/`. Without the `any` entry, the version
-would have no primary, and `bin/example-cli.js` would be in no archive that
-a host can install: every archive's `bin` would point at its executable.
+`darwin-arm64+darwin-x64`. `"files": []` shares nothing, so each native
+archive holds its executable, `package.json`, and the README and license
+files. The `any` entry claims the JavaScript shim `bin/example-cli.js` and
+its portable implementation in `lib/`, so only the `any` archive has them.
+Without the `any` entry, the version would have no primary, and the shim
+would be in no archive at all: no entry would claim it, `"files": []` would
+not share it, and every archive's `bin` would name its executable.
 
 #### Checks before upload
 
@@ -908,20 +955,30 @@ Variants are published only to a registry declared with `serverType: pnpr`.
 pnpm builds the publish document of the version as today, with the `any`
 archive as the version's primary archive: its attachment is the usual
 `<basename>-<version>.tgz`, its manifest is `versions[<version>]`, and pnpr
-records it as the primary and serves it as `dist.tarball`. The publish
-protocol is unchanged: `any` is a name in the declaration only, and never
-appears in the request. pnpm adds:
+records it as the primary and serves it as `dist.tarball`. The `any` archive
+has no `~` suffix: `any` is a name in the declaration only, and never
+appears in the request. pnpm adds one entry in `_attachments` per platform
+variant, named `<basename>-<version>~<tag>.tgz` after the primary's
+attachment name, with the variant's derived tag, `+` included. The entry
+carries the archive's `integrity` and `length` and no `data`.
 
-- `versions[<version>].pnprVariants`, which maps each variant's tag to the
-  SRI SHA-512 integrity of its `.tgz`;
-- one entry in `_attachments` per platform variant, named
-  `<basename>-<version>~<tag>.tgz` after the primary's attachment name. The
-  entry carries the archive's `integrity` and `length` and no `data`.
+These attachments are the whole declaration of the variants. The version
+entry has no field that lists them. pnpr finds a version's variants from its
+`~<tag>` attachments. It verifies each archive against the attachment's
+integrity: a staged archive by the integrity that the attachment references,
+and an inline one, which pnpm never sends but another client may, by hashing
+its `data`. It reads each archive's platforms from its `variant` field and
+rejects the version when they do not give the tag in the attachment's name.
+It also rejects a `~<tag>` attachment whose name gives a version that the
+document does not publish.
 
-The tag in these names is the variant's derived tag, `+` included. It only
-pairs the reference with its attachment: pnpr reads each archive's platforms from its
-`variant` field and rejects the version when they do not give the tag that
-names the archive.
+Attachments belong to their package's document, so a batch commit carries
+each version's variants in that version's document, and the batch stays one
+transaction. The whole-request digest that pnpr keys idempotent retries by
+covers the attachments, so a retry with the same archives is still the same
+request. pnpr's own package document keeps its `variants` field as described
+in [Metadata](#metadata): pnpr derives it, and the publish request never
+sends it.
 
 pnpm stages every archive it sends, the `any` archive included, by its
 integrity before it sends the document. The archive that pnpr generates for a
@@ -973,8 +1030,9 @@ variant:
 5. It prints `<target>=<integrity>`, the value that the commit takes, one
    line per archive, with the target it was given. Its standard output holds
    only these lines, so a CI step can capture it, and its progress output
-   names the derived tag. With `--json`, it prints the package's name and
-   version, the derived tag, the targets, and the integrity of each archive.
+   names a platform variant's derived tag. With `--json`, it prints the
+   package's name and version, the targets, and the integrity of each
+   archive, and the derived tag of each platform variant.
 
 The option can be repeated, for a machine that builds several archives, and
 `--upload-variant any` uploads the `any` archive like any other. The command always sends the `PUT`,
@@ -1022,7 +1080,9 @@ it sends the commit, pnpm checks that:
   with an error that names the variant by its targets, its integrity, and
   the job to run again.
 
-pnpm attaches each staged archive under its entry's derived tag.
+pnpm attaches each staged platform variant under its entry's derived tag,
+and the `any` archive as the primary attachment, with its integrity as
+`dist.integrity`.
 
 The commit is then the request of
 [Sending a version with variants](#sending-a-version-with-variants), and it
@@ -1290,20 +1350,10 @@ The release job checks with `HEAD` that the five archives are still staged,
 then sends one publish request with a provenance statement that has five
 subjects. The `any` archive, which holds `index.js`, `lib/`, and
 `package.json` without any `.node` file, is the version's primary archive.
-The document references the variants as:
+The document references the archives only through its attachments:
 
 ```json
 {
-  "versions": {
-    "2.3.0": {
-      "pnprVariants": {
-        "linux-x64-manylinux_2_17-napi8": "sha512-<tgz digest>",
-        "linux-x64-musl-napi8": "sha512-<tgz digest>",
-        "darwin-arm64-macos_11_0-napi8": "sha512-<tgz digest>",
-        "win32-x64-napi8": "sha512-<tgz digest>"
-      }
-    }
-  },
   "_attachments": {
     "example-native-addon-2.3.0.tgz": { "integrity": "sha512-<tgz digest>", "length": 4210 },
     "example-native-addon-2.3.0~linux-x64-musl-napi8.tgz": { "integrity": "sha512-<tgz digest>", "length": 812345 }
@@ -1512,7 +1562,17 @@ The prototype found these problems, now addressed above:
     the publisher chooses. A version with only platform builds, such as a Go
     or Rust CLI, has no honest main artifact. Here the `any` entry is
     optional, and every other archive is named by the platforms it runs on.
-12. **Each machine publishing its own variant into the version.** A version
+12. **A field of the version entry that lists the variants**, such as a map
+    from each variant's tag to the integrity of its `.tgz`. Every variant is
+    already an attachment named by its tag, which carries its integrity, and
+    every archive's `package.json` already declares its targets in its
+    `variant` field. The map repeats both, so a request could disagree with
+    itself, and pnpr would have to reject the disagreement. A field in the
+    version entry also shares its namespace with the publisher's own
+    `package.json` fields, so a package whose manifest happened to use the
+    name would collide with the declaration. The attachments say everything
+    the map said.
+13. **Each machine publishing its own variant into the version.** A version
     would be live, and installable, before its last variant arrived. An
     install in that window would lock the primary or another variant for a
     host whose variant was still missing. The same `name@version` would then
@@ -1522,7 +1582,7 @@ The prototype found these problems, now addressed above:
     primary, and the immutable release record, which covers every archive of
     the version once. Staging from each machine and committing once keeps the
     uploads parallel and the publication atomic.
-13. **Moving archives between jobs as CI artifacts** to a release job that
+14. **Moving archives between jobs as CI artifacts** to a release job that
     uploads them all, with an option such as `--variant-archives <glob>`.
     The archives cross the CI provider's storage
     twice for nothing, the release job has to trust files it did not build,
@@ -1532,7 +1592,7 @@ The prototype found these problems, now addressed above:
     that cannot reach the registry can still hand its build output, the
     binary, to a machine that can. Packing is deterministic, so that machine
     produces the same archive, and `--variant-archives` adds nothing.
-14. **Publishing only the `any` archive to a registry without variants.** This
+15. **Publishing only the `any` archive to a registry without variants.** This
    produces a version that can never get its variants. See
    [Registries that do not serve variants](#registries-that-do-not-serve-variants).
 
@@ -1566,9 +1626,12 @@ Target pnpr and pnpm v12. Do not add a feature to pnpm v11.
 6. pnpr: accept a version with variants and no primary archive, generating its
    primary, and check that the provenance statement names every archive.
    Accept the variant's tag, `+` included and at most 128 bytes, as its
-   attachment label (`<basename>-<version>~<tag>.tgz` and the keys of
-   `pnprVariants`), and reject a version whose archive's `variant` field gives
-   another tag than the one that names it. Add each variant's `purl` to the
+   attachment label (`<basename>-<version>~<tag>.tgz`), and find a version's
+   variants from those attachments instead of from the `pnprVariants` field
+   of the version entry, which goes away. Reject a version whose archive's
+   `variant` field gives another tag than the one that names it, and a
+   `~<tag>` attachment whose name gives a version that the document does not
+   publish. Add each variant's `purl` to the
    release record. Let workload credentials of trusted publishing upload to
    and query the staging endpoint and send the batch commit; today they may
    only send `PUT` to a configured package. Accept a staged primary with only
@@ -1596,14 +1659,21 @@ Test the publisher with a variant pattern that matches no file (rejected before
 upload), a file claimed by the `any` entry and left out of every variant, an
 `any` entry combined with another target or declared twice (rejected), a
 declaration without an `any` entry (a warning, and a version without a primary),
-`pnpm pack --variant any` (the archive npm clients install, with no `variant`
-field), a a non-canonical target (rejected with the canonical spelling), a
-target that appears twice in one entry or in two entries (rejected, the error
-naming the entries by their targets), targets written in any order (the same
-derived tag), `--upload-variant` and `--variant-integrity` naming a variant by
-any one of its targets, two `--variant-integrity` values naming one entry
-(rejected), `os` in the base manifest (rejected), a variant that inherits an
-`install` script or a `binding.gyp` (rejected), `--upload-variant` on its own
+platform variants without a top-level `files` field (a warning), `"files": []`
+with a `bin` that a variant replaces (each native archive holds its executable
+and no shim), `pnpm pack --variant any` (the archive npm clients install, with
+no `variant` field), a publish request whose variants are only `~<tag>`
+attachments (accepted with no field in the version entry), a `~<tag>` attachment
+whose tag differs from its archive's `variant` field or whose version the
+document does not publish (rejected), a retried request with the same
+attachments (the recorded outcome), a batch whose documents each carry their own
+variants (one transaction), a non-canonical target (rejected with the canonical
+spelling), a target that appears twice in one entry or in two entries (rejected,
+the error naming the entries by their targets), targets written in any order
+(the same derived tag), `--upload-variant` and `--variant-integrity` naming a
+variant by any one of its targets, two `--variant-integrity` values naming one
+entry (rejected), `os` in the base manifest (rejected), a variant that inherits
+an `install` script or a `binding.gyp` (rejected), `--upload-variant` on its own
 (one archive staged, nothing published, the same integrity printed on a rerun,
 which renews the archive), `--variant-integrity` values that miss a declared
 variant or name an undeclared one (rejected before the commit), a staged archive
