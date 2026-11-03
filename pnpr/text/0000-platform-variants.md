@@ -949,8 +949,10 @@ pnpm publish --variant-integrity linux-x64-musl-napi8=sha512-… …
 `--variant-integrity <key>=<integrity>` is repeated once per variant. With
 `-r`, each value names its package first, as `<name>~<key>=<integrity>`. Tags
 never contain `~`, so the last `~` separates the two. pnpm takes the primary
-from the same flag when `primary` is given, and otherwise packs the primary in
-the release job, which needs only the primary's own files.
+from the same flag when `primary` is given. When the declaration sets
+`"primary": false`, the release job packs no primary, and pnpr generates one.
+Otherwise the release job packs the primary, which needs only the primary's
+own files.
 
 The values are short strings, so CI job outputs carry them from the upload
 jobs to the release job without artifacts (see [Example](#example)). Before
@@ -972,8 +974,12 @@ The commit is then the request of
 references every archive by integrity. The version appears complete or not
 at all. pnpr reads each staged archive's `variant` field, name, version, and
 peers, and runs every invariant on the complete set before it commits. An
-archive that a job built from another commit or for another version is
-therefore rejected by pnpr even though the release job never saw its bytes.
+archive packed for another package or version, or one that declares other
+platforms than its key, is therefore rejected even though the release job
+never saw its bytes. Nothing in an archive names the source commit it was
+built from, so an archive of the right version built from another commit
+passes these checks; only build provenance, discussed below, could bind it to
+a commit.
 
 For a primary given by integrity, the release job does not have the primary's
 bytes. It derives `versions[<version>]` from the declaration as packing would,
@@ -1190,9 +1196,12 @@ four jobs do not overwrite one another. Each value is `<key>=<integrity>`, as
 contain one. The musl variant is cross-compiled on the Ubuntu runner, as
 napi-rs builds it, so every job can use `bash`. The jobs exchange their OIDC
 tokens for the same trusted-publisher binding, so the archives they upload
-belong to the account that the release job commits as. An empty output, from
-a job that failed or was skipped, fails the release job before the commit, and
-the error names the missing variant.
+belong to the account that the release job commits as. A matrix job that
+fails stops the workflow before the release job, which `needs` every one of
+them, so nothing is committed. If the release step names an output that no
+matrix job sets, as when a matrix entry is removed but its line is not, the
+value is empty, and pnpm fails before the commit, naming the variant that has
+no integrity.
 
 The release job packs the primary from `index.js`, `fallback.js`, and
 `package.json`, without any `.node` file, and stages it. It checks with `HEAD`
