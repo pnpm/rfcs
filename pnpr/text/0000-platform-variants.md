@@ -439,9 +439,7 @@ macOS arm64 with N-API 9 must prefer A. No single ordering of A and B works.
 Reuse the resolution type and matching utilities, but extend the selector for
 these records. The selector chooses its rule from each variant's resolution: a
 runtime's `binary` archives keep first-match selection, and a package's
-registry or tarball variants are ranked. It needs no version check; the
-lockfile version marker is needed only so older releases do not rewrite a
-lockfile without its variants.
+registry or tarball variants are ranked. It needs no version check.
 
 For example:
 
@@ -548,14 +546,17 @@ Tools that walk the lockfile, such as `pnpm why`, `pnpm audit`,
 `pnpm licenses`, and SBOM generation, visit the variant snapshots too, so a
 dependency that only one variant declares is reported.
 
-`VariationsResolution` and its targets reject unknown fields today, so
-pnpm v12 releases that predate this RFC fail to parse such a lockfile instead
-of installing the wrong archive. That holds only under `--frozen-lockfile`.
-Without it, those releases report the lockfile as broken, resolve again, link
-the primary, and write the lockfile back without variants, so one teammate on
-an older pnpm silently removes every variant from the repository. The
-lockfile must carry a marker that older releases reject in every mode, such
-as a new `lockfileVersion`.
+A lockfile that records variants keeps `lockfileVersion: '9.0'`. Only pnpr's
+package variants would need a new version, so none is added.
+`VariationsResolution` and its targets reject unknown fields today, so pnpm
+v12 releases that predate this RFC refuse to read an entry with a `fallback`
+field, or any other field they do not know, instead of installing the wrong
+archive. Under `--frozen-lockfile` the install stops. Without it, those
+releases report the lockfile as broken and resolve again. pnpm v11 does not
+refuse the entry. Either one can link the primary on a fresh resolve and
+write the lockfile back without variants, so one teammate on an older pnpm
+can remove every variant from the repository. That is accepted while pnpr is
+experimental.
 
 ### Install
 
@@ -606,14 +607,9 @@ as a new `lockfileVersion`.
   `supportedArchitectures` from the store through an API that this RFC leaves
   open; they are not linked under the package's name.
 - Server-side resolution through pnpr already produces platform-neutral
-  lockfiles. Reuse the request's existing `acceptedLockfileFormats` field:
-  the new lockfile version covers host-ranked selection, per-variant snapshots,
-  and fallback semantics together. When the selected graph requires variants
-  and the client has not explicitly accepted that format, return the existing
-  HTTP 400 `ERR_PNPR_INCOMPATIBLE_LOCKFILE_FORMAT` error. The returned
-  lockfile's version identifies its semantics; no separate capability or echo
-  is needed. Never silently downgrade to the primary. Clients accepting only
-  older formats can still resolve graphs that require no variants.
+  lockfiles. It returns the variants it resolved in the same lockfile
+  version, so no format negotiation or capability is needed. Never silently
+  downgrade to the primary.
 
 ### Publication
 
@@ -813,8 +809,6 @@ Target pnpr and pnpm v12. Do not add a feature to pnpm v11.
    `supportedArchitectures`.
 5. pnpm: publisher support to pack variants and publish a version with its
    variants through batch publish.
-6. pnpm: a lockfile marker that older releases reject without
-   `--frozen-lockfile` too.
 
 Tests must cover selection order with floors and `wasm32`, an unknown tag field
 falling back to the primary, a frozen install on a platform that did not resolve
@@ -839,9 +833,7 @@ lockfile array order, and two projects selecting identical archive bytes but
 different versions of a ranged dependency. Their virtual store entries must
 preserve the different resolved graphs. Cover equal constraint counts with an
 absent versus present libc floor, numeric floor ordering, exact ABI versus N-API
-overlaps, implicit versus explicit glibc, rejected score ties, and missing or
-incompatible `acceptedLockfileFormats`. Unsupported clients must receive the
-existing incompatibility error without a downgraded lockfile. Also cover
+overlaps, implicit versus explicit glibc, and rejected score ties. Also cover
 `supportedArchitectures` naming another platform without floors: every variant
 matching its `os`, `cpu`, and `libc` is fetched, none with a floor is linked
 for it, and the primary is fetched and linked when no variant without a floor
