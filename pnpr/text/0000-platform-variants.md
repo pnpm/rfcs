@@ -638,10 +638,12 @@ that job talks to pnpr, so no build job needs registry credentials.
 [Publishing with pnpm](#publishing-with-pnpm) describes how pnpm builds and
 sends these requests.
 
-The release job signs one provenance statement for the version, with the
-digest of every archive it publishes as a subject; SLSA statements allow
-several subjects. pnpr rejects the version unless the statement
-names every published archive, so no archive enters the version outside it.
+When the release job publishes with provenance, it signs one statement for
+the version, with the digest of every archive it publishes as a subject; SLSA
+statements allow several subjects. pnpr rejects a version with a statement
+unless the statement names every archive the publisher sent, so no archive
+enters the version outside it. A version published without provenance has no
+statement to check.
 This is what npm provenance proves today: that a workflow of a given
 repository and commit published these bytes. It does not prove that a job of
 that commit built each archive, the same gap npm has for any package built in
@@ -740,9 +742,10 @@ replacement as the base manifest. pnpm rejects the declaration before it packs
 anything when:
 
 - a `manifest` sets `name`, `version`, `peerDependencies`,
-  `peerDependenciesMeta`, or `variant`. Every archive shares the first four
-  (see [Invariants](#invariants-the-registry-enforces)), and pnpm writes
-  `variant` from the key;
+  `peerDependenciesMeta`, `variant`, or `publishConfig`. Every archive shares
+  the first four (see [Invariants](#invariants-the-registry-enforces)), pnpm
+  writes `variant` from the key, and `publishConfig` holds the declaration,
+  which no archive publishes;
 - a variant's `manifest` sets `os`, `cpu`, or `libc`;
 - the base manifest has `os`, `cpu`, or `libc`, including fields hoisted from
   `publishConfig`. Every variant would inherit the fields, which pnpr
@@ -878,8 +881,10 @@ pnpm builds the publish document of the version as today and adds:
   `<basename>-<version>~<label>.tgz` after the primary's attachment name. The
   entry carries the archive's `integrity` and `length` and no `data`.
 
-pnpm stages every archive of the version, the primary included, by its
-integrity before it sends the document. It sends `HEAD`, then `PUT` to
+pnpm stages every archive it sends, the primary included, by its integrity
+before it sends the document. A primary that pnpr generates for a version
+with `"primary": false` is not sent, so it is not staged and does not count
+toward the limits below. It sends `HEAD`, then `PUT` to
 `/-/pnpr/v0/artifacts/blob?integrity=…` when the archive is not staged yet.
 Each attachment then references its own staged archive. Variant archives are
 never sent inline: the limit of one request body is why staging exists. pnpr
@@ -892,7 +897,10 @@ does for a batch without variants.
   `PUT <registry>/<name>` request. pnpr accepts staged archives there too.
 - `pnpm publish -r --batch` puts every package's document into the batch
   commit to `/-/pnpr/v0/publish`. Every version of the release becomes
-  visible together with all of its variants.
+  visible together with all of its variants. The batch is one transaction of
+  one organization's hosted catalog, and pnpr rejects a batch that spans
+  organizations, as in
+  [atomic workspace publication](./0000-atomic-workspace-publication.md).
 - `pnpm publish -r` without `--batch` sends one request per package. Each
   version still becomes visible together with its variants, but the release
   as a whole is not atomic.
@@ -903,8 +911,9 @@ builds the generated primary itself.
 
 #### Registries that do not serve variants
 
-pnpm refuses to publish a package that declares or is given variants to a
-registry that is not declared with `serverType: pnpr`. This includes a pnpr
+Unless `--no-variants` is given, pnpm refuses to publish a package that
+declares or is given variants to a registry that is not declared with
+`serverType: pnpr`. This includes a pnpr
 deployment that the configuration does not declare as one. The error names
 the registry and the setting.
 
@@ -922,7 +931,9 @@ to publish.
 
 #### Dry runs, provenance, and retries
 
-`pnpm publish --dry-run` packs every archive, runs every check above, derives
+`pnpm publish --dry-run` packs every archive it would pack, reads the
+archives given with `--variant-archives` without rewriting them, runs every
+check above, derives
 the labels and integrities, and applies the registry rule above. It then
 prints each archive's tag, platforms, size, and integrity. It sends no
 request, not even `HEAD`, and signs nothing. The JSON summary gains a
@@ -957,7 +968,9 @@ A publish can be retried by running the same command again:
   the version's entry from pnpr's package document, or from its release
   record when the document is split. It reports the version as
   published when the integrity of the primary and of each variant equals the
-  digest of the tar in the archive it would have sent. Otherwise it fails and
+  digest of the tar in the archive it would have sent. For a version with
+  `"primary": false`, it compares the variants only: pnpr generated the
+  primary from them, so it follows from them. Otherwise it fails and
   names the archives that differ. Rerunning a release job is safe this way,
   with or without provenance.
 
@@ -1288,7 +1301,8 @@ non-canonical variant key (rejected with the canonical spelling), `os` in the
 base manifest (rejected), a variant that inherits an `install` script or a
 `binding.gyp` (rejected), given archives that miss a declared variant
 (rejected), a publish to a registry not declared with `serverType: pnpr`
-(refused, also in a dry run), `--no-variants`, a dry run that sends no
+(refused, also in a dry run), `--no-variants` to such a registry for a
+package that declares variants (only the primary is published), a dry run that sends no
 request, and a rerun after a lost commit response with and without
 provenance (reported as published when the integrities match).
 
