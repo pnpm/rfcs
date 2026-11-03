@@ -838,7 +838,10 @@ writes each variant next to it, with `~<tag>` before `.tgz`, as in
 `example-native-addon-2.3.0~linux-x64-musl-napi8.tgz` or
 `example-cli-4.0.0~linux-x64+linux-x64-musl.tgz`. The publish request uses
 the same name for the variant's attachment, so the tag is the only name a
-variant has, and a retry derives the same names.
+variant has, and a retry derives the same names. A long package name and a
+long tag can together exceed the 255 bytes that common file systems allow for
+one file name. pnpm checks the whole name before it packs and refuses a
+variant whose file name would be longer, naming the package and the tag.
 
 `pnpm pack --variant <key>` packs only the named archives. It can be
 repeated, and `primary` names the primary archive. The patterns of variants
@@ -949,16 +952,18 @@ fails exactly where the publish would fail before its first request.
 
 With `--provenance`, pnpm signs one statement for each version it publishes,
 as [Publication](#publication) requires. Its subjects are that version's
-archives: the primary's `.tgz`, named `pkg:npm/<name>@<version>` as npm names
-it, and each variant's `.tgz`, named by the same PURL with a `variant`
-qualifier whose value is the variant's tag, as in
+archives: the primary's `.tgz`, named by the version's canonical npm PURL as
+npm provenance names it (a scope's `@` written `%40`, as in
+`pkg:npm/%40example/widgets@1.2.0`), and each variant's `.tgz`, named by the
+same PURL with a `variant` qualifier whose value is the variant's tag, as in
 `pkg:npm/example-native-addon@2.3.0?variant=linux-x64-musl`. PURL qualifier
 values are percent-encoded, and `+` is always written `%2B`, never left as is,
 because a query string can read a bare `+` as a space:
 `linux-x64+linux-x64-musl` is
 `pkg:npm/example-cli@4.0.0?variant=linux-x64%2Blinux-x64-musl`. Without a
-primary, the subjects are the variants. The release record names each variant
-by the same PURL (see [release records](./0000-release-records.md#npm)). The
+primary, the subjects are the variants. The release record's `purl` and its
+variants' `purl` values are built the same way, so each names an archive by
+the same PURL (see [release records](./0000-release-records.md#npm)). The
 statement goes in the version's usual inline `.sigstore` attachment. The
 statement attests that the job which ran `pnpm publish` published these
 archives, including archives given with `--variant-archives`, and not that it
