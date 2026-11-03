@@ -121,7 +121,12 @@ the binding by decompressing the `.tgz` and hashing the tar. A version with
 [platform variants](./0000-platform-variants.md) has one record covering every
 archive: each variant entry carries its own `inputs` (its `.tgz` and its
 `package.json`), its tar `integrity`, sizes, `bins`, platforms, and the fields
-of its manifest that differ from the version's. A version without a primary has
+of its manifest that differ from the version's. Each variant entry also has a
+`purl`: the record's PURL with a `variant` qualifier whose value is the
+variant's tag, percent-encoded as every qualifier value is, so `+` is written
+`%2B`, as in `pkg:npm/example-native-addon@2.3.0?variant=linux-x64-musl` or
+`pkg:npm/example-cli@4.0.0?variant=linux-x64%2Blinux-x64-musl`. Publisher
+provenance names a variant's `.tgz` by the same PURL. A version without a primary has
 no top-level `integrity`. The `manifest` is the install manifest that
 [publish-time manifest verification](./0000-publish-manifest-verification.md)
 derives from `package.json`. The served record's `name` and `version` stay for
@@ -407,7 +412,9 @@ keeps it as it was published:
 - npm provenance is a Sigstore bundle whose SLSA Statement names the `.tgz`
   digest. A client accepts it for a record only when that digest is the
   record's `inputs.archive`, or a variant's, which the logged record binds to
-  the tar digest it installs.
+  the tar digest it installs. A subject for a variant's `.tgz` is named by
+  that variant's `purl`, so the statement and the record name the archive
+  alike.
 - Python attestations ([PEP 740](https://peps.python.org/pep-0740/)) are
   Sigstore-signed in-toto Statements naming the distribution file's digest,
   which is the record's artifact digest.

@@ -702,7 +702,7 @@ Every key other than `primary` is a variant's tag, as defined in
 [Platform tags](#platform-tags): the variant's platform tags, sorted by their
 bytes and joined with `+`. The publisher writes the derived name instead of a
 list of platforms. The name in `package.json` is then the name in routes and
-in the lockfile, and, with `+` written as `.`, in the file names of packed
+in the lockfile, in the publish request, and in the file names of packed
 archives (see [Packing](#packing)). A variant cannot be declared twice.
 
 A variant's entry, and `primary`, can have two fields:
@@ -806,6 +806,11 @@ For each variant key, pnpm checks that:
   that this pnpm does not know. A tag with a field from a later vocabulary is
   rejected and the error asks for a newer pnpm, because a client that cannot
   parse the tag cannot check it;
+- the key is at most 128 bytes long. pnpr refuses a longer tag, because a
+  tag is one segment of a route and part of an attachment's file name. pnpm
+  refuses it before packing and names the key; a variant that needs more
+  platforms than fit is split into several variants, never shortened or
+  hashed into another name;
 - the parts are distinct, in byte order, and joined with `+` give the key
   back. The error spells out the canonical key: it gives
   `darwin-arm64+darwin-x64` for `darwin-x64+darwin-arm64`, and `linux-x64` for
@@ -829,16 +834,11 @@ For each archive, whether pnpm packed it or it was given, pnpm checks that:
 #### Packing
 
 `pnpm pack` writes the primary archive under the file name it uses today. It
-writes each variant next to it, with `~<label>` before `.tgz`, as in
-`example-native-addon-2.3.0~linux-x64-musl-napi8.tgz`. The label is the
-attachment label pnpr's publish body pairs a variant with
-(`[a-z0-9._-]`, at most 64 bytes, not starting with `.`). It is the
-variant's tag with each `+` replaced by `.`, a character that tags do not
-use, so `linux-x64+linux-x64-musl` is labeled `linux-x64.linux-x64-musl`. A
-label that would be longer than 64 bytes keeps its first 47 bytes, then `.`
-and the first 16 hexadecimal digits of the SHA-256 of the tag. Labels are
-derived, so the publisher never chooses one, and a retry derives the same
-labels.
+writes each variant next to it, with `~<tag>` before `.tgz`, as in
+`example-native-addon-2.3.0~linux-x64-musl-napi8.tgz` or
+`example-cli-4.0.0~linux-x64+linux-x64-musl.tgz`. The publish request uses
+the same name for the variant's attachment, so the tag is the only name a
+variant has, and a retry derives the same names.
 
 `pnpm pack --variant <key>` packs only the named archives. It can be
 repeated, and `primary` names the primary archive. The patterns of variants
@@ -875,11 +875,16 @@ named in an attestation.
 Variants are published only to a registry declared with `serverType: pnpr`.
 pnpm builds the publish document of the version as today and adds:
 
-- `versions[<version>].pnprVariants`, which maps each variant's label to the
+- `versions[<version>].pnprVariants`, which maps each variant's tag to the
   SRI SHA-512 integrity of its `.tgz`;
 - one entry in `_attachments` per variant, named
-  `<basename>-<version>~<label>.tgz` after the primary's attachment name. The
+  `<basename>-<version>~<tag>.tgz` after the primary's attachment name. The
   entry carries the archive's `integrity` and `length` and no `data`.
+
+The tag in these names is the variant's key, `+` included. It only pairs the
+reference with its attachment: pnpr reads each archive's platforms from its
+`variant` field and rejects the version when they do not give the tag that
+names the archive.
 
 pnpm stages every archive it sends, the primary included, by its integrity
 before it sends the document. A primary that pnpr generates for a version
@@ -936,25 +941,34 @@ to publish.
 
 `pnpm publish --dry-run` packs every archive it would pack, reads the
 archives given with `--variant-archives` without rewriting them, runs every
-check above, derives
-the labels and integrities, and applies the registry rule above. It then
+check above, computes the integrities, and applies the registry rule above. It then
 prints each archive's tag, platforms, size, and integrity. It sends no
 request, not even `HEAD`, and signs nothing. The JSON summary gains a
 `variants` list for each package with the same fields. A dry run therefore
 fails exactly where the publish would fail before its first request.
 
-With `--provenance`, pnpm signs one statement for the version, as
-[Publication](#publication) requires. Its subjects are the primary's `.tgz`,
-named `pkg:npm/<name>@<version>` as npm names it, and each variant's `.tgz`,
-named with a `variant` qualifier, as in
-`pkg:npm/example-native-addon@2.3.0?variant=linux-x64-musl-napi8` (with `+`
-percent-encoded). Without a primary, the subjects are the variants. The
-statement goes in the usual inline `.sigstore` attachment of the version.
-The statement attests that the job which ran `pnpm publish` published these
+With `--provenance`, pnpm signs one statement for each version it publishes,
+as [Publication](#publication) requires. Its subjects are that version's
+archives: the primary's `.tgz`, named `pkg:npm/<name>@<version>` as npm names
+it, and each variant's `.tgz`, named by the same PURL with a `variant`
+qualifier whose value is the variant's tag, as in
+`pkg:npm/example-native-addon@2.3.0?variant=linux-x64-musl`. PURL qualifier
+values are percent-encoded, and `+` is always written `%2B`, never left as is,
+because a query string can read a bare `+` as a space:
+`linux-x64+linux-x64-musl` is
+`pkg:npm/example-cli@4.0.0?variant=linux-x64%2Blinux-x64-musl`. Without a
+primary, the subjects are the variants. The release record names each variant
+by the same PURL (see [release records](./0000-release-records.md#npm)). The
+statement goes in the version's usual inline `.sigstore` attachment. The
+statement attests that the job which ran `pnpm publish` published these
 archives, including archives given with `--variant-archives`, and not that it
-built them. `pnpm publish --batch` still refuses `--provenance`, as it does
-today, so a release with provenance is published with `pnpm publish` or
-`pnpm publish -r`.
+built them.
+
+`pnpm publish --batch` accepts `--provenance`. It signs one statement per
+version of the batch, naming only that version's primary and variants, and
+puts it in the `.sigstore` attachment of that package's document, so each
+statement is checked against its own version as it would be in a
+single-package publish.
 
 A publish can be retried by running the same command again:
 
@@ -1276,9 +1290,16 @@ Target pnpr and pnpm v12. Do not add a feature to pnpm v11.
    publish requests, staging every archive, as in
    [Publishing with pnpm](#publishing-with-pnpm). Add `pnpm pack --variant`,
    `pnpm publish --variant-archives` and `--no-variants`, the provenance
-   subjects of variants, and the retry check against pnpr's document.
+   subjects of variants with the `variant` PURL qualifier, provenance in
+   `pnpm publish --batch` with one statement per version, and the retry
+   check against pnpr's document.
 6. pnpr: accept a version with variants and no primary archive, generating its
    primary, and check that the provenance statement names every archive.
+   Accept the variant's tag, `+` included and at most 128 bytes, as its
+   attachment label (`<basename>-<version>~<tag>.tgz` and the keys of
+   `pnprVariants`), and reject a version whose archive's `variant` field gives
+   another tag than the one that names it. Add each variant's `purl` to the
+   release record.
 
 Tests must cover selection order with floors and `wasm32`, an unknown tag field
 falling back to the primary, a frozen install on a platform that did not resolve
@@ -1304,7 +1325,9 @@ non-canonical variant key (rejected with the canonical spelling), `os` in the
 base manifest (rejected), a variant that inherits an `install` script or a
 `binding.gyp` (rejected), given archives that miss a declared variant
 (rejected), a publish to a registry not declared with `serverType: pnpr`
-(refused, also in a dry run), `--no-variants` to such a registry for a
+(refused, also in a dry run), a variant key over 128 bytes (refused before
+packing), `--provenance` with `--batch` (one statement per version, naming
+only its archives, with `+` in a tag written `%2B`), `--no-variants` to such a registry for a
 package that declares variants (only the primary is published), a dry run that sends no
 request, and a rerun after a lost commit response with and without
 provenance (reported as published when the integrities match).
@@ -1346,12 +1369,6 @@ matches it.
   dimension cannot be detected as reliably as the OS and CPU.
 - How should `pnpm deploy` and `node_modules` copied into a container choose
   the linked variant when several platforms are prepared?
-- Should pnpr accept a variant's tag, with `+`, as its attachment label, so
-  that pnpm needs no label mapping and packed file names use the tag itself?
-- Should `pnpm publish --batch` accept `--provenance`, with one statement per
-  version of the batch, each in its own document's `.sigstore` attachment?
-- Is `variant` the right qualifier name for a variant's provenance subject,
-  and should the release record use the same PURL?
 - Should large assets that are not platform builds, such as a Chromium
   download, use the same mechanism or a separate attached-assets RFC?
 - Can pnpr fold the existing esbuild-style pattern of proxied npm packages into
