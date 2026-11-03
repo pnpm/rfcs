@@ -890,8 +890,11 @@ Each attachment then references its own staged archive. Variant archives are
 never sent inline: the limit of one request body is why staging exists. pnpr
 holds at most 256 staged archives, and 2 GiB, for one account, so one request
 can reference at most that many. pnpm fails before it uploads when a package,
-or a batch, has more archives. It does not fall back to inline archives as it
-does for a batch without variants.
+or a batch, has more than 256 archives or more than 2 GiB of them in total.
+Archives that the account staged earlier also count, which pnpm cannot see,
+so pnpr can still refuse an upload; a failed staging publishes nothing. pnpm
+does not fall back to inline archives as it does for a batch without
+variants.
 
 - `pnpm publish` of one package sends the document in its usual
   `PUT <registry>/<name>` request. pnpr accepts staged archives there too.
