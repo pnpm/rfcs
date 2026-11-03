@@ -662,7 +662,8 @@ could upload their attestations beside them.
 
 pnpm publishes a version and its variants from one package directory. The
 publisher declares the variants in `package.json`, under
-`publishConfig.variants`. From that declaration `pnpm pack` and
+`publishConfig.variants`, and the primary archive under
+`publishConfig.primary`. From that declaration `pnpm pack` and
 `pnpm publish` build one archive per variant, write each archive's `variant`
 field, and run the checks pnpr runs. `pnpm publish` then sends all the
 archives in one publication. When the variants are built on several
@@ -671,9 +672,9 @@ archive, and a final `pnpm publish` commits them all.
 
 #### Declaring variants
 
-`publishConfig.variants` maps the tag of each variant to what its archive
-adds to the package. Its `primary` key says what only the primary archive
-has:
+`publishConfig.variants` is an array with one entry per variant. Each entry
+lists the platforms the variant runs on, as `targets`, and says what its
+archive adds to the package:
 
 ```json
 {
@@ -682,33 +683,37 @@ has:
   "main": "index.js",
   "files": ["index.js", "fallback.js"],
   "publishConfig": {
-    "variants": {
-      "linux-x64-manylinux_2_17-napi8": {
+    "variants": [
+      {
+        "targets": ["linux-x64-manylinux_2_17-napi8"],
         "files": ["example-native-addon.linux-x64-gnu.node"]
       },
-      "linux-x64-musl-napi8": {
+      {
+        "targets": ["linux-x64-musl-napi8"],
         "files": ["example-native-addon.linux-x64-musl.node"]
       },
-      "darwin-arm64-macos_11_0-napi8": {
+      {
+        "targets": ["darwin-arm64-macos_11_0-napi8"],
         "files": ["example-native-addon.darwin-arm64.node"]
       },
-      "win32-x64-napi8": {
+      {
+        "targets": ["win32-x64-napi8"],
         "files": ["example-native-addon.win32-x64-msvc.node"]
       }
-    }
+    ]
   }
 }
 ```
 
-Every key other than `primary` is a variant's tag, as defined in
-[Platform tags](#platform-tags): the variant's platform tags, sorted by their
-bytes and joined with `+`. The publisher writes the derived name instead of a
-list of platforms. The name in `package.json` is then the name in routes and
-in the lockfile, in the publish request, and in the file names of packed
-archives (see [Packing](#packing)). A variant cannot be declared twice.
+An entry has three fields:
 
-A variant's entry, and `primary`, can have two fields:
-
+- `targets`: a non-empty array of platform tags, each the tag of one
+  platform as [Platform tags](#platform-tags) defines it, such as
+  `linux-x64-musl` or `darwin-arm64-macos_11_0`. The publisher never writes
+  the variant's tag. pnpm derives it as the RFC does, by sorting the targets
+  by their bytes and joining them with `+`. That tag is the variant's name in
+  routes, in the lockfile, in the publish request, and in the file names of
+  packed archives (see [Packing](#packing)).
 - `files`: patterns in the syntax of the `files` field of `package.json`,
   relative to the directory that is packed (`publishConfig.directory` when it
   is set).
@@ -717,27 +722,41 @@ A variant's entry, and `primary`, can have two fields:
   This is the rule that the `manifest` of a variant entry in pnpr's document
   follows.
 
-`primary` is `{}` when absent. `"primary": false` publishes a version with no
+`publishConfig.primary` is optional. It is an object with the same `files`
+and `manifest` fields, which describe what only the primary archive has, and
+it is `{}` when absent. `"primary": false` publishes a version with no
 primary archive.
 
+One target names its variant wherever pnpm takes a variant on the command
+line: `pnpm pack --variant linux-x64-musl-napi8`,
+`pnpm publish --upload-variant linux-x64-musl-napi8`, and
+`--variant-integrity linux-x64-musl-napi8=<integrity>`. Any one of a
+variant's targets names it, because no target appears in two entries.
+`primary` names the primary archive; it is never a platform tag, because a
+platform tag always has an `<os>-<cpu>` part or is `wasm32`. pnpm prints the
+derived tag beside the target in its output and in its JSON. An error about
+an entry shows the entry by its targets as written.
+
 pnpm lists the package's files as `pnpm pack` does today. It then adds every
-file that a `files` pattern of `primary` or of a variant matches, even when
+file that a `files` pattern of `publishConfig.primary` or of a variant matches, even when
 the package's own `files` field leaves the file out. A file that one of these
 patterns matches goes only into the archives whose patterns match it. Every
-other file is shared and goes into every archive. A pattern that matches no
-file fails the pack of its archive, so a missing build output never publishes
-a variant without its binary.
+file that no pattern claims is shared: it goes into the primary, as it would
+without variants, and into every variant. A pattern that matches no file
+fails the pack of its archive, so a missing build output never publishes a
+variant without its binary.
 
 The **base manifest** is the manifest that pnpm publishes for the package
 today: `publishConfig` overrides hoisted, `workspace:` and `catalog:`
-specifiers replaced, publish lifecycle scripts stripped. `publishConfig.variants`
-is removed from it. Then:
+specifiers replaced, publish lifecycle scripts stripped.
+`publishConfig.variants` and `publishConfig.primary` are removed from it.
+Then:
 
-- the primary archive's `package.json` is the base manifest with `primary`'s
-  `manifest` applied;
-- a variant archive's `package.json` is the base manifest with the variant's
-  `manifest` applied, plus a `variant` field that lists the variant's
-  platforms in tag order.
+- the primary archive's `package.json` is the base manifest with
+  `publishConfig.primary`'s `manifest` applied;
+- a variant archive's `package.json` is the base manifest with the entry's
+  `manifest` applied, plus a `variant` field that lists the entry's targets
+  in tag order.
 
 Specifiers in a `manifest` go through the same `workspace:` and `catalog:`
 replacement as the base manifest. pnpm rejects the declaration before it packs
@@ -746,13 +765,13 @@ anything when:
 - a `manifest` sets `name`, `version`, `peerDependencies`,
   `peerDependenciesMeta`, `variant`, or `publishConfig`. Every archive shares
   the first four (see [Invariants](#invariants-the-registry-enforces)), pnpm
-  writes `variant` from the key, and `publishConfig` holds the declaration,
-  which no archive publishes;
+  writes `variant` from the entry's targets, and `publishConfig` holds the
+  declaration, which no archive publishes;
 - a variant's `manifest` sets `os`, `cpu`, or `libc`;
 - the base manifest has `os`, `cpu`, or `libc`, including fields hoisted from
   `publishConfig`. Every variant would inherit the fields, which pnpr
   rejects. A primary that should only be installed on some platforms
-  declares them in `primary`'s `manifest`.
+  declares them in `publishConfig.primary`'s `manifest`.
 
 pnpm does not remove these fields for the publisher. A platform package's
 `os` and `cpu` that are left in its manifest after a migration are reported
@@ -769,28 +788,33 @@ points `bin` at its executable:
   "version": "4.0.0",
   "bin": { "example-cli": "bin/example-cli.js" },
   "publishConfig": {
-    "variants": {
-      "linux-x64+linux-x64-musl": {
+    "variants": [
+      {
+        "targets": ["linux-x64", "linux-x64-musl"],
         "files": ["native/linux-x64/example-cli"],
         "manifest": { "bin": { "example-cli": "native/linux-x64/example-cli" } }
       },
-      "darwin-arm64+darwin-x64": {
+      {
+        "targets": ["darwin-arm64", "darwin-x64"],
         "files": ["native/darwin-universal/example-cli"],
         "manifest": { "bin": { "example-cli": "native/darwin-universal/example-cli" } }
       },
-      "win32-x64": {
+      {
+        "targets": ["win32-x64"],
         "files": ["native/win32-x64/example-cli.exe"],
         "manifest": { "bin": { "example-cli": "native/win32-x64/example-cli.exe" } }
       }
-    }
+    ]
   }
 }
 ```
 
-Here the primary keeps `bin/example-cli.js`, a portable implementation or an
-error that names the supported platforms. With `"primary": false` the version
-has no primary, and pnpr generates the minimal primary that npm's documents
-point to.
+The first entry is one static Linux build for glibc and musl hosts, and pnpm
+names it `linux-x64+linux-x64-musl`; the second is a macOS universal binary,
+`darwin-arm64+darwin-x64`. Here the primary keeps `bin/example-cli.js`, a
+portable implementation or an error that names the supported platforms. With
+`"primary": false` the version has no primary, and pnpr generates the minimal
+primary that npm's documents point to.
 
 #### Checks before upload
 
@@ -800,25 +824,26 @@ what parses. pnpr can still reject a publication that passes these checks,
 but only for what the client cannot see, such as ownership or a version that
 already exists.
 
-For each variant key, pnpm checks that:
+For each entry of `publishConfig.variants`, pnpm checks that:
 
-- each part between `+` signs parses as a platform tag. Only the canonical
-  form parses: fields in the vocabulary's order, glibc written as no part,
-  floors written as `<major>_<minor>` without leading zeros, and no field
-  that this pnpm does not know. A tag with a field from a later vocabulary is
+- `targets` is a non-empty array, and each target parses as a platform tag.
+  Only the canonical form parses: fields in the vocabulary's order, glibc
+  written as no part, floors written as `<major>_<minor>` without leading
+  zeros, and no field that this pnpm does not know. The error spells out the
+  canonical form when there is one, such as `linux-x64` for the napi-rs
+  triple `linux-x64-gnu`. A tag with a field from a later vocabulary is
   rejected and the error asks for a newer pnpm, because a client that cannot
   parse the tag cannot check it;
-- the key is at most 128 bytes long. pnpr refuses a longer tag, because a
-  tag is one segment of a route and part of an attachment's file name. pnpm
-  refuses it before packing and names the key; a variant that needs more
-  platforms than fit is split into several variants, never shortened or
-  hashed into another name;
-- the parts are distinct, in byte order, and joined with `+` give the key
-  back. The error spells out the canonical key: it gives
-  `darwin-arm64+darwin-x64` for `darwin-x64+darwin-arm64`, and `linux-x64` for
-  the napi-rs triple `linux-x64-gnu`;
-- no platform appears in two variants, and no two variants can share the
-  highest score on any host under [Selection](#selection).
+- no target appears twice in the entry;
+- the derived tag is at most 128 bytes long. pnpr refuses a longer tag,
+  because a tag is one segment of a route and part of an attachment's file
+  name. pnpm refuses it before packing; a variant that needs more platforms
+  than fit is split into several variants, never shortened or hashed into
+  another name.
+
+Across the entries, pnpm checks that no target appears in two entries, and
+that no two variants can share the highest score on any host under
+[Selection](#selection).
 
 For each archive that pnpm packs, in the command that publishes or in a job
 that uploads one variant, pnpm checks that:
@@ -827,12 +852,12 @@ that uploads one variant, pnpm checks that:
 - its `peerDependencies` and `peerDependenciesMeta` equal the primary's, or
   the base manifest's when the version has no primary;
 - the primary declares no `variant`. Each variant declares a `variant` whose
-  platforms give its key, and no `os`, `cpu`, or `libc`;
+  platforms are its entry's targets, and no `os`, `cpu`, or `libc`;
 - no variant requires a build. pnpm decides this as pnpr does: from install
   scripts and from a `binding.gyp` that is not ignored. Such a file is shared
-  unless a pattern of `primary` claims it, so a package that keeps a source
-  build in its primary lists `binding.gyp` in `primary`'s `files`, and its
-  `install` script in `primary`'s `manifest`.
+  unless a pattern of `publishConfig.primary` claims it, so a package that
+  keeps a source build in its primary lists `binding.gyp` in the primary's
+  `files`, and its `install` script in the primary's `manifest`.
 
 #### Packing
 
@@ -840,19 +865,21 @@ that uploads one variant, pnpm checks that:
 writes each variant next to it, with `~<tag>` before `.tgz`, as in
 `example-native-addon-2.3.0~linux-x64-musl-napi8.tgz` or
 `example-cli-4.0.0~linux-x64+linux-x64-musl.tgz`. The publish request uses
-the same name for the variant's attachment, so the tag is the only name a
-variant has, and a retry derives the same names. A long package name and a
-long tag can together exceed the 255 bytes that common file systems allow for
-one file name. pnpm checks the whole name before it packs and refuses a
-variant whose file name would be longer, naming the package and the tag.
+the same name for the variant's attachment, so the derived tag is the only
+name a variant has, and a retry derives the same names. A long package name
+and a long tag can together exceed the 255 bytes that common file systems
+allow for one file name. pnpm checks the whole name before it packs and
+refuses a variant whose file name would be longer, naming the package and the
+entry's targets.
 
-`pnpm pack --variant <key>` packs only the named archives. It can be
-repeated, and `primary` names the primary archive. The patterns of variants
-that are not packed do not have to match anything, so a build job of a CI
-matrix packs its own variant without the other platforms' binaries. Their
-files are still left out of the archive it packs. With `--json`, `pnpm pack`
-lists each archive with its tag, platforms, integrity, size, and files.
-`prepack` and `postpack` run once around all the archives of the package.
+`pnpm pack --variant <target>` packs only the named archives. It can be
+repeated, and `--variant primary` packs the primary archive. The patterns of
+variants that are not packed do not have to match anything, so a build job of
+a CI matrix packs its own variant without the other platforms' binaries.
+Their files are still left out of the archive it packs. With `--json`,
+`pnpm pack` lists each archive with its tag, targets, integrity, size, and
+files. `prepack` and `postpack` run once around all the archives of the
+package.
 
 Packing is deterministic, as today: the same files give the same bytes, and
 so the same integrities, on every machine.
@@ -868,7 +895,7 @@ pnpm builds the publish document of the version as today and adds:
   `<basename>-<version>~<tag>.tgz` after the primary's attachment name. The
   entry carries the archive's `integrity` and `length` and no `data`.
 
-The tag in these names is the variant's key, `+` included. It only pairs the
+The tag in these names is the variant's derived tag, `+` included. It only pairs the
 reference with its attachment: pnpr reads each archive's platforms from its
 `variant` field and rejects the version when they do not give the tag that
 names the archive.
@@ -910,22 +937,24 @@ Variants are usually built on several machines, one per platform. Each
 machine uploads the variant it built, and one final job commits the version.
 No archive moves between jobs, and nothing is visible until the commit.
 
-`pnpm publish --upload-variant <key>` runs on the machine that built the
+`pnpm publish --upload-variant <target>` runs on the machine that built the
 variant:
 
-1. It packs the variant exactly as `pnpm pack --variant <key>` would.
+1. It packs the variant that `<target>` names, exactly as
+   `pnpm pack --variant <target>` would.
 2. It runs every check of [Checks before upload](#checks-before-upload) that
    the one archive allows, against the package's `publishConfig.variants`.
 3. It applies the rule of
    [Registries that do not serve variants](#registries-that-do-not-serve-variants).
 4. It uploads the archive with `PUT /-/pnpr/v0/artifacts/blob?integrity=…`.
-5. It prints `<key>=<integrity>`, the value that the commit takes, one line
-   per archive. Its standard output holds only these lines, so a CI step can
-   capture it. With `--json`, it prints the package's name and version, the
-   tag, and the integrity of each archive.
+5. It prints `<target>=<integrity>`, the value that the commit takes, one
+   line per archive, with the target it was given. Its standard output holds
+   only these lines, so a CI step can capture it, and its progress output
+   names the derived tag. With `--json`, it prints the package's name and
+   version, the derived tag, the targets, and the integrity of each archive.
 
 The option can be repeated, for a machine that builds several variants, and
-`primary` uploads the primary archive. The command always sends the `PUT`,
+`--upload-variant primary` uploads the primary archive. The command always sends the `PUT`,
 without asking `HEAD` first. Uploading bytes that are already staged only
 renews them, so a rerun of the job is safe and restarts the archive's
 expiry. The upload publishes nothing: a staged archive is not readable
@@ -946,9 +975,10 @@ The commit runs in a release job after every upload job:
 pnpm publish --variant-integrity linux-x64-musl-napi8=sha512-… …
 ```
 
-`--variant-integrity <key>=<integrity>` is repeated once per variant. With
-`-r`, each value names its package first, as `<name>~<key>=<integrity>`. Tags
-never contain `~`, so the last `~` separates the two. pnpm takes the primary
+`--variant-integrity <target>=<integrity>` is repeated once per variant, and
+any one of the variant's targets names it. With `-r`, each value names its
+package first, as `<name>~<target>=<integrity>`. Platform tags never contain
+`~`, so the last `~` separates the two. pnpm takes the primary
 from the same flag when `primary` is given. When the declaration sets
 `"primary": false`, the release job packs no primary, and pnpr generates one.
 Otherwise the release job packs the primary, which needs only the primary's
@@ -958,8 +988,9 @@ The values are short strings, so CI job outputs carry them from the upload
 jobs to the release job without artifacts (see [Example](#example)). Before
 it sends the commit, pnpm checks that:
 
-- every variant key of `publishConfig.variants` has exactly one integrity,
-  and no value names a variant key that is not declared. A matrix job that
+- every entry of `publishConfig.variants` has exactly one integrity, and no
+  value names a target that no entry declares. Two values that name the same
+  entry by different targets are an error. A matrix job that
   failed or was skipped is caught here, by name. `primary=<integrity>` is a
   separate, optional value, given at most once when the primary was staged
   elsewhere, and an error with `"primary": false`. A package with any
@@ -969,8 +1000,10 @@ it sends the commit, pnpm checks that:
   each integrity, and uses the `Content-Length` that pnpr returns as the
   attachment's `length`. pnpr reports an archive that expires within the
   hour as missing. A missing archive fails the publish before the commit
-  with an error that names the variant, its integrity, and the job to run
-  again.
+  with an error that names the variant by its targets, its integrity, and
+  the job to run again.
+
+pnpm attaches each staged archive under its entry's derived tag.
 
 The commit is then the request of
 [Sending a version with variants](#sending-a-version-with-variants), and it
@@ -978,7 +1011,7 @@ references every archive by integrity. The version appears complete or not
 at all. pnpr reads each staged archive's `variant` field, name, version, and
 peers, and runs every invariant on the complete set before it commits. An
 archive packed for another package or version, or one that declares other
-platforms than its key, is therefore rejected even though the release job
+platforms than its entry's targets, is therefore rejected even though the release job
 never saw its bytes. Nothing in an archive names the source commit it was
 built from, so an archive of the right version built from another commit
 passes these checks; only build provenance, discussed below, could bind it to
@@ -1127,12 +1160,14 @@ A publish can be retried by running the same command again:
 #### Migrating to variants
 
 The declaration is built so that the layouts that packages use today become
-variants by moving files and adding keys:
+variants by moving files and adding entries:
 
 - **One package per platform** (esbuild, `@swc/core`, napi-rs packages). The
   release job already gathers every platform's build, for napi-rs with
   `napi artifacts` into `npm/<platform>/`. It instead puts the builds into the
-  main package's directory and declares one variant per platform package.
+  main package's directory and declares one entry per platform package. The
+  entry's `targets` restate that package's `os`, `cpu`, and `libc` as
+  platform tags, one per combination it actually supports.
   The `optionalDependencies` on the platform packages and the platform
   packages' `os` and `cpu` go away. napi-rs loaders keep working because they
   try the local file first. A CLI sets `bin` to its executable and drops the
@@ -1140,11 +1175,11 @@ variants by moving files and adding keys:
   packages can still be published to npm, and the primary with
   `--no-variants`.
 - **prebuildify and node-gyp-build.** `prebuilds/<platform>-<arch>/` stays
-  where it is, and each variant claims its directory, or its files when one
+  where it is, and each entry claims its directory, or its files when one
   directory holds a glibc and a musl build. node-gyp-build finds the one
-  prebuild that the variant contains. The primary keeps the source build by
-  claiming `binding.gyp` and the sources, with the `install` script in
-  `primary`'s `manifest`.
+  prebuild that the variant contains. The primary keeps the source build:
+  `publishConfig.primary` claims `binding.gyp` and the sources, and its
+  `manifest` holds the `install` script.
 - **node-pre-gyp and prebuild-install.** The binaries they download from a
   release host are built by the same CI matrix. The matrix packs them as
   variants instead of uploading them, and the install-time download goes
@@ -1165,36 +1200,33 @@ jobs:
     strategy:
       matrix:
         include:
-          - id: linux_gnu
+          - target: linux-x64-manylinux_2_17-napi8
             runner: ubuntu-latest
-            variant: linux-x64-manylinux_2_17-napi8
-          - id: linux_musl
+          - target: linux-x64-musl-napi8
             runner: ubuntu-latest
-            variant: linux-x64-musl-napi8
-          - id: darwin
+          - target: darwin-arm64-macos_11_0-napi8
             runner: macos-latest
-            variant: darwin-arm64-macos_11_0-napi8
-          - id: win32
+          - target: win32-x64-napi8
             runner: windows-latest
-            variant: win32-x64-napi8
+    name: build (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
     permissions:
       id-token: write
     outputs:
-      linux_gnu: ${{ steps.upload.outputs.linux_gnu }}
-      linux_musl: ${{ steps.upload.outputs.linux_musl }}
-      darwin: ${{ steps.upload.outputs.darwin }}
-      win32: ${{ steps.upload.outputs.win32 }}
+      linux-x64-manylinux_2_17-napi8: ${{ steps.upload.outputs.linux-x64-manylinux_2_17-napi8 }}
+      linux-x64-musl-napi8: ${{ steps.upload.outputs.linux-x64-musl-napi8 }}
+      darwin-arm64-macos_11_0-napi8: ${{ steps.upload.outputs.darwin-arm64-macos_11_0-napi8 }}
+      win32-x64-napi8: ${{ steps.upload.outputs.win32-x64-napi8 }}
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run build:native ${{ matrix.variant }}
+      - run: pnpm run build:native ${{ matrix.target }}
       - id: upload
         shell: bash
         run: |
-          value=$(pnpm publish --upload-variant ${{ matrix.variant }})
-          echo "${{ matrix.id }}=$value" >> "$GITHUB_OUTPUT"
+          value=$(pnpm publish --upload-variant ${{ matrix.target }})
+          echo "${{ matrix.target }}=$value" >> "$GITHUB_OUTPUT"
   release:
     needs: build
     runs-on: ubuntu-latest
@@ -1206,16 +1238,17 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: >-
           pnpm publish --provenance
-          --variant-integrity "${{ needs.build.outputs.linux_gnu }}"
-          --variant-integrity "${{ needs.build.outputs.linux_musl }}"
-          --variant-integrity "${{ needs.build.outputs.darwin }}"
-          --variant-integrity "${{ needs.build.outputs.win32 }}"
+          --variant-integrity "${{ needs.build.outputs['linux-x64-manylinux_2_17-napi8'] }}"
+          --variant-integrity "${{ needs.build.outputs['linux-x64-musl-napi8'] }}"
+          --variant-integrity "${{ needs.build.outputs['darwin-arm64-macos_11_0-napi8'] }}"
+          --variant-integrity "${{ needs.build.outputs['win32-x64-napi8'] }}"
 ```
 
-Each matrix job sets only the output named by its `id`, so the outputs of the
-four jobs do not overwrite one another. Each value is `<key>=<integrity>`, as
-`--upload-variant` prints it, and is split at its first `=`, because tags never
-contain one. The musl variant is cross-compiled on the Ubuntu runner, as
+Each matrix leg is named by its variant's target, and sets only the output of
+that name, so the outputs of the four jobs do not overwrite one another.
+Platform tags are valid output names. Each value is `<target>=<integrity>`, as
+`--upload-variant` prints it, and is split at its first `=`, because platform
+tags never contain one. The musl variant is cross-compiled on the Ubuntu runner, as
 napi-rs builds it, so every job can use `bash`. The jobs exchange their OIDC
 tokens for the same trusted-publisher binding, so the archives they upload
 belong to the account that the release job commits as. A matrix job that
@@ -1421,17 +1454,27 @@ The prototype found these problems, now addressed above:
    patterns keeps one package root and one manifest. prebuildify's
    `prebuilds/` layout and napi-rs's `.node` files fit it without moving
    anything.
-9. **Each machine publishing its own variant into the version.** A version
-   would be live, and installable, before its last variant arrived. An
-   install in that window would lock the primary or another variant for a
-   host whose variant was still missing. The same `name@version` would then
-   resolve to different archives before and after, which the lockfile and
-   the immutable version are meant to rule out. It would also contradict
-   pnpr's rule that variants are accepted only together with their version's
-   primary, and the immutable release record, which covers every archive of
-   the version once. Staging from each machine and committing once keeps the
-   uploads parallel and the publication atomic.
-10. **Moving archives between jobs as CI artifacts** to a release job that
+9. **A map keyed by the variant's tag**, such as
+   `"variants": { "linux-x64+linux-x64-musl-napi8": { … } }`, with a reserved
+   `primary` key. Keys cannot repeat, but the publisher has to write the
+   registry's identifier: the targets sorted by their bytes, joined with `+`,
+   with every floor spelled out. That is easy to get wrong for a variant with
+   several targets, and a reordering is an error rather than the same
+   variant. An array of entries lets the publisher write the targets, while
+   pnpm derives the tag and checks for overlaps as pnpr does. A reserved key
+   among tags would also mix two kinds of name in one map;
+   `publishConfig.primary` keeps the primary apart.
+10. **Each machine publishing its own variant into the version.** A version
+    would be live, and installable, before its last variant arrived. An
+    install in that window would lock the primary or another variant for a
+    host whose variant was still missing. The same `name@version` would then
+    resolve to different archives before and after, which the lockfile and
+    the immutable version are meant to rule out. It would also contradict
+    pnpr's rule that variants are accepted only together with their version's
+    primary, and the immutable release record, which covers every archive of
+    the version once. Staging from each machine and committing once keeps the
+    uploads parallel and the publication atomic.
+11. **Moving archives between jobs as CI artifacts** to a release job that
     uploads them all, with an option such as `--variant-archives <glob>`.
     The archives cross the CI provider's storage
     twice for nothing, the release job has to trust files it did not build,
@@ -1441,7 +1484,7 @@ The prototype found these problems, now addressed above:
     that cannot reach the registry can still hand its build output, the
     binary, to a machine that can. Packing is deterministic, so that machine
     produces the same archive, and `--variant-archives` adds nothing.
-11. **Publishing only the primary to a registry without variants.** This
+12. **Publishing only the primary to a registry without variants.** This
    produces a version that can never get its variants. See
    [Registries that do not serve variants](#registries-that-do-not-serve-variants).
 
@@ -1461,7 +1504,7 @@ Target pnpr and pnpm v12. Do not add a feature to pnpm v11.
    `variations` entries with the new
    target fields and `fallback`, select at install, and fetch variants for
    `supportedArchitectures`.
-5. pnpm: read `publishConfig.variants`, pack and check each archive, and
+5. pnpm: read `publishConfig.variants` and `publishConfig.primary`, pack and check each archive, and
    publish a version with its variants through the single-package and batch
    publish requests, staging every archive, as in
    [Publishing with pnpm](#publishing-with-pnpm). Add `pnpm pack --variant`,
@@ -1501,8 +1544,12 @@ revision (including a frozen install rebuilding `+r<revision>` variant and
 fallback routes).
 
 Test the publisher with a variant pattern that matches no file (rejected
-before upload), a file claimed by `primary` and left out of every variant, a
-non-canonical variant key (rejected with the canonical spelling), `os` in the
+before upload), a file claimed by `publishConfig.primary` and left out of every variant, a
+a non-canonical target (rejected with the canonical spelling), a target that
+appears twice in one entry or in two entries (rejected, the error naming the
+entries by their targets), targets written in any order (the same derived
+tag), `--upload-variant` and `--variant-integrity` naming a variant by any one
+of its targets, two `--variant-integrity` values naming one entry (rejected), `os` in the
 base manifest (rejected), a variant that inherits an `install` script or a
 `binding.gyp` (rejected), `--upload-variant` on its own (one archive staged,
 nothing published, the same integrity printed on a rerun, which renews the
@@ -1510,7 +1557,7 @@ archive), `--variant-integrity` values that miss a declared variant or name
 an undeclared one (rejected before the commit), a staged archive that has
 expired or was uploaded by another account (rejected before the commit with
 an error naming the variant), a primary given by integrity, a publish to a registry not declared with `serverType: pnpr`
-(refused, also in a dry run), a variant key over 128 bytes (refused before
+(refused, also in a dry run), a derived tag over 128 bytes (refused before
 packing), `--provenance` with `--batch` (one statement per version, naming
 only its archives, with `+` in a tag written `%2B`), `--no-variants` to such a registry for a
 package that declares variants (only the primary is published), a dry run that sends no
