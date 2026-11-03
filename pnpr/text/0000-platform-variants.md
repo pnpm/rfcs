@@ -1105,7 +1105,14 @@ A publish can be retried by running the same command again:
   - the record has the same set of variant tags as the request, and the
     `.tgz` that it names as the input of the primary and of each variant is
     the one the request would have sent;
-  - the version has a provenance statement, when this run signs one;
+  - when this run signs provenance, the version has a provenance statement
+    whose subjects are the primary's `.tgz`, when the version has a primary,
+    and every variant's `.tgz`. Each subject is named by that archive's PURL
+    and carries the digest of the `.tgz` that the record names as the
+    archive's input. This is the comparison that pnpr runs at publication
+    (see [Publication](#publication)), and a client verifying the record
+    runs it as [release records](./0000-release-records.md#statements-in-toto-in-dsse)
+    describe;
   - the dist-tag the request would set points at the version.
 
   For a version with `"primary": false`, the record has no top-level
