@@ -1100,13 +1100,21 @@ A publish can be retried by running the same command again:
   signs nothing.
 - A retry that signs provenance again sends a new statement, so it is a new
   request, and pnpr reports the version as already published. pnpm then reads
-  the version's release record. It reports the version as published when the
-  `.tgz` that the record names as the input of the primary and of each
-  variant is the one it would have sent. For a version with
-  `"primary": false`, it compares the variants only: pnpr generated the
-  primary from them, so it follows from them. Otherwise it fails and
-  names the archives that differ. Rerunning a release job is safe this way,
-  with or without provenance.
+  the version's release record and its publication evidence. It reports the
+  version as published only when all of these hold:
+  - the record has the same set of variant tags as the request, and the
+    `.tgz` that it names as the input of the primary and of each variant is
+    the one the request would have sent;
+  - the version has a provenance statement, when this run signs one;
+  - the dist-tag the request would set points at the version.
+
+  For a version with `"primary": false`, the record names no input for the
+  primary, because no publisher sent one. pnpr built the generated primary
+  from the variants, and its record gives only that primary's tar
+  `integrity`, so pnpm compares the variants only. In any other case pnpm
+  fails and names what differs: an archive, a missing statement, or the
+  dist-tag. Rerunning a release job is safe this way, with or without
+  provenance.
 
 #### Migrating to variants
 
