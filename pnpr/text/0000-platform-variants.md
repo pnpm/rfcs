@@ -958,10 +958,13 @@ The values are short strings, so CI job outputs carry them from the upload
 jobs to the release job without artifacts (see [Example](#example)). Before
 it sends the commit, pnpm checks that:
 
-- every key of `publishConfig.variants` has exactly one integrity, and no
-  value names a key that is not declared. A matrix job that failed or was
-  skipped is caught here, by name. A package with any `--variant-integrity`
-  takes every variant from them, and pnpm packs none of its variants;
+- every variant key of `publishConfig.variants` has exactly one integrity,
+  and no value names a variant key that is not declared. A matrix job that
+  failed or was skipped is caught here, by name. `primary=<integrity>` is a
+  separate, optional value, given at most once when the primary was staged
+  elsewhere, and an error with `"primary": false`. A package with any
+  `--variant-integrity` takes every variant from them, and pnpm packs none of
+  its variants;
 - each archive is still staged. It sends `HEAD` on the staging endpoint for
   each integrity, and uses the `Content-Length` that pnpr returns as the
   attachment's `length`. pnpr reports an archive that expires within the
@@ -1032,8 +1035,11 @@ check above that needs no request, computes the integrities, and applies the reg
 prints each archive's tag, platforms, size, and integrity. It sends no
 request, not even `HEAD`, and signs nothing. Variants given with
 `--variant-integrity` are listed by tag and integrity only. The JSON summary gains a
-`variants` list for each package with the same fields. A dry run therefore
-fails exactly where the publish would fail before its first request.
+`variants` list for each package with the same fields. A dry run fails
+wherever the publish would fail before its first request, except for the
+checks that need one: whether each archive given with `--variant-integrity`
+is still staged, belongs to the account, and has not expired is checked only
+by the publish, with `HEAD`.
 
 With `--provenance`, pnpm signs one statement for each version it publishes,
 as [Publication](#publication) requires. Its subjects are that version's
