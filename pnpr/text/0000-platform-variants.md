@@ -924,6 +924,13 @@ that uploads one archive, pnpm checks that:
   pattern claims it, so a package that keeps a source build as its fallback
   lists `binding.gyp` and the sources in its `any` entry's `files`, and its
   `install` script in that entry's `manifest`.
+- each path that its manifest's `main`, `browser`, and `bin` give names a
+  file the archive holds, by its exact path. pnpm completes no extension,
+  looks up no `index` file, and resolves no directory or nested
+  `package.json`, so the archive that each field selects is certain when it
+  is packed. A field that relies on any of these is refused, and the error
+  asks the publisher to name the file exactly. The rule applies only to a
+  package that declares `publishConfig.variants`.
 
 #### Packing
 
@@ -1656,7 +1663,8 @@ revision (including a frozen install rebuilding `+r<revision>` variant and
 fallback routes).
 
 Test the publisher with a variant pattern that matches no file (rejected before
-upload), a file claimed by the `any` entry and left out of every variant, an
+upload), a `main`, `browser`, or `bin` that omits an extension or names a
+directory (refused, asking for the exact path), a file claimed by the `any` entry and left out of every variant, an
 `any` entry combined with another target or declared twice (rejected), a
 declaration without an `any` entry (a warning, and a version without a primary),
 platform variants without a top-level `files` field (a warning), `"files": []`
