@@ -1,14 +1,20 @@
-# Record peer bindings explicitly in lockfile snapshots
+# Record resolution inputs and peer bindings in the lockfile
 
 ## Summary
 
-In the next lockfile format, a snapshot records its resolved peer dependencies
-in its own `peerDependencies` map, separate from the package's own
-`dependencies` and `optionalDependencies`. A name the package declares as both
-a dependency and a peer is recorded in the map that matches how it was bound. `transitivePeerDependencies` becomes
-a map from each peer name to the provider it resolved to. Together, the two
-maps hold every peer that the snapshot's key suffix stands for, so the key can
-be rebuilt from the snapshot, even when the suffix is hashed.
+The next lockfile format records what the resolver decided and what it read,
+so that code reading the lockfile doesn't have to work either out again.
+
+- A snapshot records its resolved peer dependencies in its own
+  `peerDependencies` map, separate from the package's own `dependencies` and
+  `optionalDependencies`. A name the package declares as both a dependency and
+  a peer is recorded in the map that matches how it was bound.
+- `transitivePeerDependencies` becomes a map from each peer name to the
+  provider it resolved to. Together, the two maps hold every peer that the
+  snapshot's key suffix stands for, so the key can be rebuilt from the
+  snapshot, even when the suffix is hashed.
+- Every `packages` entry of a directory package records `specifiers`: the
+  dependency specifiers the resolver read from the package's manifest.
 
 ## Motivation
 
@@ -70,6 +76,21 @@ lockfile reuse, has to reconstruct that decision from the key's peer suffix.
 pnpm/tasks#221 tracks this, and proposes recording the decision in the
 snapshot.
 
+### A directory package's inputs are not recorded
+
+An importer records each dependency's `specifier` beside its `version`, so the
+frozen-lockfile check compares strings. A directory package, such as an
+injected workspace package or a `file:` directory, records only its resolved
+children in `snapshots`. To find out whether its manifest changed, the check
+reads the manifest, runs the hooks, and derives the children again, with
+catalogs and peer shadowing. That is a second resolver, and it has needed a
+fix each time the resolver gained an input. pnpm/tasks#228 lists 21 such
+fixes.
+
+pnpm/pnpm#17477 adds the `specifiers` field to lockfile 9.0, as an optional
+field. A lockfile written before it has no `specifiers`, so the check keeps the
+derived walk as a fallback.
+
 ### transitivePeerDependencies mixes two cases
 
 `transitivePeerDependencies` lists the peers that packages below a snapshot
@@ -100,6 +121,8 @@ peers for one whose hash matches the key. That search is bounded, so it can
 fail.
 
 ## Detailed Explanation
+
+### Snapshots
 
 A snapshot gets these maps:
 
@@ -161,6 +184,41 @@ dependencies:
   widget: 2.0.0
 ```
 
+### Directory package specifiers
+
+A `packages` entry whose resolution is `type: directory` has a `specifiers`
+field:
+
+```yaml
+packages:
+  peer@file:../peer:
+    resolution: {directory: ../peer, type: directory}
+    peerDependencies:
+      host: 1.0.0
+    specifiers:
+      dependencies:
+        host: workspace:../host
+```
+
+Rules:
+
+- `specifiers` holds the children the resolver walked, as the manifest
+  declares them after `readPackage` hooks and `packageExtensions` are applied.
+  It is grouped under `dependencies` and `optionalDependencies`, the groups
+  the snapshot records the children under.
+- Specifiers are recorded before catalog resolution and before peer
+  shadowing. A name declared as both a dependency and a peer is in
+  `specifiers`. Whether it was bound as a peer is in the snapshot's
+  `peerDependencies` (see [Snapshots](#snapshots)).
+- The field is in `packages`, not `snapshots`, because it is the same for
+  every peer variant of the package.
+- The field is required on every directory entry. The frozen-lockfile check
+  compares it with the package's current manifest, and doesn't derive the
+  children from the manifest.
+
+pnpm/pnpm#17477 already writes the field in lockfile 9.0. The next format
+makes it required and removes the fallback for entries without it.
+
 ## Rationale and Alternatives
 
 1. **Record resolved peers under `dependencies` only.** This removes the
@@ -176,17 +234,23 @@ dependencies:
    `optionalDependencies`, and hashed suffixes still need recovery. It is
    also open whether older versions keep an unknown snapshot field when they
    rewrite the lockfile.
-3. **Keep the format and document it.** The specification now describes the
+3. **Keep `specifiers` optional in lockfile 9.0** (pnpm/pnpm#17477). This
+   needs no format change. The derived walk stays as a fallback until every
+   lockfile has been rewritten, and nothing tells pnpm when that is.
+4. **Keep the format and document it.** The specification now describes the
    current behavior. This costs nothing, but the diff noise and the hashed
    suffix walk remain.
-4. **Separate `peerDependencies` and a `transitivePeerDependencies` map**
-   (this proposal). Each map holds one kind of edge, and the snapshot holds all
-   the data its key is derived from. The cost is a format change that rewrites
+5. **Separate `peerDependencies` and a `transitivePeerDependencies` map,
+   and required `specifiers`**
+   (this proposal). Each map holds one kind of edge, the snapshot holds all
+   the data its key is derived from, and a directory entry holds the inputs
+   its children were resolved from. The cost is a format change that rewrites
    every snapshot that has a resolved peer.
 
 ## Implementation
 
-pnpm v12 only. pnpm v11 keeps the current format.
+pnpm v12 only. pnpm v11 keeps the current format, including the optional
+`specifiers` field that pnpm/pnpm#17477 adds to both CLIs.
 
 - `pnpm/crates/lockfile`: `SnapshotEntry` gets `peer_dependencies`, and
   `transitive_peer_dependencies` becomes a map. Reading a current-format
@@ -201,6 +265,9 @@ pnpm v12 only. pnpm v11 keeps the current format.
   descendants.
 - `pnpm/crates/cli/src/cli_args/deploy`: read peer edges from
   `peerDependencies` instead of deciding them from the peer suffix.
+- `pnpm/crates/package-manager/src/install/lockfile_freshness/directory_deps`:
+  compare `specifiers` with the manifest and remove the derived walk. See the
+  question about older lockfiles below.
 - `pnpm/crates/deps-restorer`: link `peerDependencies` like other children,
   and take optionality from `peerDependenciesMeta`.
 - Docs: update `pnpm/docs/lockfile-format.md`.
@@ -214,6 +281,15 @@ pnpm v12 only. pnpm v11 keeps the current format.
 - **Unresolved transitive peers.** Today they are listed. Does any code depend
   on knowing that a peer below a snapshot was missing, for example to
   re-resolve when a provider is added? If so, they need their own list.
+- **Older lockfiles without `specifiers`.** Without the derived walk, a frozen
+  install can't check a directory entry that has no `specifiers`. It could
+  fail and ask for a non-frozen install, or keep the walk only for lockfiles
+  of the older version.
+- **The shape of `specifiers`.** An importer writes each `specifier` beside
+  its `version`. A directory entry writes its specifiers apart from its
+  children, because the children are in `snapshots`. The next format could
+  write both the same way, for example by giving importers a `specifiers` map
+  too.
 - **Other inconsistencies found while writing the specification**, which a
   format change could fix at the same time:
   - An importer's `link:` path is relative to the project directory. A
