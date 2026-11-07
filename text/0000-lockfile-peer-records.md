@@ -4,7 +4,8 @@
 
 In the next lockfile format, a snapshot records its resolved peer dependencies
 in its own `peerDependencies` map, separate from the package's own
-`dependencies` and `optionalDependencies`. `transitivePeerDependencies` becomes
+`dependencies` and `optionalDependencies`. A name the package declares as both
+a dependency and a peer is recorded in the map that matches how it was bound. `transitivePeerDependencies` becomes
 a map from each peer name to the provider it resolved to. Together, the two
 maps hold every peer that the snapshot's key suffix stands for, so the key can
 be rebuilt from the snapshot, even when the suffix is hashed.
@@ -50,6 +51,25 @@ of one package added a dependency on `bare-buffer`. pnpm then resolved
 change. Both gained an `optionalDependencies` block for a dependency neither
 of them declares.
 
+### A dependency that is also a peer is ambiguous
+
+A package can declare the same name as a dependency and as a peer. If a parent
+provides the name, pnpm binds it as a peer. Otherwise the package's own
+dependency is installed as a child. Both outcomes are written the same way:
+
+```yaml
+snapshots:
+  shared@file:shared(widget@2.0.0):
+    dependencies:
+      widget: 2.0.0
+```
+
+The snapshot doesn't say whether `widget` is the parent's version or the
+package's own. Code that reads only the lockfile, such as `pnpm deploy` and
+lockfile reuse, has to reconstruct that decision from the key's peer suffix.
+pnpm/tasks#221 tracks this, and proposes recording the decision in the
+snapshot.
+
 ### transitivePeerDependencies mixes two cases
 
 `transitivePeerDependencies` lists the peers that packages below a snapshot
@@ -75,7 +95,9 @@ with a hash. The key then names no peers. To find out which providers a
 hashed key stands for, pnpm walks the snapshot's descendants. It looks for the
 packages that declare each name in `transitivePeerDependencies` and reads
 which version they link. A tool that reads the lockfile has to do the same
-walk.
+walk. When the walk is not enough, pnpm searches the subsets of the declared
+peers for one whose hash matches the key. That search is bounded, so it can
+fail.
 
 ## Detailed Explanation
 
@@ -85,7 +107,7 @@ A snapshot gets these maps:
 | --- | --- |
 | `dependencies` | The manifest's `dependencies`, and nothing else. |
 | `optionalDependencies` | The manifest's `optionalDependencies`, and nothing else. |
-| `peerDependencies` | The package's own peer dependencies that are resolved, as `name: reference`. These are linked next to the package. |
+| `peerDependencies` | The package's own peer dependencies that are resolved, as `name: reference`. These are linked next to the package. A name the package also declares as a dependency is here when a parent provided it. |
 | `transitivePeerDependencies` | The peers of packages below this one that are resolved from outside this package, as `name: reference`. These are not linked next to the package. |
 
 References use the existing forms: a version with suffixes, `<name>@<version>`
@@ -117,8 +139,27 @@ Rules:
 - Whether a peer edge is optional is read from the `packages` entry's
   `peerDependenciesMeta`. The installer treats a failure on an optional peer
   edge as it does today.
+- A name is in at most one of `dependencies`, `optionalDependencies`, and
+  `peerDependencies`. A name declared as both a dependency and a peer is in
+  `peerDependencies` if a parent provided it. It is in its dependency map if
+  the package's own dependency was installed.
 - An unresolved peer is not recorded in the snapshot. The `packages` entry
   already lists every peer the package declares.
+
+In the example from the motivation, the snapshot body says which binding was
+made:
+
+```yaml
+# A parent provided widget.
+peerDependencies:
+  widget: 2.0.0
+```
+
+```yaml
+# No parent provided widget, so shared's own dependency was installed.
+dependencies:
+  widget: 2.0.0
+```
 
 ## Rationale and Alternatives
 
@@ -127,10 +168,18 @@ Rules:
    `peerDependenciesMeta` to decide whether an edge is optional. A reader still
    cannot tell a dependency from a peer edge without checking the `packages`
    entry, and a hashed suffix still cannot be read back.
-2. **Keep the format and document it.** The specification now describes the
+2. **Add a list of the dependencies that a peer replaced.** pnpm/tasks#221
+   proposes this, for example `peerShadowedDependencies: [widget]`. The field
+   is additive. Older pnpm versions ignore it, and new readers fall back to
+   suffix recovery when it is absent, so no version change is needed. It
+   fixes the dependency-and-peer ambiguity only. Optional peers stay under
+   `optionalDependencies`, and hashed suffixes still need recovery. It is
+   also open whether older versions keep an unknown snapshot field when they
+   rewrite the lockfile.
+3. **Keep the format and document it.** The specification now describes the
    current behavior. This costs nothing, but the diff noise and the hashed
    suffix walk remain.
-3. **Separate `peerDependencies` and a `transitivePeerDependencies` map**
+4. **Separate `peerDependencies` and a `transitivePeerDependencies` map**
    (this proposal). Each map holds one kind of edge, and the snapshot holds all
    the data its key is derived from. The cost is a format change that rewrites
    every snapshot that has a resolved peer.
@@ -150,6 +199,8 @@ pnpm v12 only. pnpm v11 keeps the current format.
 - `pnpm/crates/resolving-deps-resolver/src/resolve_importer/locked_peers/hashed_suffix.rs`:
   read the providers of a hashed suffix from the two maps, without walking the
   descendants.
+- `pnpm/crates/cli/src/cli_args/deploy`: read peer edges from
+  `peerDependencies` instead of deciding them from the peer suffix.
 - `pnpm/crates/deps-restorer`: link `peerDependencies` like other children,
   and take optionality from `peerDependenciesMeta`.
 - Docs: update `pnpm/docs/lockfile-format.md`.
