@@ -15,7 +15,7 @@ key or reference carries a peer or patch group.
 
 A prototype behind an opt-in setting reads and writes this format exactly for
 165 of the 169 real lockfiles it was tried on, and writes a 5,623-snapshot
-lockfile in 51% of today's bytes. See [Prototype results](#prototype-results).
+lockfile in 50% of today's bytes. See [Prototype results](#prototype-results).
 
 The format also requires every directory package's `packages` entry to record
 `specifiers`, the dependency specifiers the resolver read from its manifest,
@@ -476,7 +476,7 @@ reads back differently.
 React libraries changes 142 lines today and 58 in this format. That lockfile
 is 29 KB instead of 35 KB.
 
-The 5,623-snapshot lockfile has 99,955 lines today and 58,927 in this
+The 5,623-snapshot lockfile has 99,955 lines today and 58,840 in this
 format. Its `importers` section, a third of the file before, writes 3,873 of
 its 8,204 dependencies as an exact version alone.
 
@@ -485,8 +485,8 @@ its 8,204 dependencies as an exact version alone.
 | Lockfile | Bytes, today | Bytes, next | Read, today | Read, next | Write, today | Write, next |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 255 snapshots | 85 KB | 67 KB | 1.7 ms | 2.8 ms | 0.8 ms | 2.2 ms |
-| 1,664 snapshots | 860 KB | 672 KB | 3.8 ms | 6.6 ms | 4.2 ms | 11 ms |
-| 5,623 snapshots | 4.40 MB | 2.23 MB | 16 ms | 28 ms | 16 ms | 63 ms |
+| 1,664 snapshots | 860 KB | 670 KB | 3.8 ms | 6.6 ms | 4.2 ms | 11 ms |
+| 5,623 snapshots | 4.40 MB | 2.22 MB | 16 ms | 28 ms | 16 ms | 63 ms |
 
 Both formats parse `importers`, `packages`, and `snapshots` on separate
 threads, and cut a large section into one chunk per thread at entry
