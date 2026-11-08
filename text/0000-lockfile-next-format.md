@@ -208,9 +208,10 @@ Rules:
   reproducible. An entry's keys are written in today's `packages` order, then
   `dependencies`, `optionalDependencies`, `peers`, `transitivePeers`,
   `missingPeers`, `variants`.
-- A package no snapshot uses is not written. Nothing can reach it, and an
-  entry with metadata only would read back as a package with an empty
-  snapshot.
+- Every entry is a package the graph reaches. Today a `packages` entry
+  without a snapshot can only come from a hand-written or broken lockfile,
+  and this format has no way to write one: an entry with metadata only would
+  read back as a package with an empty snapshot.
 
 ### Following a reference
 
@@ -470,8 +471,7 @@ so it shows the write cost in full.
    written once. The second prototype measured the first: the shared
    dependency maps were 19% of the `snapshots` section's lines, and the
    duplicated keys another 8%. The cost is that the resolved peer maps need
-   names other than `peerDependencies`, and that a `packages` entry no
-   snapshot uses cannot be written.
+   names other than `peerDependencies`.
 
 ## Implementation
 
@@ -528,9 +528,6 @@ pnpm v12 only. pnpm v11 keeps lockfile 9.0, including the optional
   today's name list has one, and that is what lets a referrer's scope select
   its children without a walk. Dropping `missingPeers` would remove about
   1,500 more nodes from the 5,623-snapshot lockfile.
-- **Unused `packages` entries.** Today's lockfiles can hold a `packages`
-  entry no snapshot uses, and this format drops it. If that entry carries
-  something a command reads, it needs a place of its own.
 - **Older lockfiles without `specifiers`.** Without the derived walk, a frozen
   install can't check a directory entry that has no `specifiers`. It could
   fail and ask for a non-frozen install, or keep the walk only for lockfiles
