@@ -15,7 +15,7 @@ keeps its peer groups.
 
 A prototype behind an opt-in setting reads and writes this format exactly for
 170 of the 173 real lockfiles it was tried on, and writes a 5,623-snapshot
-lockfile in 53% of today's bytes. See [Prototype results](#prototype-results).
+lockfile in 52% of today's bytes. See [Prototype results](#prototype-results).
 
 The format also requires every directory package's `packages` entry to record
 `specifiers`, the dependency specifiers the resolver read from its manifest,
@@ -295,9 +295,9 @@ lockfiles:
 So the writer reads its output back, and wherever step 3 picks another
 snapshot, it writes that reference with its peer groups and reads back again.
 Two rounds settled every lockfile the prototype was tried on. In the monorepo
-above, 557 references keep peer groups: 174 in `importers`, the rest peer
-bindings whose provider has several snapshots. Today's format has 18,961
-lines with peer groups there.
+above, 187 references keep peer groups, 174 of them in `importers`, where
+the project's scope has no say between the snapshots. Today's format has
+18,961 lines with peer groups there. In pnpm's own lockfile, none does.
 
 ### Providers of a binding
 
@@ -446,7 +446,7 @@ reads back differently.
 React libraries changes 142 lines today and 58 in this format. That lockfile
 is 29 KB instead of 35 KB.
 
-The 5,623-snapshot lockfile has 99,955 lines today and 59,012 in this
+The 5,623-snapshot lockfile has 99,955 lines today and 58,927 in this
 format. Its `importers` section, a third of the file before, writes 3,873 of
 its 8,204 dependencies as an exact version alone.
 
@@ -455,8 +455,8 @@ its 8,204 dependencies as an exact version alone.
 | Lockfile | Bytes, today | Bytes, next | Read, today | Read, next | Write, today | Write, next |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 255 snapshots | 85 KB | 67 KB | 2.0 ms | 2.8 ms | 0.8 ms | 2.1 ms |
-| 1,664 snapshots | 860 KB | 680 KB | 3.8 ms | 7.6 ms | 4.0 ms | 12 ms |
-| 5,623 snapshots | 4.40 MB | 2.34 MB | 14 ms | 28 ms | 16 ms | 58 ms |
+| 1,664 snapshots | 860 KB | 678 KB | 3.8 ms | 7.6 ms | 4.0 ms | 12 ms |
+| 5,623 snapshots | 4.40 MB | 2.27 MB | 14 ms | 28 ms | 16 ms | 58 ms |
 
 Both formats parse `importers`, `packages`, and `snapshots` on separate
 threads, and cut a large section into one chunk per thread at entry
