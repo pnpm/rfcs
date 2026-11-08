@@ -1,19 +1,20 @@
-# Key snapshots by package and record peer bindings as properties
+# One lockfile entry per package, with peer bindings as properties
 
 ## Summary
 
-In the next lockfile format, a snapshot is keyed by `name@version` only. The
-peer suffix leaves the key, and leaves every reference to the key. The peer
-bindings become properties of the snapshot: a `peerDependencies` map for the
-package's own peers, and a `transitivePeerDependencies` map for the peers
-bound below it. A package that pnpm installs in several peer variants has a
-list of snapshots under its key. A reference names a version, and the
-referrer's own bindings determine which variant it links. Where they don't, the
-reference keeps its peer groups.
+In the next lockfile format, `packages` has one entry per package, keyed by
+`name@version`. The entry holds the package's metadata, its resolved
+dependencies, and its peer bindings as properties: a `peers` map for the
+package's own peers, and a `transitivePeers` map for the peers bound below
+it. There is no `snapshots` section. A package that pnpm installs in several
+peer variants writes what the variants share once and lists what differs
+under `variants`. A reference names a version, and the referrer's own
+bindings determine which variant it links. Where they don't, the reference
+keeps its peer groups.
 
 A prototype behind an opt-in setting reads and writes this format exactly for
-170 of the 173 real lockfiles it was tried on. One install scenario measured
-got slower, by 6 ms, and no other did. See [Prototype results](#prototype-results).
+170 of the 173 real lockfiles it was tried on, and writes a 5,623-snapshot
+lockfile in 61% of today's bytes. See [Prototype results](#prototype-results).
 
 The format also requires every directory package's `packages` entry to record
 `specifiers`, the dependency specifiers the resolver read from its manifest.
@@ -134,15 +135,17 @@ derived walk as a fallback.
 
 ## Detailed Explanation
 
-### Snapshots
+### Packages
 
-`snapshots` maps `name@version` to a list of snapshots. Each snapshot is one
-peer variant of the package:
+`packages` maps `name@version` to one entry per package. The entry carries
+what today's `packages` and `snapshots` entries carry, together:
 
 ```yaml
 packages:
-  buffer-impl@3.7.1: ...
-  container@3.2.2: ...
+  buffer-impl@3.7.1:
+    resolution: {integrity: sha512-...}
+  path-impl@3.1.2:
+    resolution: {integrity: sha512-...}
   fs-impl@4.8.4:
     resolution: {integrity: sha512-...}
     peerDependencies:
@@ -150,83 +153,85 @@ packages:
     peerDependenciesMeta:
       buffer-impl:
         optional: true
-  path-impl@3.1.2: ...
-
-snapshots:
-  buffer-impl@3.7.1:
-    - {}
-  path-impl@3.1.2:
-    - {}
-  fs-impl@4.8.4:
-    - dependencies:
-        path-impl: 3.1.2
-      peerDependencies:
-        buffer-impl: 3.7.1
-    - dependencies:
-        path-impl: 3.1.2
-      peerDependencies:
-        buffer-impl: 3.8.0
+    dependencies:
+      path-impl: 3.1.2
+    variants:
+      - peers:
+          buffer-impl: 3.7.1
+      - peers:
+          buffer-impl: 3.8.0
   container@3.2.2:
-    - dependencies:
-        fs-impl: 4.8.4
-      transitivePeerDependencies:
-        buffer-impl: 3.7.1
+    resolution: {integrity: sha512-...}
+    dependencies:
+      fs-impl: 4.8.4
+    transitivePeers:
+      buffer-impl: 3.7.1
 ```
 
-A snapshot has these maps:
+Besides today's metadata fields, an entry has these:
 
 | Key | Content |
 | --- | --- |
 | `dependencies` | The manifest's `dependencies`, and nothing else. |
 | `optionalDependencies` | The manifest's `optionalDependencies`, and nothing else. |
-| `peerDependencies` | The package's own peers that are bound, as `name: reference`. These are linked next to the package. |
-| `transitivePeerDependencies` | The peers bound below this package from the scope above it, as `name: reference`. These are not linked next to the package. |
-| `missingPeerDependencies` | The other peers needed below this package, as a list of names: those nothing provides, and those bound from anywhere in the graph (pnpm/pnpm#7830). Neither kind is part of the package's identity. |
+| `peers` | The package's own peers that are bound, as `name: reference`. These are linked next to the package. |
+| `transitivePeers` | The peers bound below this package from the scope above it, as `name: reference`. These are not linked next to the package. |
+| `missingPeers` | The other peers needed below this package, as a list of names: those nothing provides, and those bound from anywhere in the graph (pnpm/pnpm#7830). Neither kind is part of the package's identity. |
+| `variants` | For a package installed in several peer variants, a list with one item per variant, holding the same keys as the entry. |
+
+`peerDependencies` keeps today's meaning, the ranges the package declares,
+because it mirrors `package.json`. The resolved maps have their own names.
 
 Rules:
 
-- The key is `name@version` for every snapshot, with the same `<version>`
-  forms as today's keys and no peer groups. A patched package keeps its
-  `(patch_hash=…)` group, which is the same for every variant of the package.
-  The `packages` key is the key without the patch group.
+- The key is `name@version`, with the same `<version>` forms as today's keys
+  and no peer groups. A patched package keeps its `(patch_hash=…)` group,
+  which is the same for every variant.
 - A reference is a version, `<name>@<version>` for an alias, or `link:<path>`,
   as today, without peer groups, except where
   [following it](#following-a-reference) needs them.
+- Peer variants of a package resolve the same dependency versions. Only the
+  peer bindings differ. So an entry of any map that every variant has with the
+  same value is written once, in the entry, and each variant lists the rest.
+  A variant is the entry's maps with the variant's entries added. A package
+  with one variant has no `variants` list.
 - A name is in at most one of `dependencies`, `optionalDependencies`, and
-  `peerDependencies`. A name declared as both a dependency and a peer is in
-  `peerDependencies` if a parent provided it. It is in its dependency map if
-  the package's own dependency was installed.
-- Whether a peer edge is optional is read from the `packages` entry's
-  `peerDependenciesMeta`. The installer treats a failure on an optional peer
-  edge as it does today.
-- An unbound own peer is not recorded. The `packages` entry lists every peer
-  the package declares.
-- The list is sorted by today's keys of its snapshots, so the file is
-  reproducible.
-- An importer has the same `transitivePeerDependencies` map, for the peers
-  bound below it that its own dependencies don't hold.
+  `peers` of a variant. A name declared as both a dependency and a peer is in
+  `peers` if a parent provided it. It is in its dependency map if the
+  package's own dependency was installed. Such a name differs between the
+  variants, so it is never hoisted.
+- Whether a peer edge is optional is read from `peerDependenciesMeta`. The
+  installer treats a failure on an optional peer edge as it does today.
+- An unbound own peer is not recorded. `peerDependencies` lists every peer the
+  package declares.
+- `variants` is sorted by today's keys of the variants, so the file is
+  reproducible. An entry's keys are written in today's `packages` order, then
+  `dependencies`, `optionalDependencies`, `peers`, `transitivePeers`,
+  `missingPeers`, `variants`.
+- A package no snapshot uses is not written. Nothing can reach it, and an
+  entry with metadata only would read back as a package with an empty
+  snapshot.
 
 ### Following a reference
 
-The *scope* of a snapshot or importer is the union of its `dependencies`,
-`optionalDependencies`, `peerDependencies`, and `transitivePeerDependencies`.
-A snapshot's scope also holds the snapshot itself under its own name, because
-a package can be the peer of its own dependency, as `@babel/core` is of
+The *scope* of a variant or importer is the union of its `dependencies`,
+`optionalDependencies`, `peers`, and `transitivePeers`. A variant's scope also
+holds the variant itself under its own name, because a package can be the
+peer of its own dependency, as `@babel/core` is of
 `@babel/helper-module-transforms`. Each
 name maps to one reference.
 
 To follow the reference `fs-impl: 4.8.4` from a referrer:
 
-1. If `fs-impl@4.8.4` has one snapshot, that is the one.
-2. If the reference carries peer groups, pick the snapshot whose providers are
+1. If `fs-impl@4.8.4` has one variant, that is the one.
+2. If the reference carries peer groups, pick the variant whose providers are
    the packages those groups name.
-3. Otherwise pick the snapshot whose `peerDependencies` and
-   `transitivePeerDependencies` all agree with the referrer's scope, binding the
-   most names.
+3. Otherwise pick the variant whose `peers` and `transitivePeers` all agree
+   with the referrer's scope, binding the most names.
 
 The scope selects the variant whenever every binding below the referrer is in
 it. A peer bound to the referrer's own dependency or own peer is. A peer bound
-from the scope above the referrer is in its `transitivePeerDependencies`.
+from the scope above the referrer is in its `transitivePeers`.
 
 Two resolver features break that, and the prototype found both in real
 lockfiles:
@@ -240,7 +245,7 @@ lockfiles:
   scope says which one.
 
 So the writer reads its output back, and wherever step 3 picks another
-snapshot, it writes that reference with its peer groups and reads back again.
+variant, it writes that reference with its peer groups and reads back again.
 Two rounds settled every lockfile the prototype was tried on. In the monorepo
 above, 138 lines keep peer groups, where today's format has 14,820.
 
@@ -267,28 +272,33 @@ A bump of `buffer-impl` to 3.7.2 changes the binding lines and nothing else:
 
 ```diff
    fs-impl@4.8.4:
-     - dependencies:
-         path-impl: 3.1.2
-       peerDependencies:
--        buffer-impl: 3.7.1
-+        buffer-impl: 3.7.2
+     resolution: {integrity: sha512-...}
+     peerDependencies:
+       buffer-impl: '*'
+     dependencies:
+       path-impl: 3.1.2
+     peers:
+-      buffer-impl: 3.7.1
++      buffer-impl: 3.7.2
    container@3.2.2:
-     - dependencies:
-         fs-impl: 4.8.4
-       transitivePeerDependencies:
--        buffer-impl: 3.7.1
-+        buffer-impl: 3.7.2
+     resolution: {integrity: sha512-...}
+     dependencies:
+       fs-impl: 4.8.4
+     transitivePeers:
+-      buffer-impl: 3.7.1
++      buffer-impl: 3.7.2
 ```
 
 A package that didn't change and binds a new optional peer, the
-pnpm/pnpm#17773 case, gains one line per snapshot that binds it:
+pnpm/pnpm#17773 case, gains one line per variant that binds it:
 
 ```diff
    fs-impl@4.8.4:
-     - dependencies:
-         path-impl: 3.1.2
-+      peerDependencies:
-+        bare-buffer: 2.6.1
+     resolution: {integrity: sha512-...}
+     dependencies:
+       path-impl: 3.1.2
++    peers:
++      bare-buffer: 2.6.1
 ```
 
 In the branch example from the motivation, branch B writes `fs-impl: 4.8.4`.
@@ -339,8 +349,8 @@ Rules:
   shadowing. A name declared as both a dependency and a peer is in
   `specifiers`. Whether it was bound as a peer is in the snapshot's
   `peerDependencies` (see [Snapshots](#snapshots)).
-- The field is in `packages`, not `snapshots`, because it is the same for
-  every peer variant of the package.
+- The field is the same for every peer variant of the package, so it is
+  never in `variants`.
 - The field is required on every directory entry. The frozen-lockfile check
   compares it with the package's current manifest, and doesn't derive the
   children from the manifest.
@@ -383,19 +393,25 @@ The writer refuses these with an error rather than writing a lockfile that
 reads back differently.
 
 **Diffs.** Updating `react` from 18.3.1 to 18.2.0 in a project with nine
-React libraries changes 142 lines today and 62 in this format.
+React libraries changes 142 lines today and 58 in this format. That lockfile
+is 29 KB instead of 35 KB.
 
 **Speed of the lockfile alone**, minimum of 15 runs:
 
-| Lockfile | Read, today | Read, next | Write, today | Write, next |
-| --- | ---: | ---: | ---: | ---: |
-| 255 snapshots | 2.4 ms | 2.2 ms | 0.8 ms | 2.6 ms |
-| 1,664 snapshots | 23 ms | 14 ms | 4 ms | 10 ms |
-| 5,623 snapshots | 94 ms | 71 ms | 16 ms | 65 ms |
+| Lockfile | Bytes, today | Bytes, next | Read, today | Read, next | Write, today | Write, next |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 255 snapshots | 85 KB | 71 KB | 2.0 ms | 3.0 ms | 0.8 ms | 2.8 ms |
+| 1,664 snapshots | 860 KB | 783 KB | 3.3 ms | 7.2 ms | 4.4 ms | 11 ms |
+| 5,623 snapshots | 4.40 MB | 2.69 MB | 15 ms | 34 ms | 13 ms | 93 ms |
 
-Reading is faster because the prototype parses `importers`, `packages`, and
-`snapshots` on separate threads. Today's format could do the same. Writing is
-slower: it converts, then reads its output back and compares, in one round or
+Both formats parse `importers`, `packages`, and `snapshots` on separate
+threads, and cut a large section into one chunk per thread at entry
+boundaries. That took today's format from 49 ms to 15 ms on the
+5,623-snapshot lockfile. Of the next format's 34 ms, 14 ms is the prototype
+converting back to today's keys, which a native implementation would not do.
+The remaining difference is YAML parsing of the one struct that carries both
+metadata and graph fields. Writing is slower: it converts, hoists what the
+variants share, then reads its output back and compares, in one round or
 two.
 
 **Installs**, the same binary on a workspace of 237 projects and 1,664
@@ -403,15 +419,17 @@ snapshots, median of 20 runs:
 
 | Scenario | Today | Next | 95% interval of the difference |
 | --- | ---: | ---: | --- |
-| Frozen restore, warm store | 607 ms | 619 ms | −21 to +38 ms |
-| Restore without `--frozen-lockfile` | 591 ms | 581 ms | −25 to +30 ms |
-| Repeat install | 182 ms | 166 ms | −24 to −15 ms |
-| Resolve after a manifest change | 630 ms | 614 ms | −27 to −3 ms |
-| `pnpm add` | 598 ms | 590 ms | −16 to 0 ms |
-| Regenerate a deleted `pnpm-lock.yaml` | 103 ms | 109 ms | +0.2 to +11 ms |
+| Frozen restore, warm store | 571 ms | 566 ms | −33 to +31 ms |
+| Restore without `--frozen-lockfile` | 559 ms | 586 ms | −30 to +33 ms |
+| Repeat install | 152 ms | 155 ms | +1 to +9 ms |
+| Resolve after a manifest change | 584 ms | 604 ms | +4 to +29 ms |
+| `pnpm add` | 564 ms | 572 ms | +4 to +23 ms |
+| Regenerate a deleted `pnpm-lock.yaml` | 79 ms | 89 ms | +6 to +12 ms |
 
-A write follows a resolution, which hides its cost, except when pnpm
-regenerates `pnpm-lock.yaml` from `node_modules` without resolving.
+Today's format parses in parallel chunks in these runs too. What the next
+format pays on top is the prototype's conversion on every read and its
+read-back on every write. The regeneration scenario writes without resolving,
+so it shows the write cost in full.
 
 ## Rationale and Alternatives
 
@@ -441,26 +459,31 @@ regenerates `pnpm-lock.yaml` from `node_modules` without resolving.
    differ on a name. Reproducible and stable under a bump. It keeps a key
    grammar and a collision rule, and a package that gains a binding is still
    renamed with its references.
-8. **This proposal.** Alternative 7 with the key reduced to `name@version`,
-   which is possible because the referrer's scope identifies the variant in
-   nearly every case. No collision rule and no hash, and the diff is the set of
+8. **Alternative 7 with the key reduced to `name@version`**, which is
+   possible because the referrer's scope identifies the variant in nearly
+   every case. No collision rule and no hash, and the diff is the set of
    bindings that changed. An edge is a match instead of a lookup, and every
    consumer has to implement the match. The writer has to read its output
    back to find the references that need peer groups.
+9. **This proposal.** Alternative 8 with `packages` and `snapshots` merged,
+   since they share their keys, and with what a package's variants share
+   written once. The second prototype measured the first: the shared
+   dependency maps were 19% of the `snapshots` section's lines, and the
+   duplicated keys another 8%. The cost is that the resolved peer maps need
+   names other than `peerDependencies`, and that a `packages` entry no
+   snapshot uses cannot be written.
 
 ## Implementation
 
 pnpm v12 only. pnpm v11 keeps lockfile 9.0, including the optional
 `specifiers` field that pnpm/pnpm#17477 adds to both CLIs.
 
-- `pnpm/crates/lockfile`: `snapshots` becomes a map from a package key to a
-  list of `SnapshotEntry`. `SnapshotEntry` gets `peer_dependencies`, and
-  `transitive_peer_dependencies` becomes a map. `ProjectSnapshot` gets
-  `transitive_peer_dependencies`. A function follows a reference from a
-  context, with the rule above, and is the one place that rule lives. Reading
+- `pnpm/crates/lockfile`: one `Package` type holds the metadata, the shared
+  graph fields, and the variants. A function follows a reference from a
+  scope, with the rule above, and is the one place that rule lives. Reading
   a 9.0 lockfile converts it. The suffix becomes the maps, and children that
-  match the `packages` entry's `peerDependencies` move to
-  `peer_dependencies`. A hashed suffix is recovered once by today's walk.
+  match the declared `peerDependencies` move to `peers`. A hashed suffix is
+  recovered once by today's walk.
 - `pnpm/crates/package-manager/src/dependencies_graph_to_lockfile`: write the
   bindings to the maps and sort the variants. The resolver already knows which
   children are peers.
@@ -472,8 +495,8 @@ pnpm v12 only. pnpm v11 keeps lockfile 9.0, including the optional
 - `pnpm/crates/cli/src/cli_args/deploy`: read peer edges from
   `peerDependencies` instead of deciding them from the peer suffix.
 - `pnpm/crates/lockfile/src/merge_lockfile_changes.rs`: merge variants by
-  binding map. A changed binding is a changed field on the same snapshot, not
-  a removal and an addition.
+  binding map. A changed binding is a changed field on the same entry, not a
+  removal and an addition.
 - `pnpm/crates/package-manager/src/install/lockfile_freshness/directory_deps`:
   compare `specifiers` with the manifest and remove the derived walk.
 - Published readers: the `@pnpm/lockfile.*` packages and the specification
@@ -485,24 +508,29 @@ pnpm v12 only. pnpm v11 keeps lockfile 9.0, including the optional
 ## Unresolved Questions and Bikeshedding
 
 - **The version number.** pnpm/rfcs#68 records the decision to avoid lockfile
-  version bumps. This change alters the shape of `snapshots`, so an older
-  reader cannot read it, and it needs a new `lockfileVersion`. pnpm v12
-  already accepts major `12`.
+  version bumps. This change removes `snapshots` and reshapes `packages`, so
+  an older reader cannot read it, and it needs a new `lockfileVersion`. pnpm
+  v12 already accepts major `12`.
 - **References that keep peer groups.** They exist because
   `dedupePeerDependents` and optional peers bound from anywhere choose variants
   the referrer's scope does not predict. Changing either rule so the scope
   always predicts the variant would make every reference a bare version, and
   would remove the writer's read-back. That is a resolution change, with its
   own trade-offs.
-- **`missingPeerDependencies`.** The prototype needs the list to rebuild
-  today's `transitivePeerDependencies` exactly. If nothing reads the missing
+- **`missingPeers`.** The prototype needs the list to rebuild today's
+  `transitivePeerDependencies` exactly. If nothing reads the missing
   names, the list can go once pnpm no longer keeps today's keys in memory.
 - **Lockfiles that cannot be written.** A writer that fails is safe but
   unfriendly. pnpm could fall back to today's format for them, which keeps the
   install working and changes the format without being asked.
-- **One snapshot or a list.** Nearly every package has one variant. The list
-  could be replaced by a single map when there is one variant, at the cost of
-  two shapes for every consumer.
+- **Where the remaining parse cost goes.** YAML parsing is paid per node, not
+  per byte. Each transitive binding is `name: version`, two nodes where
+  today's name list has one, and that is what lets a referrer's scope select
+  its children without a walk. Dropping `missingPeers` would remove about
+  1,500 more nodes from the 5,623-snapshot lockfile.
+- **Unused `packages` entries.** Today's lockfiles can hold a `packages`
+  entry no snapshot uses, and this format drops it. If that entry carries
+  something a command reads, it needs a place of its own.
 - **Older lockfiles without `specifiers`.** Without the derived walk, a frozen
   install can't check a directory entry that has no `specifiers`. It could
   fail and ask for a non-frozen install, or keep the walk only for lockfiles
