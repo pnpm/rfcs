@@ -226,6 +226,11 @@ Rules:
   current metadata, not about the resolution, and pnpm reads it from the
   registry when it resolves. The lockfile's copy went stale the moment a
   package was deprecated or undeprecated after the install that wrote it.
+- `hasBin` stays, with the other fields the installer reads before it has
+  the package: `engines`, `cpu`, `os`, `libc`, `bundledDependencies`. The
+  bin linker takes the set of packages with bins from the lockfile and reads
+  a manifest only for those. Without the flag it would read one manifest per
+  dependency it links bins under, which is more file reads on every install.
 - Every entry is a package the graph reaches. Today a `packages` entry
   without a snapshot can only come from a hand-written or broken lockfile.
   This format has no way to write one: an entry with metadata only would read
