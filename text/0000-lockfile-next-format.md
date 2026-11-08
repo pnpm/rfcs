@@ -9,13 +9,13 @@ package's own peers, and a `transitivePeers` map for the peers bound below
 it. There is no `snapshots` section. A package that pnpm installs with
 several sets of peers has one snapshot per set. The entry writes what the
 snapshots share once and lists what differs under `snapshots`. A reference
-names a version, and the referrer's own
-bindings determine which snapshot it links. Where they don't, the reference
-keeps its peer groups.
+is a version. The referrer's own bindings determine which snapshot it links;
+where they don't, the reference names the snapshot by its peer bindings. No
+key or reference carries a peer or patch group.
 
 A prototype behind an opt-in setting reads and writes this format exactly for
-170 of the 173 real lockfiles it was tried on, and writes a 5,623-snapshot
-lockfile in 52% of today's bytes. See [Prototype results](#prototype-results).
+165 of the 169 real lockfiles it was tried on, and writes a 5,623-snapshot
+lockfile in 51% of today's bytes. See [Prototype results](#prototype-results).
 
 The format also requires every directory package's `packages` entry to record
 `specifiers`, the dependency specifiers the resolver read from its manifest,
@@ -190,11 +190,13 @@ to a peer stays a one-line diff. The resolved maps have their own names.
 Rules:
 
 - The key is `name@version`, with the same `<version>` forms as today's keys
-  and no peer groups. A patched package keeps its `(patch_hash=…)` group,
-  which is the same for every snapshot.
+  and no groups. A patched package has the key an unpatched one would;
+  `patchedDependencies` says it is patched, and with what hash (see
+  [Patches](#patches)).
 - A reference is a version, `<name>@<version>` for an alias, or `link:<path>`,
-  as today, without peer groups, except where
-  [following it](#following-a-reference) needs them.
+  as today, without groups. Where [following it](#following-a-reference)
+  needs to name the snapshot, the reference is a map, `{version, peers}`,
+  whose `peers` are the bindings that tell the package's snapshots apart.
 - The snapshots of a package resolve the same dependency versions. Only the
   peer bindings differ. So an entry of any map that every snapshot has with the
   same value is written once, in the entry, and each snapshot lists the rest.
@@ -247,8 +249,8 @@ The version follows from:
 
 A range writes both, because the version is the lock. A `workspace:`
 specifier writes both, so the lockfile says where the workspace dependency
-lives without the workspace. A version that keeps peer groups, or has a patch
-group, writes both.
+lives without the workspace. A dependency whose version does not select its
+snapshot writes `{specifier, version, peers}`.
 
 A `catalogs` entry is written on one line too:
 `'@babel/core': {specifier: ^7.29.7, version: 7.29.7}`.
@@ -256,6 +258,25 @@ A `catalogs` entry is written on one line too:
 A reader that rejects a lockfile whose specifier implies a version it cannot
 find, such as a `catalog:` entry the `catalogs` section lacks, fails with
 `ERR_PNPM_NEXT_LOCKFILE_UNDERIVABLE_VERSION`.
+
+### Patches
+
+No key or reference carries a `(patch_hash=…)` group. `patchedDependencies`
+records every patch once, keyed as today by `name@version`, a range, or a
+name, with the patch file's hash. A reader matches a package to that section
+the way the resolver does: the exact version first, then the one range it
+satisfies, then the bare name.
+
+Today the hash in the key is what makes a changed patch file re-link the
+package. With the hash in one place, the installer treats a changed hash in
+`patchedDependencies` as a change to every package it matches. The
+`node_modules/.pnpm` directory name keeps the hash, as
+[the virtual store](#the-virtual-store) section says.
+
+A `patched` flag on the entry would say nothing `patchedDependencies` does
+not, so there is none. Across the lockfiles the prototype was tried on, no
+version was present both patched and unpatched, which is what lets the key
+drop the hash.
 
 ### Following a reference
 
@@ -269,8 +290,8 @@ name maps to one reference.
 To follow the reference `fs-impl: 4.8.4` from a referrer:
 
 1. If `fs-impl@4.8.4` has one snapshot, that is the one.
-2. If the reference carries peer groups, pick the snapshot whose providers are
-   the packages those groups name.
+2. If the reference names peers, pick the snapshot that binds each named
+   peer to the reference given.
 3. Otherwise pick the snapshot none of whose `peers` and `transitivePeers`
    disagrees with the referrer's scope, agreeing on the most names, and then
    binding the fewest names the scope lacks. A name the scope lacks is
@@ -293,11 +314,13 @@ lockfiles:
   scope says which one.
 
 So the writer reads its output back, and wherever step 3 picks another
-snapshot, it writes that reference with its peer groups and reads back again.
-Two rounds settled every lockfile the prototype was tried on. In the monorepo
-above, 187 references keep peer groups, 174 of them in `importers`, where
+snapshot, it writes that reference with the `peers` that name its snapshot,
+the bindings the package's snapshots differ in, and reads back again. Two
+rounds settled every lockfile the prototype was tried on. In the monorepo
+above, 270 references name their snapshot, 174 of them in `importers`, where
 the project's scope has no say between the snapshots. Today's format has
-18,961 lines with peer groups there. In pnpm's own lockfile, none does.
+18,961 lines with peer groups there. In pnpm's own lockfile, no reference
+does.
 
 ### Providers of a binding
 
@@ -314,7 +337,7 @@ and so on.
 The walk takes importers and children in name order, so every reader reaches
 the same snapshot first. Peers in a cycle are written as `name@version`, as
 the resolver writes them. Where the walk does not find the provider, the
-binding keeps its peer groups, like a reference in step 2.
+binding names its provider's snapshot, like a reference in step 2.
 
 ### Diffs
 
@@ -428,16 +451,19 @@ A prototype in pnpm v12 reads and writes the format behind a
 `lockfile.format: next` setting. It converts at the boundary: the in-memory
 lockfile keeps today's keys, so no install logic changes.
 
-**Correctness.** 170 of 173 real lockfiles round-trip exactly through the
+**Correctness.** 165 of 169 real lockfiles round-trip exactly through the
 written text, from small fixtures up to a 4.4 MB monorepo lockfile with 5,623
 snapshots. An install from the next format produces the same
 `node_modules/.pnpm` directories and the same current lockfile as an install
-from today's format. The three that can't be written:
+from today's format. The four that can't be written:
 
 - Two fixtures written by an older pnpm, which recorded an optional peer under
   `dependencies`.
 - One lockfile with two hashed-suffix snapshots whose bindings are equal and
   whose nested providers differ. Without the suffix, nothing tells them apart.
+- One fixture whose keys keep the `/` prefix of lockfile 6, so its references
+  point at snapshots it does not have. Today's suffix was the only thing that
+  let them read back.
 
 The writer refuses these with an error rather than writing a lockfile that
 reads back differently.
@@ -454,9 +480,9 @@ its 8,204 dependencies as an exact version alone.
 
 | Lockfile | Bytes, today | Bytes, next | Read, today | Read, next | Write, today | Write, next |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 255 snapshots | 85 KB | 67 KB | 2.0 ms | 2.8 ms | 0.8 ms | 2.1 ms |
-| 1,664 snapshots | 860 KB | 678 KB | 3.8 ms | 7.6 ms | 4.0 ms | 12 ms |
-| 5,623 snapshots | 4.40 MB | 2.27 MB | 14 ms | 28 ms | 16 ms | 58 ms |
+| 255 snapshots | 85 KB | 67 KB | 1.7 ms | 2.8 ms | 0.8 ms | 2.2 ms |
+| 1,664 snapshots | 860 KB | 672 KB | 3.8 ms | 6.6 ms | 4.2 ms | 11 ms |
+| 5,623 snapshots | 4.40 MB | 2.23 MB | 16 ms | 28 ms | 16 ms | 63 ms |
 
 Both formats parse `importers`, `packages`, and `snapshots` on separate
 threads, and cut a large section into one chunk per thread at entry
@@ -540,7 +566,7 @@ resolving, so it shows the write cost in full.
    every case. No collision rule and no hash, and the diff is the set of
    bindings that changed. An edge is a match instead of a lookup, and every
    consumer has to implement the match. The writer has to read its output
-   back to find the references that need peer groups.
+   back to find the references that need to name their snapshot.
 9. **This proposal.** Alternative 8 with `packages` and `snapshots` merged,
    since they share their keys, and with what a package's snapshots share
    written once. The second prototype measured the first: the shared
@@ -592,7 +618,7 @@ measurement.
   version bumps. This change removes `snapshots` and reshapes `packages`, so
   an older reader cannot read it, and it needs a new `lockfileVersion`. pnpm
   v12 already accepts major `12`.
-- **References that keep peer groups.** They exist because
+- **References that name their snapshot.** They exist because
   `dedupePeerDependents` and optional peers bound from anywhere choose snapshots
   the referrer's scope does not predict. Changing either rule so the scope
   always predicts the snapshot would make every reference a bare version, and
