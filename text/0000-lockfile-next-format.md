@@ -143,11 +143,11 @@ what today's `packages` and `snapshots` entries carry, together:
 ```yaml
 packages:
   buffer-impl@3.7.1:
-    resolution: {integrity: sha512-...}
+    integrity: sha512-...
   path-impl@3.1.2:
-    resolution: {integrity: sha512-...}
+    integrity: sha512-...
   fs-impl@4.8.4:
-    resolution: {integrity: sha512-...}
+    integrity: sha512-...
     peerDependencies:
       buffer-impl: '*'
     peerDependenciesMeta:
@@ -161,7 +161,7 @@ packages:
       - peers:
           buffer-impl: 3.8.0
   container@3.2.2:
-    resolution: {integrity: sha512-...}
+    integrity: sha512-...
     dependencies:
       fs-impl: 4.8.4
     transitivePeers:
@@ -172,6 +172,7 @@ Besides today's metadata fields, an entry has these:
 
 | Key | Content |
 | --- | --- |
+| `integrity` | The integrity of the package's tarball, for every resolution kind that has one. `resolution` holds the rest of the resolution, and a registry package without a revision has none. |
 | `dependencies` | The manifest's `dependencies`, and nothing else. |
 | `optionalDependencies` | The manifest's `optionalDependencies`, and nothing else. |
 | `peers` | The package's own peers that are bound, as `name: reference`. These are linked next to the package. |
@@ -205,9 +206,10 @@ Rules:
 - An unbound own peer is not recorded. `peerDependencies` lists every peer the
   package declares.
 - `variants` is sorted by today's keys of the variants, so the file is
-  reproducible. An entry's keys are written in today's `packages` order, then
-  `dependencies`, `optionalDependencies`, `peers`, `transitivePeers`,
-  `missingPeers`, `variants`.
+  reproducible. An entry's keys are written metadata first, `resolution`,
+  `integrity`, then today's `packages` order, then `dependencies`,
+  `optionalDependencies`, `peers`, `transitivePeers`, `missingPeers`,
+  `variants`. Nested maps are alphabetical.
 - Every entry is a package the graph reaches. Today a `packages` entry
   without a snapshot can only come from a hand-written or broken lockfile,
   and this format has no way to write one: an entry with metadata only would
@@ -273,7 +275,7 @@ A bump of `buffer-impl` to 3.7.2 changes the binding lines and nothing else:
 
 ```diff
    fs-impl@4.8.4:
-     resolution: {integrity: sha512-...}
+     integrity: sha512-...
      peerDependencies:
        buffer-impl: '*'
      dependencies:
@@ -282,7 +284,7 @@ A bump of `buffer-impl` to 3.7.2 changes the binding lines and nothing else:
 -      buffer-impl: 3.7.1
 +      buffer-impl: 3.7.2
    container@3.2.2:
-     resolution: {integrity: sha512-...}
+     integrity: sha512-...
      dependencies:
        fs-impl: 4.8.4
      transitivePeers:
@@ -295,7 +297,7 @@ pnpm/pnpm#17773 case, gains one line per variant that binds it:
 
 ```diff
    fs-impl@4.8.4:
-     resolution: {integrity: sha512-...}
+     integrity: sha512-...
      dependencies:
        path-impl: 3.1.2
 +    peers:
@@ -401,36 +403,37 @@ is 29 KB instead of 35 KB.
 
 | Lockfile | Bytes, today | Bytes, next | Read, today | Read, next | Write, today | Write, next |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 255 snapshots | 85 KB | 71 KB | 2.0 ms | 3.0 ms | 0.8 ms | 2.8 ms |
-| 1,664 snapshots | 860 KB | 783 KB | 3.3 ms | 7.2 ms | 4.4 ms | 11 ms |
-| 5,623 snapshots | 4.40 MB | 2.69 MB | 15 ms | 34 ms | 13 ms | 93 ms |
+| 255 snapshots | 85 KB | 68 KB | 1.9 ms | 2.6 ms | 0.8 ms | 1.9 ms |
+| 1,664 snapshots | 860 KB | 761 KB | 3.5 ms | 6.3 ms | 4.1 ms | 11 ms |
+| 5,623 snapshots | 4.40 MB | 2.69 MB | 15 ms | 29 ms | 14 ms | 59 ms |
 
 Both formats parse `importers`, `packages`, and `snapshots` on separate
 threads, and cut a large section into one chunk per thread at entry
 boundaries. That took today's format from 49 ms to 15 ms on the
-5,623-snapshot lockfile. Of the next format's 34 ms, 14 ms is the prototype
-converting back to today's keys, which a native implementation would not do.
-The remaining difference is YAML parsing of the one struct that carries both
-metadata and graph fields. Writing is slower: it converts, hoists what the
-variants share, then reads its output back and compares, in one round or
-two.
+5,623-snapshot lockfile. The next format's document parses in 7.5 ms against
+today's 9 ms, and serially 55 ms against 68 ms. The rest of its read is the
+prototype converting back to today's keys, which a native implementation would
+not do. Writing is slower: it converts, hoists what the variants share, checks each
+reference's target against the lockfile's, and rebuilds the sections once to
+compare them.
 
 **Installs**, the same binary on a workspace of 237 projects and 1,664
 snapshots, median of 20 runs:
 
 | Scenario | Today | Next | 95% interval of the difference |
 | --- | ---: | ---: | --- |
-| Frozen restore, warm store | 571 ms | 566 ms | −33 to +31 ms |
-| Restore without `--frozen-lockfile` | 559 ms | 586 ms | −30 to +33 ms |
-| Repeat install | 152 ms | 155 ms | +1 to +9 ms |
-| Resolve after a manifest change | 584 ms | 604 ms | +4 to +29 ms |
-| `pnpm add` | 564 ms | 572 ms | +4 to +23 ms |
-| Regenerate a deleted `pnpm-lock.yaml` | 79 ms | 89 ms | +6 to +12 ms |
+| Frozen restore, warm store | 564 ms | 557 ms | −41 to +15 ms |
+| Restore without `--frozen-lockfile` | 573 ms | 565 ms | −36 to +20 ms |
+| Repeat install | 153 ms | 158 ms | +2 to +10 ms |
+| Resolve after a manifest change | 587 ms | 605 ms | +1 to +25 ms |
+| `pnpm add` | 563 ms | 582 ms | +8 to +26 ms |
+| Regenerate a deleted `pnpm-lock.yaml` | 82 ms | 91 ms | +5 to +11 ms |
 
-Today's format parses in parallel chunks in these runs too. What the next
-format pays on top is the prototype's conversion on every read and its
-read-back on every write. The regeneration scenario writes without resolving,
-so it shows the write cost in full.
+Today's format parses in parallel chunks in these runs too. The restores,
+which read the lockfile and link, are even. What the next format pays in the
+other scenarios is the prototype's conversion: about 3 ms on each read and 7 ms
+on each write of this lockfile. The regeneration scenario writes without
+resolving, so it shows the write cost in full.
 
 ## Rationale and Alternatives
 
