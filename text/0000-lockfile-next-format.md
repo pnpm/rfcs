@@ -18,7 +18,8 @@ A prototype behind an opt-in setting reads and writes this format exactly for
 lockfile in 61% of today's bytes. See [Prototype results](#prototype-results).
 
 The format also requires every directory package's `packages` entry to record
-`specifiers`, the dependency specifiers the resolver read from its manifest.
+`specifiers`, the dependency specifiers the resolver read from its manifest,
+and folds `peerDependenciesMeta` into `peerDependencies`.
 
 ## Motivation
 
@@ -150,9 +151,8 @@ packages:
   fs-impl@4.8.4:
     integrity: sha512-...
     peerDependencies:
-      buffer-impl: '*'
-    peerDependenciesMeta:
       buffer-impl:
+        specifier: '*'
         optional: true
     dependencies:
       path-impl: 3.1.2
@@ -174,6 +174,7 @@ Besides today's metadata fields, an entry has these:
 | Key | Content |
 | --- | --- |
 | `integrity` | The integrity of the package's tarball, for every resolution kind that has one. `resolution` holds the rest of the resolution, and a registry package without a revision has none. |
+| `peerDependencies` | The peers the package declares, as `name: range`. A peer that `peerDependenciesMeta` in `package.json` describes is `name: {specifier: range, optional: true}` instead. There is no `peerDependenciesMeta` field. |
 | `dependencies` | The manifest's `dependencies`, and nothing else. |
 | `optionalDependencies` | The manifest's `optionalDependencies`, and nothing else. |
 | `peers` | The package's own peers that are bound, as `name: reference`. These are linked next to the package. |
@@ -182,7 +183,9 @@ Besides today's metadata fields, an entry has these:
 | `snapshots` | For a package installed with several sets of peers, a list with one snapshot per set, holding the same keys as the entry. |
 
 `peerDependencies` keeps today's meaning, the ranges the package declares,
-because it mirrors `package.json`. The resolved maps have their own names.
+and takes `peerDependenciesMeta` in: a peer's entry is its range, or a map of
+`specifier` and `optional` when there is something to say besides the range.
+The resolved maps have their own names.
 
 Rules:
 
@@ -202,8 +205,9 @@ Rules:
   `peers` if a parent provided it. It is in its dependency map if the
   package's own dependency was installed. Such a name differs between the
   snapshots, so it is never hoisted.
-- Whether a peer edge is optional is read from `peerDependenciesMeta`. The
-  installer treats a failure on an optional peer edge as it does today.
+- Whether a peer edge is optional is read from `optional` in
+  `peerDependencies`. The installer treats a failure on an optional peer edge
+  as it does today.
 - An unbound own peer is not recorded. `peerDependencies` lists every peer the
   package declares.
 - `snapshots` is sorted by today's keys of the snapshots, so the file is
@@ -351,8 +355,8 @@ Rules:
   the snapshot records the children under.
 - Specifiers are recorded before catalog resolution and before peer
   shadowing. A name declared as both a dependency and a peer is in
-  `specifiers`. Whether it was bound as a peer is in the snapshot's
-  `peerDependencies` (see [Snapshots](#snapshots)).
+  `specifiers`. Whether it was bound as a peer is in the entry's `peers`
+  (see [Packages](#packages)).
 - The field is the same for every snapshot of the package, so it is
   never in `snapshots`.
 - The field is required on every directory entry. The frozen-lockfile check
@@ -520,7 +524,7 @@ measurement.
   children are peers.
 - `pnpm/crates/deps-restorer`: follow references with the shared function,
   derive directory names from the snapshot, and take optionality from
-  `peerDependenciesMeta`.
+  `peerDependencies`.
 - `pnpm/crates/resolving-deps-resolver`: lockfile reuse follows references
   with the shared function. `locked_peers/hashed_suffix.rs` is removed.
 - `pnpm/crates/cli/src/cli_args/deploy`: read peer edges from
