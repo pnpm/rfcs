@@ -14,7 +14,7 @@ where they don't, the reference names the snapshot by its peer bindings. No
 key or reference carries a peer or patch group.
 
 A prototype behind an opt-in setting reads and writes this format exactly for
-165 of the 169 real lockfiles it was tried on, and writes a 5,623-snapshot
+142 of the 146 real lockfiles it was tried on, and writes a 5,623-snapshot
 lockfile in 50% of today's bytes. See [Prototype results](#prototype-results).
 
 The format also requires every directory package's `packages` entry to record
@@ -178,7 +178,6 @@ Besides today's metadata fields, an entry has these:
 | `optionalDependencies` | The manifest's `optionalDependencies`, and nothing else. |
 | `peers` | The package's own peers that are bound, as `name: reference`. These are linked next to the package. |
 | `transitivePeers` | The peers bound below this package from the scope above it, as `name: reference`. These are not linked next to the package. |
-| `missingPeers` | The other peers needed below this package, as a list of names: those nothing provides, and those bound from anywhere in the graph (pnpm/pnpm#7830). Neither kind is part of the package's identity. |
 | `snapshots` | For a package installed with several sets of peers, a list with one snapshot per set, holding the same keys as the entry. |
 
 `peerDependencies` keeps today's meaning, the ranges the package declares,
@@ -215,8 +214,14 @@ Rules:
 - `snapshots` is sorted by today's keys of the snapshots, so the file is
   reproducible. An entry's keys are written metadata first, `resolution`,
   `integrity`, then today's `packages` order, then `dependencies`,
-  `optionalDependencies`, `peers`, `transitivePeers`, `missingPeers`,
-  `snapshots`. Nested maps are alphabetical.
+  `optionalDependencies`, `peers`, `transitivePeers`, `snapshots`. Nested
+  maps are alphabetical.
+- A peer that nothing provides is not recorded. Today's
+  `transitivePeerDependencies` lists, beside the bound peers, the peers the
+  packages below declare and nothing binds; a reader that needs that list
+  derives those names from the `peerDependencies` of the packages below,
+  which is where the resolver takes them from. A package's own unbound peers
+  are listed by its dependents, not by the package.
 - `deprecated` is not recorded. A deprecation is a fact about the registry's
   current metadata, not about the resolution, and pnpm reads it from the
   registry when it resolves. The lockfile's copy went stale the moment a
@@ -455,7 +460,7 @@ A prototype in pnpm v12 reads and writes the format behind a
 `lockfile.format: next` setting. It converts at the boundary: the in-memory
 lockfile keeps today's keys, so no install logic changes.
 
-**Correctness.** 165 of 169 real lockfiles round-trip exactly through the
+**Correctness.** 142 of 146 real lockfiles round-trip exactly through the
 written text, from small fixtures up to a 4.4 MB monorepo lockfile with 5,623
 snapshots. An install from the next format produces the same
 `node_modules/.pnpm` directories and the same current lockfile as an install
@@ -468,6 +473,8 @@ from today's format. The four that can't be written:
 - One fixture whose keys keep the `/` prefix of lockfile 6, so its references
   point at snapshots it does not have. Today's suffix was the only thing that
   let them read back.
+- One old audit fixture whose `transitivePeerDependencies` lists do not
+  follow the current resolver's rule, under which the reader derives them.
 
 The writer refuses these with an error rather than writing a lockfile that
 reads back differently.
@@ -476,7 +483,7 @@ reads back differently.
 React libraries changes 142 lines today and 58 in this format. That lockfile
 is 29 KB instead of 35 KB.
 
-The 5,623-snapshot lockfile has 99,955 lines today and 58,840 in this
+The 5,623-snapshot lockfile has 99,955 lines today and 58,186 in this
 format. Its `importers` section, a third of the file before, writes 3,873 of
 its 8,204 dependencies as an exact version alone.
 
@@ -484,9 +491,9 @@ its 8,204 dependencies as an exact version alone.
 
 | Lockfile | Bytes, today | Bytes, next | Read, today | Read, next | Write, today | Write, next |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 255 snapshots | 85 KB | 67 KB | 1.7 ms | 2.8 ms | 0.8 ms | 2.2 ms |
-| 1,664 snapshots | 860 KB | 670 KB | 3.8 ms | 6.6 ms | 4.2 ms | 11 ms |
-| 5,623 snapshots | 4.40 MB | 2.22 MB | 16 ms | 28 ms | 16 ms | 63 ms |
+| 255 snapshots | 85 KB | 66 KB | 1.9 ms | 2.8 ms | 0.8 ms | 2.2 ms |
+| 1,664 snapshots | 860 KB | 668 KB | 3.8 ms | 7.5 ms | 4.2 ms | 11 ms |
+| 5,623 snapshots | 4.40 MB | 2.20 MB | 14 ms | 31 ms | 16 ms | 64 ms |
 
 Both formats parse `importers`, `packages`, and `snapshots` on separate
 threads, and cut a large section into one chunk per thread at entry
@@ -628,17 +635,13 @@ measurement.
   always predicts the snapshot would make every reference a bare version, and
   would remove the writer's read-back. That is a resolution change, with its
   own trade-offs.
-- **`missingPeers`.** The prototype needs the list to rebuild today's
-  `transitivePeerDependencies` exactly. If nothing reads the missing
-  names, the list can go once pnpm no longer keeps today's keys in memory.
 - **Lockfiles that cannot be written.** A writer that fails is safe but
   unfriendly. pnpm could fall back to today's format for them, which keeps the
   install working and changes the format without being asked.
 - **Where the remaining parse cost goes.** YAML parsing is paid per node, not
   per byte. Each transitive binding is `name: version`, two nodes where
   today's name list has one, and that is what lets a referrer's scope select
-  its children without a walk. Dropping `missingPeers` would remove about
-  1,500 more nodes from the 5,623-snapshot lockfile.
+  its children without a walk.
 - **Older lockfiles without `specifiers`.** Without the derived walk, a frozen
   install can't check a directory entry that has no `specifiers`. It could
   fail and ask for a non-frozen install, or keep the walk only for lockfiles
