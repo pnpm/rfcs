@@ -151,9 +151,7 @@ packages:
   fs-impl@4.8.4:
     integrity: sha512-...
     peerDependencies:
-      buffer-impl:
-        specifier: '*'
-        optional: true
+      buffer-impl: {specifier: '*', optional: true}
     dependencies:
       path-impl: 3.1.2
     snapshots:
@@ -185,7 +183,8 @@ Besides today's metadata fields, an entry has these:
 `peerDependencies` keeps today's meaning, the ranges the package declares,
 and takes `peerDependenciesMeta` in: a peer's entry is its range, or a map of
 `specifier` and `optional` when there is something to say besides the range.
-The resolved maps have their own names.
+The map is written on the peer's line, as `resolution` is today, so a change
+to a peer stays a one-line diff. The resolved maps have their own names.
 
 Rules:
 
