@@ -217,6 +217,10 @@ Rules:
   `integrity`, then today's `packages` order, then `dependencies`,
   `optionalDependencies`, `peers`, `transitivePeers`, `missingPeers`,
   `snapshots`. Nested maps are alphabetical.
+- `deprecated` is not recorded. A deprecation is a fact about the registry's
+  current metadata, not about the resolution, and pnpm reads it from the
+  registry when it resolves. The lockfile's copy went stale the moment a
+  package was deprecated or undeprecated after the install that wrote it.
 - Every entry is a package the graph reaches. Today a `packages` entry
   without a snapshot can only come from a hand-written or broken lockfile.
   This format has no way to write one: an entry with metadata only would read
