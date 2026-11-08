@@ -211,9 +211,9 @@ Rules:
   `optionalDependencies`, `peers`, `transitivePeers`, `missingPeers`,
   `variants`. Nested maps are alphabetical.
 - Every entry is a package the graph reaches. Today a `packages` entry
-  without a snapshot can only come from a hand-written or broken lockfile,
-  and this format has no way to write one: an entry with metadata only would
-  read back as a package with an empty snapshot.
+  without a snapshot can only come from a hand-written or broken lockfile.
+  This format has no way to write one: an entry with metadata only would read
+  back as a package with an empty snapshot.
 
 ### Following a reference
 
