@@ -15,11 +15,12 @@ keeps its peer groups.
 
 A prototype behind an opt-in setting reads and writes this format exactly for
 170 of the 173 real lockfiles it was tried on, and writes a 5,623-snapshot
-lockfile in 58% of today's bytes. See [Prototype results](#prototype-results).
+lockfile in 53% of today's bytes. See [Prototype results](#prototype-results).
 
 The format also requires every directory package's `packages` entry to record
 `specifiers`, the dependency specifiers the resolver read from its manifest,
-and folds `peerDependenciesMeta` into `peerDependencies`.
+folds `peerDependenciesMeta` into `peerDependencies`, and writes an importer's
+dependency as its specifier alone when the version follows from it.
 
 ## Motivation
 
@@ -219,6 +220,43 @@ Rules:
   This format has no way to write one: an entry with metadata only would read
   back as a package with an empty snapshot.
 
+### Importers
+
+An importer's dependency is its specifier alone when the version follows
+from the specifier, and `{specifier, version}` on one line otherwise:
+
+```yaml
+importers:
+
+  packages/app:
+    dependencies:
+      '@babel/core': 'catalog:'
+      debug: {specifier: ^4.0.0, version: 4.4.0}
+      left-pad: 1.3.0
+      shared-utils: {specifier: workspace:*, version: link:../shared-utils}
+```
+
+The version follows from:
+
+- an exact version, which is the version;
+- `npm:name@1.2.3`, which is `name@1.2.3`;
+- a `link:` or `file:` path, which is the specifier itself;
+- `catalog:` or `catalog:<name>`, which is the version the `catalogs`
+  section records for the entry, as `name@version` when the catalog entry is
+  an `npm:` alias.
+
+A range writes both, because the version is the lock. A `workspace:`
+specifier writes both, so the lockfile says where the workspace dependency
+lives without the workspace. A version that keeps peer groups, or has a patch
+group, writes both.
+
+A `catalogs` entry is written on one line too:
+`'@babel/core': {specifier: ^7.29.7, version: 7.29.7}`.
+
+A reader that rejects a lockfile whose specifier implies a version it cannot
+find, such as a `catalog:` entry the `catalogs` section lacks, fails with
+`ERR_PNPM_NEXT_LOCKFILE_UNDERIVABLE_VERSION`.
+
 ### Following a reference
 
 The *scope* of a snapshot or importer is the union of its `dependencies`,
@@ -408,13 +446,17 @@ reads back differently.
 React libraries changes 142 lines today and 58 in this format. That lockfile
 is 29 KB instead of 35 KB.
 
+The 5,623-snapshot lockfile has 99,955 lines today and 59,012 in this
+format. Its `importers` section, a third of the file before, writes 3,873 of
+its 8,204 dependencies as an exact version alone.
+
 **Speed of the lockfile alone**, minimum of 15 runs:
 
 | Lockfile | Bytes, today | Bytes, next | Read, today | Read, next | Write, today | Write, next |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 255 snapshots | 85 KB | 68 KB | 1.9 ms | 2.6 ms | 0.8 ms | 1.9 ms |
-| 1,664 snapshots | 860 KB | 761 KB | 3.5 ms | 6.3 ms | 4.1 ms | 11 ms |
-| 5,623 snapshots | 4.40 MB | 2.56 MB | 15 ms | 29 ms | 14 ms | 59 ms |
+| 255 snapshots | 85 KB | 67 KB | 2.0 ms | 2.8 ms | 0.8 ms | 2.1 ms |
+| 1,664 snapshots | 860 KB | 680 KB | 3.8 ms | 7.6 ms | 4.0 ms | 12 ms |
+| 5,623 snapshots | 4.40 MB | 2.34 MB | 14 ms | 28 ms | 16 ms | 58 ms |
 
 Both formats parse `importers`, `packages`, and `snapshots` on separate
 threads, and cut a large section into one chunk per thread at entry
