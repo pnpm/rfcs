@@ -15,7 +15,7 @@ keeps its peer groups.
 
 A prototype behind an opt-in setting reads and writes this format exactly for
 170 of the 173 real lockfiles it was tried on, and writes a 5,623-snapshot
-lockfile in 61% of today's bytes. See [Prototype results](#prototype-results).
+lockfile in 58% of today's bytes. See [Prototype results](#prototype-results).
 
 The format also requires every directory package's `packages` entry to record
 `specifiers`, the dependency specifiers the resolver read from its manifest,
@@ -233,8 +233,11 @@ To follow the reference `fs-impl: 4.8.4` from a referrer:
 1. If `fs-impl@4.8.4` has one snapshot, that is the one.
 2. If the reference carries peer groups, pick the snapshot whose providers are
    the packages those groups name.
-3. Otherwise pick the snapshot whose `peers` and `transitivePeers` all agree
-   with the referrer's scope, binding the most names.
+3. Otherwise pick the snapshot none of whose `peers` and `transitivePeers`
+   disagrees with the referrer's scope, agreeing on the most names, and then
+   binding the fewest names the scope lacks. A name the scope lacks is
+   neutral, because an optional peer bound from elsewhere in the graph is in
+   no referrer's scope.
 
 The scope selects the snapshot whenever every binding below the referrer is in
 it. A peer bound to the referrer's own dependency or own peer is. A peer bound
@@ -254,7 +257,9 @@ lockfiles:
 So the writer reads its output back, and wherever step 3 picks another
 snapshot, it writes that reference with its peer groups and reads back again.
 Two rounds settled every lockfile the prototype was tried on. In the monorepo
-above, 138 lines keep peer groups, where today's format has 14,820.
+above, 557 references keep peer groups: 174 in `importers`, the rest peer
+bindings whose provider has several snapshots. Today's format has 18,961
+lines with peer groups there.
 
 ### Providers of a binding
 
@@ -409,7 +414,7 @@ is 29 KB instead of 35 KB.
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 255 snapshots | 85 KB | 68 KB | 1.9 ms | 2.6 ms | 0.8 ms | 1.9 ms |
 | 1,664 snapshots | 860 KB | 761 KB | 3.5 ms | 6.3 ms | 4.1 ms | 11 ms |
-| 5,623 snapshots | 4.40 MB | 2.69 MB | 15 ms | 29 ms | 14 ms | 59 ms |
+| 5,623 snapshots | 4.40 MB | 2.56 MB | 15 ms | 29 ms | 14 ms | 59 ms |
 
 Both formats parse `importers`, `packages`, and `snapshots` on separate
 threads, and cut a large section into one chunk per thread at entry
