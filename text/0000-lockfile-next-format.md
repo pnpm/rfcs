@@ -266,6 +266,7 @@ importers:
     dependencies:
       '@babel/core': 'catalog:'
       debug: {specifier: ^4.0.0, version: 4.4.0}
+      injected-utils: workspace:*
       left-pad: 1.3.0
       shared-utils: {specifier: workspace:*, version: link:../shared-utils}
 ```
@@ -277,13 +278,19 @@ The version follows from:
 - a `link:` or `file:` path, which is the specifier itself;
 - `catalog:` or `catalog:<name>`, which is the version `settings.catalogs`
   section records for the entry, as `name@version` when the catalog entry is
-  an `npm:` alias.
+  an `npm:` alias;
+- `workspace:` for an injected workspace package, which is `file:<path>`,
+  the `<path>` of the package's one `name@file:<path>` entry in `packages`,
+  as `name@file:<path>` when the specifier is `workspace:name@range`. The
+  name is the dependency's, or the one the specifier gives.
 
 A range writes both, because the version is the lock. A `workspace:`
-specifier writes both, so the lockfile says where the workspace dependency
-lives without the workspace. A dependency whose version does not select its
-snapshot writes `specifier`, `version` and `with`, in block style like a
-[reference](#packages) that names its snapshot:
+specifier that is linked, not injected, writes both, so the lockfile says
+where the workspace dependency lives without the workspace. An injected
+one does not need to: its `packages` entry already says. A dependency whose
+version does not select its snapshot writes `specifier`, `version` and
+`with`, in block style like a [reference](#packages) that names its
+snapshot:
 
 ```yaml
       react-dom:
