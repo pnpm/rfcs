@@ -4,9 +4,9 @@
 
 In the next lockfile format, `packages` has one entry per package, keyed by
 `name@version`. The entry holds the package's metadata, its resolved
-dependencies, and its peer bindings as properties: a `peers` map for the
-package's own peers, and a `transitivePeers` map for the peers bound below
-it. There is no `snapshots` section. A package that pnpm installs with
+dependencies, and its peer bindings as properties: `peerDependencies` holds
+each declared peer's range and the version it was bound to, and, marked
+`below: true`, the bindings a dependency below the package needed. There is no `snapshots` section. A package that pnpm installs with
 several sets of peers has one snapshot per set. The entry writes what the
 snapshots share once and lists what differs under `snapshots`. A reference
 is a version. The referrer's own bindings determine which snapshot it links;
@@ -15,7 +15,7 @@ key or reference carries a peer or patch group.
 
 A prototype behind an opt-in setting reads and writes this format exactly for
 142 of the 146 real lockfiles it was tried on, and writes a 5,623-snapshot
-lockfile in 50% of today's bytes. See [Prototype results](#prototype-results).
+lockfile in 52% of today's bytes. See [Prototype results](#prototype-results).
 
 The format also requires every directory package's `packages` entry to record
 `specifiers`, the dependency specifiers the resolver read from its manifest,
@@ -156,16 +156,16 @@ packages:
     dependencies:
       path-impl: 3.1.2
     snapshots:
-      - peers:
-          buffer-impl: 3.7.1
-      - peers:
-          buffer-impl: 3.8.0
+      - peerDependencies:
+          buffer-impl: {version: 3.7.1}
+      - peerDependencies:
+          buffer-impl: {version: 3.8.0}
   container@3.2.2:
     integrity: sha512-...
+    peerDependencies:
+      buffer-impl: {version: 3.7.1, below: true}
     dependencies:
       fs-impl: 4.8.4
-    transitivePeers:
-      buffer-impl: 3.7.1
 ```
 
 Besides today's metadata fields, an entry has these:
@@ -176,8 +176,7 @@ Besides today's metadata fields, an entry has these:
 | `peerDependencies` | The peers the package declares, as `name: range`. A peer that `peerDependenciesMeta` in `package.json` describes is `name: {specifier: range, optional: true}` instead. There is no `peerDependenciesMeta` field. |
 | `dependencies` | The manifest's `dependencies`, and nothing else. |
 | `optionalDependencies` | The manifest's `optionalDependencies`, and nothing else. |
-| `peers` | The package's own peers that are bound, as `name: reference`. These are linked next to the package. |
-| `transitivePeers` | The peers bound below this package from the scope above it, as `name: reference`. These are not linked next to the package. |
+| `peerDependencies` | Every peer the package declares, and every peer bound below it. A declared peer is its range, `name: ^1.0.0`, or a map with `specifier`, `version` when it is bound, and `optional: true` from `peerDependenciesMeta`. A bound declared peer is linked next to the package. A peer bound below the package from the scope above it, which the package does not declare, is `{version, below: true}`, and is not linked next to it. |
 | `snapshots` | For a package installed with several sets of peers, a list with one snapshot per set, holding the same keys as the entry. |
 
 `peerDependencies` keeps today's meaning, the ranges the package declares,
@@ -201,21 +200,25 @@ Rules:
   same value is written once, in the entry, and each snapshot lists the rest.
   A snapshot is the entry's maps with the snapshot's entries added. A package
   with one snapshot has no `snapshots` list.
-- A name is in at most one of `dependencies`, `optionalDependencies`, and
-  `peers` of a snapshot. A name declared as both a dependency and a peer is in
-  `peers` if a parent provided it. It is in its dependency map if the
-  package's own dependency was installed. Such a name differs between the
-  snapshots, so it is never hoisted.
+- A name is bound in at most one of `dependencies`, `optionalDependencies`,
+  and `peerDependencies` of a snapshot. A name declared as both a dependency
+  and a peer has a `version` under `peerDependencies` if a parent provided
+  it. It is in its dependency map if the package's own dependency was
+  installed. Such a name differs between the snapshots, so it is never
+  hoisted.
 - Whether a peer edge is optional is read from `optional` in
   `peerDependencies`. The installer treats a failure on an optional peer edge
   as it does today.
-- An unbound own peer is not recorded. `peerDependencies` lists every peer the
-  package declares.
+- An unbound own peer is its range alone. `peerDependencies` lists every
+  peer the package declares.
+- Hoisting works per field. The range and `optional` of a declared peer are
+  the package's, so they are in the entry; a `version` every snapshot shares
+  is in the entry, and one that differs is in each snapshot, as
+  `{version: …}` beside the entry's range.
 - `snapshots` is sorted by today's keys of the snapshots, so the file is
   reproducible. An entry's keys are written metadata first, `resolution`,
   `integrity`, then today's `packages` order, then `dependencies`,
-  `optionalDependencies`, `peers`, `transitivePeers`, `snapshots`. Nested
-  maps are alphabetical.
+  `optionalDependencies`, `snapshots`. Nested maps are alphabetical.
 - A peer that nothing provides is not recorded. Today's
   `transitivePeerDependencies` lists, beside the bound peers, the peers the
   packages below declare and nothing binds; a reader that needs that list
@@ -295,7 +298,8 @@ drop the hash.
 ### Following a reference
 
 The *scope* of a snapshot or importer is the union of its `dependencies`,
-`optionalDependencies`, `peers`, and `transitivePeers`. A snapshot's scope also
+`optionalDependencies`, and the bound entries of its `peerDependencies`,
+`below` or not. A snapshot's scope also
 holds the snapshot itself under its own name, because a package can be the
 peer of its own dependency, as `@babel/core` is of
 `@babel/helper-module-transforms`. Each
@@ -306,15 +310,15 @@ To follow the reference `fs-impl: 4.8.4` from a referrer:
 1. If `fs-impl@4.8.4` has one snapshot, that is the one.
 2. If the reference names peers, pick the snapshot that binds each named
    peer to the reference given.
-3. Otherwise pick the snapshot none of whose `peers` and `transitivePeers`
-   disagrees with the referrer's scope, agreeing on the most names, and then
+3. Otherwise pick the snapshot none of whose peer bindings disagrees with
+   the referrer's scope, agreeing on the most names, and then
    binding the fewest names the scope lacks. A name the scope lacks is
    neutral, because an optional peer bound from elsewhere in the graph is in
    no referrer's scope.
 
 The scope selects the snapshot whenever every binding below the referrer is in
 it. A peer bound to the referrer's own dependency or own peer is. A peer bound
-from the scope above the referrer is in its `transitivePeers`.
+from the scope above the referrer is among its `below` bindings.
 
 Two resolver features break that, and the prototype found both in real
 lockfiles:
@@ -361,19 +365,17 @@ A bump of `buffer-impl` to 3.7.2 changes the binding lines and nothing else:
    fs-impl@4.8.4:
      integrity: sha512-...
      peerDependencies:
-       buffer-impl: '*'
+-      buffer-impl: {specifier: '*', version: 3.7.1}
++      buffer-impl: {specifier: '*', version: 3.7.2}
      dependencies:
        path-impl: 3.1.2
-     peers:
--      buffer-impl: 3.7.1
-+      buffer-impl: 3.7.2
    container@3.2.2:
      integrity: sha512-...
+     peerDependencies:
+-      buffer-impl: {version: 3.7.1, below: true}
++      buffer-impl: {version: 3.7.2, below: true}
      dependencies:
        fs-impl: 4.8.4
-     transitivePeers:
--      buffer-impl: 3.7.1
-+      buffer-impl: 3.7.2
 ```
 
 A package that didn't change and binds a new optional peer, the
@@ -382,10 +384,11 @@ pnpm/pnpm#17773 case, gains one line per snapshot that binds it:
 ```diff
    fs-impl@4.8.4:
      integrity: sha512-...
+     peerDependencies:
+-      bare-buffer: {specifier: '*', optional: true}
++      bare-buffer: {specifier: '*', version: 2.6.1, optional: true}
      dependencies:
        path-impl: 3.1.2
-+    peers:
-+      bare-buffer: 2.6.1
 ```
 
 In the branch example from the motivation, branch B writes `fs-impl: 4.8.4`.
@@ -434,8 +437,8 @@ Rules:
   the snapshot records the children under.
 - Specifiers are recorded before catalog resolution and before peer
   shadowing. A name declared as both a dependency and a peer is in
-  `specifiers`. Whether it was bound as a peer is in the entry's `peers`
-  (see [Packages](#packages)).
+  `specifiers`. Whether it was bound as a peer is in the entry's
+  `peerDependencies` (see [Packages](#packages)).
 - The field is the same for every snapshot of the package, so it is
   never in `snapshots`.
 - The field is required on every directory entry. The frozen-lockfile check
@@ -488,7 +491,7 @@ reads back differently.
 React libraries changes 142 lines today and 58 in this format. That lockfile
 is 29 KB instead of 35 KB.
 
-The 5,623-snapshot lockfile has 99,955 lines today and 58,186 in this
+The 5,623-snapshot lockfile has 99,955 lines today and 55,803 in this
 format. Its `importers` section, a third of the file before, writes 3,873 of
 its 8,204 dependencies as an exact version alone.
 
@@ -496,9 +499,9 @@ its 8,204 dependencies as an exact version alone.
 
 | Lockfile | Bytes, today | Bytes, next | Read, today | Read, next | Write, today | Write, next |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 255 snapshots | 85 KB | 66 KB | 1.9 ms | 2.8 ms | 0.8 ms | 2.2 ms |
-| 1,664 snapshots | 860 KB | 668 KB | 3.8 ms | 7.5 ms | 4.2 ms | 11 ms |
-| 5,623 snapshots | 4.40 MB | 2.20 MB | 14 ms | 31 ms | 16 ms | 64 ms |
+| 255 snapshots | 85 KB | 66 KB | 1.9 ms | 2.8 ms | 0.8 ms | 2.1 ms |
+| 1,664 snapshots | 860 KB | 669 KB | 4.1 ms | 8.8 ms | 4.3 ms | 11 ms |
+| 5,623 snapshots | 4.40 MB | 2.31 MB | 16 ms | 36 ms | 14 ms | 61 ms |
 
 Both formats parse `importers`, `packages`, and `snapshots` on separate
 threads, and cut a large section into one chunk per thread at entry
@@ -604,8 +607,9 @@ measurement.
 - `pnpm/crates/lockfile`: one `Package` type holds the metadata, the shared
   graph fields, and the snapshots. A function follows a reference from a
   scope, with the rule above, and is the one place that rule lives. Reading
-  a 9.0 lockfile converts it. The suffix becomes the maps, and children that
-  match the declared `peerDependencies` move to `peers`. A hashed suffix is
+  a 9.0 lockfile converts it. The suffix becomes the bindings, and children
+  that match the declared `peerDependencies` become their `version`. A
+  hashed suffix is
   recovered once by today's walk.
 - `pnpm/crates/package-manager/src/dependencies_graph_to_lockfile`: write the
   bindings to the maps and sort the snapshots. The resolver already knows which
