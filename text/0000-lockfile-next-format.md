@@ -185,10 +185,12 @@ fragments of such a file, with their indentation reduced.
 
 A lockfile with a boot document, the first document of a two-document
 `pnpm-lock.yaml` that records `configDependencies` and
-`packageManagerDependencies`, keeps it as it is: a YAML document before the
-main one, separated by `---`. The main document is the JSON. A YAML reader
-sees a stream of two documents, as today, and the prototype preserves the
-boot document byte for byte, as it does for today's format.
+`packageManagerDependencies`, writes it in the same format as the main
+document: the same syntax, one `packages` entry per package, and the two
+groups of its root importer written as an importer's dependencies are.
+The two documents stay separated by `---`, so a YAML reader sees a stream
+of two documents, as today, and the env installer keeps writing the boot
+document while the main writer preserves it as text.
 
 ### Packages
 
