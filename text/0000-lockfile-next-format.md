@@ -185,18 +185,27 @@ fragments of such a file, with their indentation reduced.
 
 A lockfile with a boot document, the first document of a two-document
 `pnpm-lock.yaml` that records `configDependencies` and
-`packageManagerDependencies`, keeps that document in lockfile 9.0's shape
-and syntax, whatever format the main document is in. The boot document is
-what a pnpm that is not the pinned version reads to find the pinned
-version and switch to it, and that pnpm may be older than this format, so
-the document it reads cannot change with the format. The two documents
-stay separated by `---`, the main one in the format `lockfileVersion`
-names.
+`packageManagerDependencies`, writes that document in the format of the
+pnpm major that owns the project: the pinned one, or the running one when
+nothing is pinned. The boot document is what a pnpm that is not the pinned
+version reads to find the pinned version and switch to it, and that pnpm
+may be older than this format, so the boot document changes format one
+major after the main document: a project that pins pnpm 13 or earlier
+keeps lockfile 9.0's boot document whatever format the main document is
+in, and a project that pins pnpm 14 or later has a boot document in this
+format. Keying the format on the pinned major rather than on the writer
+matters because either pnpm may write the document: the pinned pnpm when
+it records its own pin or installs config dependencies, and the pnpm
+switching into the project on the first switch, when it resolves the
+pinned version's packages before installing them. Both write what the
+pinned pnpm would. The two documents stay separated by `---`, the main
+one in the format `lockfileVersion` names.
 
-pnpm 11 and pnpm 12 learn to read a boot document in this format ahead of
-any pnpm writing one, so that the boot document can follow the main
-document's format in a later major, once the versions that cannot read it
-have fallen out of use: pnpm 14 at the earliest.
+pnpm 11 and pnpm 12 read a boot document in this format ahead of any pnpm
+writing one, and pnpm 12 already writes it for a project that pins pnpm 14
+or later. pnpm 14 rewrites a boot document it finds in another format than
+the project's, which repairs one written by a pnpm 11 that made the first
+switch into the project.
 
 ### Packages
 
@@ -828,7 +837,8 @@ pnpm v12, except for one reader in pnpm v11. pnpm v11 keeps lockfile 9.0,
 including the optional `specifiers` field that pnpm/pnpm#17477 adds to
 both CLIs, and reads a boot document in this format, so that it can
 switch to the pnpm version a project pins. The prototype carries that
-reader (`@pnpm/lockfile.fs`).
+reader (`@pnpm/lockfile.fs`), and the v12 writer of the boot document in
+this format for projects that pin pnpm 14 or later.
 
 The prototype converts at the boundary and keeps today's peer-suffixed keys in
 memory. A native implementation, which keeps the format's entries in memory
