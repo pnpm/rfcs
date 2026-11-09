@@ -288,14 +288,19 @@ A range writes both, because the version is the lock. A `workspace:`
 specifier that is linked, not injected, writes both, so the lockfile says
 where the workspace dependency lives without the workspace. An injected
 one does not need to: its `packages` entry already says. A dependency whose
-version does not select its snapshot writes `specifier`, `version` and
-`with`, in block style like a [reference](#packages) that names its
-snapshot:
+version does not select its snapshot adds `with`, in block style like a
+[reference](#packages) that names its snapshot. It leaves the version out
+when the version follows from the specifier, as a dependency without `with`
+does:
 
 ```yaml
       react-dom:
         specifier: ^18.0.0
         version: 18.3.1
+        with:
+          react: 18.3.1
+      ui-kit:
+        specifier: 2.4.0
         with:
           react: 18.3.1
 ```
