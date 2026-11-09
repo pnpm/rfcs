@@ -193,6 +193,11 @@ the document it reads cannot change with the format. The two documents
 stay separated by `---`, the main one in the format `lockfileVersion`
 names.
 
+pnpm 11 and pnpm 12 learn to read a boot document in this format ahead of
+any pnpm writing one, so that the boot document can follow the main
+document's format in a later major, once the versions that cannot read it
+have fallen out of use: pnpm 14 at the earliest.
+
 ### Packages
 
 `packages` maps `name@version` to one entry per package. The entry carries
@@ -819,8 +824,11 @@ JSON one needs one that allows the comma, as Bun's lockfile needs.
 
 ## Implementation
 
-pnpm v12 only. pnpm v11 keeps lockfile 9.0, including the optional
-`specifiers` field that pnpm/pnpm#17477 adds to both CLIs.
+pnpm v12, except for one reader in pnpm v11. pnpm v11 keeps lockfile 9.0,
+including the optional `specifiers` field that pnpm/pnpm#17477 adds to
+both CLIs, and reads a boot document in this format, so that it can
+switch to the pnpm version a project pins. The prototype carries that
+reader (`@pnpm/lockfile.fs`).
 
 The prototype converts at the boundary and keeps today's peer-suffixed keys in
 memory. A native implementation, which keeps the format's entries in memory
