@@ -667,7 +667,7 @@ writes.
 ### Prototype results
 
 A prototype in pnpm v12 reads and writes the format behind a
-`lockfile.format: next` setting. It converts at the boundary: the in-memory
+`lockfile.format: v13` setting. It converts at the boundary: the in-memory
 lockfile keeps today's keys, so no install logic changes.
 
 **Correctness.** 142 of 146 real lockfiles round-trip exactly through the
