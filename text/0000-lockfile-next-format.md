@@ -193,8 +193,11 @@ Rules:
   [Patches](#patches)).
 - A reference is a version, `<name>@<version>` for an alias, or `link:<path>`,
   as today, without groups. Where [following it](#following-a-reference)
-  needs to name the snapshot, the reference is a map, `{version, peers}`,
-  whose `peers` are the bindings that tell the package's snapshots apart.
+  needs to name the snapshot, the reference is a map, `{version, with}`,
+  whose `with` holds the bindings that tell the package's snapshots apart:
+  `react-dom: {version: 18.3.1, with: {react: 18.3.1}}` is the snapshot of
+  `react-dom@18.3.1` resolved with `react@18.3.1`, as today's
+  `react-dom@18.3.1(react@18.3.1)` is.
 - The snapshots of a package resolve the same dependency versions. Only the
   peer bindings differ. So an entry of any map that every snapshot has with the
   same value is written once, in the entry, and each snapshot lists the rest.
@@ -267,7 +270,7 @@ The version follows from:
 A range writes both, because the version is the lock. A `workspace:`
 specifier writes both, so the lockfile says where the workspace dependency
 lives without the workspace. A dependency whose version does not select its
-snapshot writes `{specifier, version, peers}`.
+snapshot writes `{specifier, version, with}`.
 
 A `catalogs` entry under `settings` is written on one line too:
 `'@babel/core': {specifier: ^7.29.7, version: 7.29.7}`.
@@ -308,8 +311,8 @@ name maps to one reference.
 To follow the reference `fs-impl: 4.8.4` from a referrer:
 
 1. If `fs-impl@4.8.4` has one snapshot, that is the one.
-2. If the reference names peers, pick the snapshot that binds each named
-   peer to the reference given.
+2. If the reference has `with`, pick the snapshot that binds each peer it
+   names to the reference given.
 3. Otherwise pick the snapshot none of whose peer bindings disagrees with
    the referrer's scope, agreeing on the most names, and then
    binding the fewest names the scope lacks. A name the scope lacks is
@@ -332,7 +335,7 @@ lockfiles:
   scope says which one.
 
 So the writer reads its output back, and wherever step 3 picks another
-snapshot, it writes that reference with the `peers` that name its snapshot,
+snapshot, it writes that reference with the `with` map that names its snapshot,
 the bindings the package's snapshots differ in, and reads back again. Two
 rounds settled every lockfile the prototype was tried on. In the monorepo
 above, 270 references name their snapshot, 174 of them in `importers`, where
