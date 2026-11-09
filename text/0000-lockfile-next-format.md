@@ -176,8 +176,11 @@ no reader applies YAML's implicit typing: `yes` and `1.10` are the strings
 they look like.
 
 The trailing comma is what lets git treat the last entry of a map like any
-other: adding or removing it changes one line. Two spaces indent each
-level. A blank line separates the entries of the top-level map and of
+other: adding or removing it changes one line. A tab indents each level:
+inside a flow collection YAML allows a tab as separation, every reader of
+`pnpm-lock.yaml` that was tried accepts it, and it makes the file a tenth
+smaller than two spaces would. A blank line separates the entries of the
+top-level map and of
 `projects` and `packages`. A map that holds a dependency's `specifier` and
 `version`, a peer's `specifier`, `version` and `optional`, or a catalog
 entry is written on its key's line; a map that holds `with` is written one
@@ -730,7 +733,7 @@ React libraries changes 142 lines today and 52 in this format. That lockfile
 is 31 KB instead of 35 KB.
 
 The 5,623-snapshot lockfile has 99,955 lines today and 74,228 in this
-format, 2.69 MB instead of 4.40 MB, and 473 KB instead of 576 KB gzipped.
+format, 2.43 MB instead of 4.40 MB, and 466 KB instead of 576 KB gzipped.
 Its `projects` section, a third of the file before, writes 5,823 of its
 8,204 dependencies as the specifier alone.
 
@@ -740,7 +743,7 @@ Its `projects` section, a third of the file before, writes 5,823 of its
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 255 snapshots | 85 KB | 80 KB | 1.9 ms | 1.4 ms | 0.7 ms | 1.9 ms |
 | 1,664 snapshots | 860 KB | 702 KB | 4.1 ms | 6.7 ms | 4.6 ms | 11 ms |
-| 5,623 snapshots | 4.40 MB | 2.69 MB | 13 ms | 30 ms | 17 ms | 61 ms |
+| 5,623 snapshots | 4.40 MB | 2.43 MB | 13 ms | 30 ms | 17 ms | 61 ms |
 
 Both formats parse their large sections on separate threads, and cut a
 section into one chunk per thread at entry boundaries. That took today's
