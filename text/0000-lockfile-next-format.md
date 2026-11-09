@@ -13,9 +13,10 @@ is a version. The referrer's own bindings determine which snapshot it links;
 where they don't, the reference names the snapshot by its peer bindings. No
 key or reference carries a peer or patch group.
 
-A prototype behind an opt-in setting reads and writes this format exactly for
-142 of the 146 real lockfiles it was tried on, and writes a 5,623-snapshot
-lockfile in 61% of today's bytes. See [Prototype results](#prototype-results).
+pnpm v12 reads and writes this format behind the opt-in `lockfile.format: v13`
+setting (pnpm/pnpm#17886, merged). That implementation round-trips 142 of the
+146 real lockfiles it was tried on exactly, and writes a 5,623-snapshot
+lockfile in 55% of today's bytes. See [Prototype results](#prototype-results).
 
 The format also requires every directory package's `packages` entry to record
 `specifiers`, the dependency specifiers the resolver read from its manifest,
@@ -701,9 +702,10 @@ writes.
 
 ### Prototype results
 
-A prototype in pnpm v12 reads and writes the format behind a
-`lockfile.format: v13` setting. It converts at the boundary: the in-memory
-lockfile keeps today's keys, so no install logic changes.
+pnpm v12 reads and writes the format behind a `lockfile.format: v13`
+setting, merged in pnpm/pnpm#17886. The implementation is a prototype in
+one sense: it converts at the boundary, and the in-memory lockfile keeps
+today's keys, so no install logic changes.
 
 **Correctness.** 142 of 146 real lockfiles round-trip exactly through the
 written text, from small fixtures up to a 4.4 MB monorepo lockfile with 5,623
@@ -851,7 +853,7 @@ JSON one needs one that allows the comma, as Bun's lockfile needs.
 pnpm v12, except for one reader in pnpm v11. pnpm v11 keeps lockfile 9.0,
 including the optional `specifiers` field that pnpm/pnpm#17477 adds to
 both CLIs, and reads a boot document in this format, so that it can
-switch to the pnpm version a project pins. The prototype carries that
+switch to the pnpm version a project pins. pnpm/pnpm#17886 carries that
 reader (`@pnpm/lockfile.fs`), and the v12 writer of the boot document in
 this format for projects that pin pnpm 14 or later.
 
