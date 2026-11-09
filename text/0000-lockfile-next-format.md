@@ -185,12 +185,13 @@ fragments of such a file, with their indentation reduced.
 
 A lockfile with a boot document, the first document of a two-document
 `pnpm-lock.yaml` that records `configDependencies` and
-`packageManagerDependencies`, writes it in the same format as the main
-document: the same syntax, one `packages` entry per package, and the two
-groups of its root importer written as an importer's dependencies are.
-The two documents stay separated by `---`, so a YAML reader sees a stream
-of two documents, as today, and the env installer keeps writing the boot
-document while the main writer preserves it as text.
+`packageManagerDependencies`, keeps that document in lockfile 9.0's shape
+and syntax, whatever format the main document is in. The boot document is
+what a pnpm that is not the pinned version reads to find the pinned
+version and switch to it, and that pnpm may be older than this format, so
+the document it reads cannot change with the format. The two documents
+stay separated by `---`, the main one in the format `lockfileVersion`
+names.
 
 ### Packages
 
