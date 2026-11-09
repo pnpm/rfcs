@@ -15,12 +15,14 @@ key or reference carries a peer or patch group.
 
 A prototype behind an opt-in setting reads and writes this format exactly for
 142 of the 146 real lockfiles it was tried on, and writes a 5,623-snapshot
-lockfile in 52% of today's bytes. See [Prototype results](#prototype-results).
+lockfile in 61% of today's bytes. See [Prototype results](#prototype-results).
 
 The format also requires every directory package's `packages` entry to record
 `specifiers`, the dependency specifiers the resolver read from its manifest,
 folds `peerDependenciesMeta` into `peerDependencies`, and writes an importer's
-dependency as its specifier alone when the version follows from it.
+dependency as its specifier alone when the version follows from it. The file
+is written as JSON with a trailing comma after every entry, which is valid
+YAML, so `pnpm-lock.yaml` keeps its name and its readers.
 
 ## Motivation
 
@@ -138,34 +140,93 @@ derived walk as a fallback.
 
 ## Detailed Explanation
 
+### Syntax
+
+The file is JSON, with a trailing comma after every entry of a collection
+that spans lines:
+
+```json
+{
+  "lockfileVersion": "13.0",
+
+  "importers": {
+    ".": {
+      "dependencies": {
+        "left-pad": "1.3.0",
+      },
+    },
+  },
+
+  "packages": {
+    "left-pad@1.3.0": {
+      "integrity": "sha512-...",
+    },
+  },
+}
+```
+
+That is YAML 1.2 flow syntax with every scalar double-quoted, so a YAML
+reader parses the file as the same document: `pnpm-lock.yaml` keeps its
+name, and a tool that reads it as YAML today keeps working once it knows
+the new shape. pnpm reads it with a JSON parser that allows the trailing
+comma, which parses the text in a quarter of the time a YAML parser takes,
+and writes it with one quoting rule. Since every key and string is quoted,
+no reader applies YAML's implicit typing: `yes` and `1.10` are the strings
+they look like.
+
+The trailing comma is what lets git treat the last entry of a map like any
+other: adding or removing it changes one line. Two spaces indent each
+level. A blank line separates the entries of the top-level map and of
+`importers` and `packages`. A map that holds a dependency's `specifier` and
+`version`, a peer's `specifier`, `version` and `optional`, or a catalog
+entry is written on its key's line; a map that holds `with` is written one
+binding per line, as the next sections show. The examples below are
+fragments of such a file, with their indentation reduced.
+
 ### Packages
 
 `packages` maps `name@version` to one entry per package. The entry carries
 what today's `packages` and `snapshots` entries carry, together:
 
-```yaml
-packages:
-  buffer-impl@3.7.1:
-    integrity: sha512-...
-  path-impl@3.1.2:
-    integrity: sha512-...
-  fs-impl@4.8.4:
-    integrity: sha512-...
-    peerDependencies:
-      buffer-impl: {specifier: '*', optional: true}
-    dependencies:
-      path-impl: 3.1.2
-    snapshots:
-      - peerDependencies:
-          buffer-impl: {version: 3.7.1}
-      - peerDependencies:
-          buffer-impl: {version: 3.8.0}
-  container@3.2.2:
-    integrity: sha512-...
-    peerDependencies:
-      buffer-impl: {version: 3.7.1, below: true}
-    dependencies:
-      fs-impl: 4.8.4
+```json
+"packages": {
+  "buffer-impl@3.7.1": {
+    "integrity": "sha512-...",
+  },
+  "path-impl@3.1.2": {
+    "integrity": "sha512-...",
+  },
+  "fs-impl@4.8.4": {
+    "integrity": "sha512-...",
+    "peerDependencies": {
+      "buffer-impl": {"specifier": "*", "optional": true},
+    },
+    "dependencies": {
+      "path-impl": "3.1.2",
+    },
+    "snapshots": [
+      {
+        "peerDependencies": {
+          "buffer-impl": {"version": "3.7.1"},
+        },
+      },
+      {
+        "peerDependencies": {
+          "buffer-impl": {"version": "3.8.0"},
+        },
+      },
+    ],
+  },
+  "container@3.2.2": {
+    "integrity": "sha512-...",
+    "peerDependencies": {
+      "buffer-impl": {"version": "3.7.1", "below": true},
+    },
+    "dependencies": {
+      "fs-impl": "4.8.4",
+    },
+  },
+},
 ```
 
 Besides today's metadata fields, an entry has these:
@@ -195,21 +256,23 @@ Rules:
   as today, without groups. Where [following it](#following-a-reference)
   needs to name the snapshot, the reference is a map, `{version, with}`,
   whose `with` holds the bindings that tell the package's snapshots apart.
-  It is written in block style, one binding per line:
+  It is written one binding per line:
 
-  ```yaml
-      react-dom:
-        version: 18.3.1
-        with:
-          react: 18.3.1
+  ```json
+      "react-dom": {
+        "version": "18.3.1",
+        "with": {
+          "react": "18.3.1",
+        },
+      },
   ```
 
   This is the snapshot of `react-dom@18.3.1` resolved with `react@18.3.1`,
-  as today's `react-dom@18.3.1(react@18.3.1)` is. The block style is for
-  git: the version and the bindings change for different reasons, and on
+  as today's `react-dom@18.3.1(react@18.3.1)` is. The layout is for git:
+  the version and the bindings change for different reasons, and on
   separate lines two branches that change one each merge without a
-  conflict. The `with:` line between them is what git needs to keep the
-  two changes apart.
+  conflict. The `"with": {` line between them is what git needs to keep
+  the two changes apart.
 - The snapshots of a package resolve the same dependency versions. Only the
   peer bindings differ. So an entry of any map that every snapshot has with the
   same value is written once, in the entry, and each snapshot lists the rest.
@@ -259,19 +322,22 @@ Rules:
 An importer's dependency is its specifier alone when the version follows
 from the specifier, and `{specifier, version}` on one line otherwise:
 
-```yaml
-importers:
+```json
+"importers": {
+  "packages/app": {
+    "dependencies": {
+      "@babel/core": "catalog:",
+      "debug": {"specifier": "^4.0.0", "version": "4.4.0"},
+      "injected-utils": "workspace:*",
+      "left-pad": "1.3.0",
+      "shared-utils": "workspace:*",
+    },
+  },
 
-  packages/app:
-    dependencies:
-      '@babel/core': 'catalog:'
-      debug: {specifier: ^4.0.0, version: 4.4.0}
-      injected-utils: workspace:*
-      left-pad: 1.3.0
-      shared-utils: workspace:*
-
-  packages/shared-utils:
-    name: shared-utils
+  "packages/shared-utils": {
+    "name": "shared-utils",
+  },
+},
 ```
 
 The version follows from:
@@ -296,26 +362,30 @@ A range writes both, because the version is the lock. A `workspace:`
 dependency writes both when the lockfile cannot tell where it points: a
 link to a path that is no importer, a name two importers claim, or a
 package that is both injected and linked. A dependency whose
-version does not select its snapshot adds `with`, in block style like a
-[reference](#packages) that names its snapshot. It leaves the version out
-when the version follows from the specifier, as a dependency without `with`
-does:
+version does not select its snapshot adds `with`, one binding per line
+like a [reference](#packages) that names its snapshot. It leaves the
+version out when the version follows from the specifier, as a dependency
+without `with` does:
 
-```yaml
-      react-dom:
-        specifier: ^18.0.0
-        version: 18.3.1
-        with:
-          react: 18.3.1
-      ui-kit:
-        specifier: 2.4.0
-        with:
-          react: 18.3.1
+```json
+      "react-dom": {
+        "specifier": "^18.0.0",
+        "version": "18.3.1",
+        "with": {
+          "react": "18.3.1",
+        },
+      },
+      "ui-kit": {
+        "specifier": "2.4.0",
+        "with": {
+          "react": "18.3.1",
+        },
+      },
 ```
 
-A `catalogs` entry under `settings` follows the same rule: `react: 19.2.7`
-for an exact specifier, and `'@babel/core': {specifier: ^7.29.7, version:
-7.29.7}` on one line for a range. A catalog entry records the bare version
+A `catalogs` entry under `settings` follows the same rule: `"react":
+"19.2.7"` for an exact specifier, and `"@babel/core": {"specifier":
+"^7.29.7", "version": "7.29.7"}` on one line for a range. A catalog entry records the bare version
 of an `npm:` alias, so `npm:name@1.2.3` implies `1.2.3` there.
 
 A reader that rejects a lockfile whose specifier implies a version it cannot
@@ -409,33 +479,42 @@ binding names its provider's snapshot, like a reference in step 2.
 A bump of `buffer-impl` to 3.7.2 changes the binding lines and nothing else:
 
 ```diff
-   fs-impl@4.8.4:
-     integrity: sha512-...
-     peerDependencies:
--      buffer-impl: {specifier: '*', version: 3.7.1}
-+      buffer-impl: {specifier: '*', version: 3.7.2}
-     dependencies:
-       path-impl: 3.1.2
-   container@3.2.2:
-     integrity: sha512-...
-     peerDependencies:
--      buffer-impl: {version: 3.7.1, below: true}
-+      buffer-impl: {version: 3.7.2, below: true}
-     dependencies:
-       fs-impl: 4.8.4
+   "fs-impl@4.8.4": {
+     "integrity": "sha512-...",
+     "peerDependencies": {
+-      "buffer-impl": {"specifier": "*", "version": "3.7.1"},
++      "buffer-impl": {"specifier": "*", "version": "3.7.2"},
+     },
+     "dependencies": {
+       "path-impl": "3.1.2",
+     },
+   },
+   "container@3.2.2": {
+     "integrity": "sha512-...",
+     "peerDependencies": {
+-      "buffer-impl": {"version": "3.7.1", "below": true},
++      "buffer-impl": {"version": "3.7.2", "below": true},
+     },
+     "dependencies": {
+       "fs-impl": "4.8.4",
+     },
+   },
 ```
 
 A package that didn't change and binds a new optional peer, the
 pnpm/pnpm#17773 case, gains one line per snapshot that binds it:
 
 ```diff
-   fs-impl@4.8.4:
-     integrity: sha512-...
-     peerDependencies:
--      bare-buffer: {specifier: '*', optional: true}
-+      bare-buffer: {specifier: '*', version: 2.6.1, optional: true}
-     dependencies:
-       path-impl: 3.1.2
+   "fs-impl@4.8.4": {
+     "integrity": "sha512-...",
+     "peerDependencies": {
+-      "bare-buffer": {"specifier": "*", "optional": true},
++      "bare-buffer": {"specifier": "*", "version": "2.6.1", "optional": true},
+     },
+     "dependencies": {
+       "path-impl": "3.1.2",
+     },
+   },
 ```
 
 In the branch example from the motivation, branch B writes `fs-impl: 4.8.4`.
@@ -476,18 +555,23 @@ pnpm v12 writes it behind a setting before then; a lockfile written that
 way may need regenerating when pnpm 13 ships, since the format may still
 change.
 
-```yaml
-settings:
-  autoInstallPeers: true
-  excludeLinksFromLockfile: false
-  catalogs:
-    default:
-      '@babel/core': {specifier: ^7.29.7, version: 7.29.7}
-      react: 19.2.7
-  overrides:
-    react@19: 19.2.7
-  patchedDependencies:
-    foo@2.1.0: abc123
+```json
+"settings": {
+  "autoInstallPeers": true,
+  "excludeLinksFromLockfile": false,
+  "catalogs": {
+    "default": {
+      "@babel/core": {"specifier": "^7.29.7", "version": "7.29.7"},
+      "react": "19.2.7",
+    },
+  },
+  "overrides": {
+    "react@19": "19.2.7",
+  },
+  "patchedDependencies": {
+    "foo@2.1.0": "abc123",
+  },
+},
 ```
 
 Today's settings come first, alphabetical, then the recorded sections in the
@@ -505,14 +589,19 @@ hashed.
 A `packages` entry of a directory package, keyed `name@file:<path>`, has a
 `specifiers` field:
 
-```yaml
-packages:
-  peer@file:../peer:
-    peerDependencies:
-      host: 1.0.0
-    specifiers:
-      dependencies:
-        host: workspace:../host
+```json
+"packages": {
+  "peer@file:../peer": {
+    "peerDependencies": {
+      "host": "1.0.0",
+    },
+    "specifiers": {
+      "dependencies": {
+        "host": "workspace:../host",
+      },
+    },
+  },
+},
 ```
 
 Rules:
@@ -573,27 +662,32 @@ from today's format. The four that can't be written:
 The writer refuses these with an error rather than writing a lockfile that
 reads back differently.
 
-**Diffs.** Updating `react` from 18.3.1 to 18.2.0 in a project with nine
-React libraries changes 142 lines today and 58 in this format. That lockfile
-is 29 KB instead of 35 KB.
+**Syntax.** The generated lockfiles, JSON with trailing commas, were read
+as the same documents by libyaml, PyYAML, js-yaml and pnpm's own Rust YAML
+parser.
 
-The 5,623-snapshot lockfile has 99,955 lines today and 56,569 in this
-format. Its `importers` section, a third of the file before, writes 3,873 of
-its 8,204 dependencies as an exact version alone.
+**Diffs.** Updating `react` from 18.3.1 to 18.2.0 in a project with nine
+React libraries changes 142 lines today and 52 in this format. That lockfile
+is 31 KB instead of 35 KB.
+
+The 5,623-snapshot lockfile has 99,955 lines today and 74,228 in this
+format, 2.69 MB instead of 4.40 MB, and 473 KB instead of 576 KB gzipped.
+Its `importers` section, a third of the file before, writes 5,823 of its
+8,204 dependencies as the specifier alone.
 
 **Speed of the lockfile alone**, minimum of 15 runs:
 
 | Lockfile | Bytes, today | Bytes, next | Read, today | Read, next | Write, today | Write, next |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 255 snapshots | 85 KB | 66 KB | 1.9 ms | 2.8 ms | 0.8 ms | 2.1 ms |
-| 1,664 snapshots | 860 KB | 587 KB | 4.1 ms | 8.8 ms | 4.3 ms | 11 ms |
-| 5,623 snapshots | 4.40 MB | 2.17 MB | 16 ms | 36 ms | 14 ms | 61 ms |
+| 255 snapshots | 85 KB | 80 KB | 1.9 ms | 1.4 ms | 0.7 ms | 1.9 ms |
+| 1,664 snapshots | 860 KB | 702 KB | 4.1 ms | 6.7 ms | 4.6 ms | 11 ms |
+| 5,623 snapshots | 4.40 MB | 2.69 MB | 13 ms | 30 ms | 17 ms | 61 ms |
 
-Both formats parse `importers`, `packages`, and `snapshots` on separate
-threads, and cut a large section into one chunk per thread at entry
-boundaries. That took today's format from 49 ms to 15 ms on the
-5,623-snapshot lockfile. Serially, the next format's document parses in 55 ms
-against today's 68 ms.
+Both formats parse their large sections on separate threads, and cut a
+section into one chunk per thread at entry boundaries. That took today's
+format from 49 ms to 15 ms on the 5,623-snapshot lockfile. Serially, the
+next format's JSON parses into its entries in 15 ms, where the same
+document as YAML takes 69 ms and today's format 68 ms.
 
 Where the time goes, on the 5,623-snapshot lockfile, minimum of 15 runs. The
 first column is what pnpm would pay with the format's entries in memory, which
@@ -602,18 +696,18 @@ pays to keep today's peer-suffixed keys in memory:
 
 | Stage | Inherent to the format | Prototype only |
 | --- | ---: | ---: |
-| Read: parse the document into entries | 11.5 ms | |
+| Read: parse the document into entries | 6.1 ms | |
 | Read: match each reference to a snapshot and each binding to its provider | 3.0 ms | |
 | Read: split each entry into metadata and snapshots | | 4.7 ms |
 | Read: rebuild the peer suffixes | | 0.4 ms |
 | Read: build today's sections from them | | 6.7 ms |
-| Write: serialize the document | 8.2 ms | |
+| Write: serialize the document | 9.5 ms | |
 | Write: group today's snapshots by package and find their providers | | 5.2 ms |
 | Write: convert, read back, and compare, over the rounds | | 35 ms |
 | Write: hoist what the snapshots share | | 6.6 ms |
 
-Today's format reads this lockfile in 16 ms and writes it in 16 ms. The
-inherent stages of the next format add up to 14.5 ms and 8.2 ms. The
+Today's format reads this lockfile in 13 ms and writes it in 17 ms. The
+inherent stages of the next format add up to 9.1 ms and 9.5 ms. The
 matching stage has to stay, because the lockfile no longer names which
 snapshot a reference links. The peer suffixes go once the virtual store
 derives its directory names from the bindings, as [proposed
@@ -621,7 +715,8 @@ above](#the-virtual-store). The native numbers are a sum of measured stages,
 not a measurement of an implementation.
 
 **Installs**, the same binary on a workspace of 237 projects and 1,664
-snapshots, median of 20 runs:
+snapshots, median of 20 runs, measured with the YAML syntax the prototype
+wrote before the JSON one:
 
 | Scenario | Today | Next | 95% interval of the difference |
 | --- | ---: | ---: | --- |
@@ -679,6 +774,16 @@ resolving, so it shows the write cost in full.
    duplicated keys another 8%. The cost is that the resolved peer maps need
    names other than `peerDependencies`.
 
+**Syntax.** Three were weighed. Today's YAML block style needs quoting
+rules, `'@scope/pkg'`, `'catalog:'` and `'*'` among them, exposes YAML 1.1
+readers to implicit typing, and parses in four times the time of JSON.
+Plain JSON parses as fast but makes adding or removing the last entry of a
+map a two-line change, and a separate `pnpm-lock.json` would break every
+tool that detects pnpm by the file's name. JSON with trailing commas keeps
+the name and the one-line diffs, at 16% more bytes raw and 2% more gzipped
+on the 5,623-snapshot lockfile, and a tool that drops its YAML parser for a
+JSON one needs one that allows the comma, as Bun's lockfile needs.
+
 ## Implementation
 
 pnpm v12 only. pnpm v11 keeps lockfile 9.0, including the optional
@@ -690,7 +795,10 @@ and pays none of the conversion, is planned for pnpm v13. Until it exists, its
 speed is the estimate in [Prototype results](#prototype-results), not a
 measurement.
 
-- `pnpm/crates/lockfile`: one `Package` type holds the metadata, the shared
+- `pnpm/crates/lockfile`: the file is written as JSON with trailing commas
+  and read with a JSON parser that allows them, with `importers` and
+  `packages` split at their entries across threads; a 9.0 lockfile is read
+  as YAML. One `Package` type holds the metadata, the shared
   graph fields, and the snapshots. A function follows a reference from a
   scope, with the rule above, and is the one place that rule lives. Reading
   a 9.0 lockfile converts it. The suffix becomes the bindings, and children
@@ -729,10 +837,6 @@ measurement.
 - **Lockfiles that cannot be written.** A writer that fails is safe but
   unfriendly. pnpm could fall back to today's format for them, which keeps the
   install working and changes the format without being asked.
-- **Where the remaining parse cost goes.** YAML parsing is paid per node, not
-  per byte. Each transitive binding is `name: version`, two nodes where
-  today's name list has one, and that is what lets a referrer's scope select
-  its children without a walk.
 - **Older lockfiles without `specifiers`.** Without the derived walk, a frozen
   install can't check a directory entry that has no `specifiers`. It could
   fail and ask for a non-frozen install, or keep the walk only for lockfiles
