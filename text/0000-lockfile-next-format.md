@@ -19,7 +19,7 @@ lockfile in 61% of today's bytes. See [Prototype results](#prototype-results).
 
 The format also requires every directory package's `packages` entry to record
 `specifiers`, the dependency specifiers the resolver read from its manifest,
-folds `peerDependenciesMeta` into `peerDependencies`, and writes an importer's
+folds `peerDependenciesMeta` into `peerDependencies`, and writes a project's
 dependency as its specifier alone when the version follows from it. The file
 is written as JSON with a trailing comma after every entry, which is valid
 YAML, so `pnpm-lock.yaml` keeps its name and its readers.
@@ -125,7 +125,8 @@ two states, and the list does not say which:
 
 ### A directory package's inputs are not recorded
 
-An importer records each dependency's `specifier` beside its `version`, so the
+A project records each dependency's `specifier` beside its `version` in
+`importers`, so the
 frozen-lockfile check compares strings. A directory package, such as an
 injected workspace package or a `file:` directory, records only its resolved
 children in `snapshots`. To find out whether its manifest changed, the check
@@ -149,7 +150,7 @@ that spans lines:
 {
   "lockfileVersion": "13.0",
 
-  "importers": {
+  "projects": {
     ".": {
       "dependencies": {
         "left-pad": "1.3.0",
@@ -177,7 +178,7 @@ they look like.
 The trailing comma is what lets git treat the last entry of a map like any
 other: adding or removing it changes one line. Two spaces indent each
 level. A blank line separates the entries of the top-level map and of
-`importers` and `packages`. A map that holds a dependency's `specifier` and
+`projects` and `packages`. A map that holds a dependency's `specifier` and
 `version`, a peer's `specifier`, `version` and `optional`, or a catalog
 entry is written on its key's line; a map that holds `with` is written one
 binding per line, as the next sections show. The examples below are
@@ -341,13 +342,15 @@ Rules:
   This format has no way to write one: an entry with metadata only would read
   back as a package with an empty snapshot.
 
-### Importers
+### Projects
 
-An importer's dependency is its specifier alone when the version follows
-from the specifier, and `{specifier, version}` on one line otherwise:
+The section is `projects`, the word pnpm uses for these entries everywhere
+else; today's format calls it `importers`. A project's dependency is its
+specifier alone when the version follows from the specifier, and
+`{specifier, version}` on one line otherwise:
 
 ```json
-"importers": {
+"projects": {
   "packages/app": {
     "dependencies": {
       "@babel/core": "catalog:",
@@ -372,7 +375,7 @@ The version follows from:
   `linkWorkspacePackages` resolved to a workspace link differs, and writes
   both;
 - `npm:name@1.2.3`, which is `name@1.2.3`;
-- a `link:` or `file:` path, which is the specifier itself. An importer's
+- a `link:` or `file:` path, which is the specifier itself. A project's
   `file:` version is relative to the lockfile's directory where the
   specifier is relative to the project, so the two read the same only for
   the root project, and a `file:` dependency of another project writes
@@ -385,14 +388,14 @@ The version follows from:
   as `name@file:<path>` when the specifier is `workspace:name@range`. The
   name is the dependency's, or the one the specifier gives;
 - `workspace:` for a linked workspace project, which is `link:<path>`, the
-  path from the project to the importer that records the dependency's name
+  path from the project to the project that records the dependency's name
   as its `name`. A project that a `workspace:` dependency links to records
-  its `name`: importers are keyed by path, and the name is the one fact a
+  its `name`: projects are keyed by path, and the name is the one fact a
   link needs that the lockfile would not otherwise hold.
 
 A range writes both, because the version is the lock. A `workspace:`
 dependency writes both when the lockfile cannot tell where it points: a
-link to a path that is no importer, a name two importers claim, or a
+link to a path that is no project, a name two projects claim, or a
 package that is both injected and linked. A dependency whose
 version does not select its snapshot adds `with`, one binding per line
 like a [reference](#packages) that names its snapshot. It leaves the
@@ -446,7 +449,7 @@ drop the hash.
 
 ### Following a reference
 
-The *scope* of a snapshot or importer is the union of its `dependencies`,
+The *scope* of a snapshot or project is the union of its `dependencies`,
 `optionalDependencies`, and the bound entries of its `peerDependencies`,
 `below` or not. A snapshot's scope also
 holds the snapshot itself under its own name, because a package can be the
@@ -487,7 +490,7 @@ So the writer reads its output back, and wherever step 3 picks another
 snapshot, it writes that reference with the `with` map that names its snapshot,
 the bindings the package's snapshots differ in, and reads back again. Two
 rounds settled every lockfile the prototype was tried on. In the monorepo
-above, 270 references name their snapshot, 174 of them in `importers`, where
+above, 270 references name their snapshot, 174 of them in `projects`, where
 the project's scope has no say between the snapshots. Today's format has
 18,961 lines with peer groups there. In pnpm's own lockfile, no reference
 does.
@@ -502,9 +505,9 @@ names only its version.
 
 The provider of a binding is the snapshot linked under the peer's name in the
 scope above the snapshot. pnpm looks under the referrer that first reaches the
-snapshot in a walk from the importers, then under that referrer's referrer,
+snapshot in a walk from the projects, then under that referrer's referrer,
 and so on.
-The walk takes importers and children in name order, so every reader reaches
+The walk takes projects and children in name order, so every reader reaches
 the same snapshot first. Peers in a cycle are written as `name@version`, as
 the resolver writes them. Where the walk does not find the provider, the
 binding names its provider's snapshot, like a reference in step 2. That is
@@ -589,7 +592,7 @@ keys today and top-level keys of `pnpm-workspace.yaml`: `catalogs`,
 `overrides`, `patchedDependencies`, `ignoredOptionalDependencies`, and the
 checksums `packageExtensionsChecksum` and `pnpmfileChecksum` that stand in
 for `packageExtensions` and the pnpmfile. The top level of the lockfile is
-then `lockfileVersion`, `settings`, `importers`, `packages`, and `time`: the
+then `lockfileVersion`, `settings`, `projects`, `packages`, and `time`: the
 version, the inputs, the two outputs, and the dates.
 
 `lockfileVersion` is `'13.0'`. pnpm/rfcs#68 records the decision to avoid
@@ -624,7 +627,7 @@ change.
 Today's settings come first, alphabetical, then the recorded sections in the
 order above. `catalogs` is the one entry resolution touches: its entries are
 configuration, and each carries the version it resolved to, the way an
-importer's dependency does, specifier alone when the version follows from
+project's dependency does, specifier alone when the version follows from
 it. The up-to-date check compares the one subtree against the
 current configuration.
 
@@ -719,7 +722,7 @@ is 31 KB instead of 35 KB.
 
 The 5,623-snapshot lockfile has 99,955 lines today and 74,228 in this
 format, 2.69 MB instead of 4.40 MB, and 473 KB instead of 576 KB gzipped.
-Its `importers` section, a third of the file before, writes 5,823 of its
+Its `projects` section, a third of the file before, writes 5,823 of its
 8,204 dependencies as the specifier alone.
 
 **Speed of the lockfile alone**, minimum of 15 runs:
@@ -847,7 +850,7 @@ speed is the estimate in [Prototype results](#prototype-results), not a
 measurement.
 
 - `pnpm/crates/lockfile`: the file is written as JSON with trailing commas
-  and read with a JSON parser that allows them, with `importers` and
+  and read with a JSON parser that allows them, with `projects` and
   `packages` split at their entries across threads; a 9.0 lockfile is read
   as YAML. One `Package` type holds the metadata, the shared
   graph fields, and the snapshots. A function follows a reference from a
@@ -892,14 +895,14 @@ measurement.
   install can't check a directory entry that has no `specifiers`. It could
   fail and ask for a non-frozen install, or keep the walk only for lockfiles
   of the older version.
-- **The shape of `specifiers`.** An importer writes each `specifier` beside
+- **The shape of `specifiers`.** A project writes each `specifier` beside
   its `version`. A directory entry writes its specifiers apart from its
   children, because the children are in `snapshots`. The next format could
-  write both the same way, for example by giving importers a `specifiers` map
+  write both the same way, for example by giving projects a `specifiers` map
   too.
 - **Other inconsistencies found while writing the specification**, which a
   format change could fix at the same time:
-  - An importer's `link:` path is relative to the project directory. A
+  - A project's `link:` path is relative to the project directory. A
     snapshot's `link:` path and every `file:` path are relative to the
     lockfile's directory.
   - Whether a reference is an alias is decided by a character rule: it starts
