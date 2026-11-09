@@ -194,10 +194,22 @@ Rules:
 - A reference is a version, `<name>@<version>` for an alias, or `link:<path>`,
   as today, without groups. Where [following it](#following-a-reference)
   needs to name the snapshot, the reference is a map, `{version, with}`,
-  whose `with` holds the bindings that tell the package's snapshots apart:
-  `react-dom: {version: 18.3.1, with: {react: 18.3.1}}` is the snapshot of
-  `react-dom@18.3.1` resolved with `react@18.3.1`, as today's
-  `react-dom@18.3.1(react@18.3.1)` is.
+  whose `with` holds the bindings that tell the package's snapshots apart.
+  It is written in block style, one binding per line:
+
+  ```yaml
+      react-dom:
+        version: 18.3.1
+        with:
+          react: 18.3.1
+  ```
+
+  This is the snapshot of `react-dom@18.3.1` resolved with `react@18.3.1`,
+  as today's `react-dom@18.3.1(react@18.3.1)` is. The block style is for
+  git: the version and the bindings change for different reasons, and on
+  separate lines two branches that change one each merge without a
+  conflict. The `with:` line between them is what git needs to keep the
+  two changes apart.
 - The snapshots of a package resolve the same dependency versions. Only the
   peer bindings differ. So an entry of any map that every snapshot has with the
   same value is written once, in the entry, and each snapshot lists the rest.
@@ -270,7 +282,16 @@ The version follows from:
 A range writes both, because the version is the lock. A `workspace:`
 specifier writes both, so the lockfile says where the workspace dependency
 lives without the workspace. A dependency whose version does not select its
-snapshot writes `{specifier, version, with}`.
+snapshot writes `specifier`, `version` and `with`, in block style like a
+[reference](#packages) that names its snapshot:
+
+```yaml
+      react-dom:
+        specifier: ^18.0.0
+        version: 18.3.1
+        with:
+          react: 18.3.1
+```
 
 A `catalogs` entry under `settings` is written on one line too:
 `'@babel/core': {specifier: ^7.29.7, version: 7.29.7}`.
