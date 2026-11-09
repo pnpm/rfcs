@@ -466,6 +466,16 @@ for `packageExtensions` and the pnpmfile. The top level of the lockfile is
 then `lockfileVersion`, `settings`, `importers`, `packages`, and `time`: the
 version, the inputs, the two outputs, and the dates.
 
+`lockfileVersion` is `'13.0'`. pnpm/rfcs#68 records the decision to avoid
+lockfile version bumps, and this change cannot avoid one: it removes
+`snapshots` and reshapes `packages`, so an older reader cannot read it. The
+number follows pnpm's convention that a new lockfile version takes the
+number of the pnpm major that first writes it by default, as `'9.0'` did
+with pnpm 9, so a reader that meets the file knows which pnpm it needs.
+pnpm v12 writes it behind a setting before then; a lockfile written that
+way may need regenerating when pnpm 13 ships, since the format may still
+change.
+
 ```yaml
 settings:
   autoInstallPeers: true
@@ -710,10 +720,6 @@ measurement.
 
 ## Unresolved Questions and Bikeshedding
 
-- **The version number.** pnpm/rfcs#68 records the decision to avoid lockfile
-  version bumps. This change removes `snapshots` and reshapes `packages`, so
-  an older reader cannot read it, and it needs a new `lockfileVersion`. pnpm
-  v12 already accepts major `12`.
 - **References that name their snapshot.** They exist because
   `dedupePeerDependents` and optional peers bound from anywhere choose snapshots
   the referrer's scope does not predict. Changing either rule so the scope
