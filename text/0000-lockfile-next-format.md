@@ -172,7 +172,7 @@ Besides today's metadata fields, an entry has these:
 
 | Key | Content |
 | --- | --- |
-| `integrity` | The integrity of the package's tarball, for every resolution kind that has one. `resolution` holds the rest of the resolution, and a registry package without a revision has none. |
+| `integrity` | The integrity of the package's tarball, for every resolution kind that has one. `resolution` holds the rest of the resolution. A registry package without a revision has none, nor does a directory package, whose directory is the `<path>` of its `name@file:<path>` key. |
 | `peerDependencies` | The peers the package declares, as `name: range`. A peer that `peerDependenciesMeta` in `package.json` describes is `name: {specifier: range, optional: true}` instead. There is no `peerDependenciesMeta` field. |
 | `dependencies` | The manifest's `dependencies`, and nothing else. |
 | `optionalDependencies` | The manifest's `optionalDependencies`, and nothing else. |
@@ -268,7 +268,10 @@ importers:
       debug: {specifier: ^4.0.0, version: 4.4.0}
       injected-utils: workspace:*
       left-pad: 1.3.0
-      shared-utils: {specifier: workspace:*, version: link:../shared-utils}
+      shared-utils: workspace:*
+
+  packages/shared-utils:
+    name: shared-utils
 ```
 
 The version follows from:
@@ -282,12 +285,17 @@ The version follows from:
 - `workspace:` for an injected workspace package, which is `file:<path>`,
   the `<path>` of the package's one `name@file:<path>` entry in `packages`,
   as `name@file:<path>` when the specifier is `workspace:name@range`. The
-  name is the dependency's, or the one the specifier gives.
+  name is the dependency's, or the one the specifier gives;
+- `workspace:` for a linked workspace project, which is `link:<path>`, the
+  path from the project to the importer that records the dependency's name
+  as its `name`. A project that a `workspace:` dependency links to records
+  its `name`: importers are keyed by path, and the name is the one fact a
+  link needs that the lockfile would not otherwise hold.
 
 A range writes both, because the version is the lock. A `workspace:`
-specifier that is linked, not injected, writes both, so the lockfile says
-where the workspace dependency lives without the workspace. An injected
-one does not need to: its `packages` entry already says. A dependency whose
+dependency writes both when the lockfile cannot tell where it points: a
+link to a path that is no importer, a name two importers claim, or a
+package that is both injected and linked. A dependency whose
 version does not select its snapshot adds `with`, in block style like a
 [reference](#packages) that names its snapshot. It leaves the version out
 when the version follows from the specifier, as a dependency without `with`
@@ -484,13 +492,12 @@ hashed.
 
 ### Directory package specifiers
 
-A `packages` entry whose resolution is `type: directory` has a `specifiers`
-field:
+A `packages` entry of a directory package, keyed `name@file:<path>`, has a
+`specifiers` field:
 
 ```yaml
 packages:
   peer@file:../peer:
-    resolution: {directory: ../peer, type: directory}
     peerDependencies:
       host: 1.0.0
     specifiers:
@@ -560,7 +567,7 @@ reads back differently.
 React libraries changes 142 lines today and 58 in this format. That lockfile
 is 29 KB instead of 35 KB.
 
-The 5,623-snapshot lockfile has 99,955 lines today and 55,803 in this
+The 5,623-snapshot lockfile has 99,955 lines today and 56,569 in this
 format. Its `importers` section, a third of the file before, writes 3,873 of
 its 8,204 dependencies as an exact version alone.
 
@@ -569,8 +576,8 @@ its 8,204 dependencies as an exact version alone.
 | Lockfile | Bytes, today | Bytes, next | Read, today | Read, next | Write, today | Write, next |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 255 snapshots | 85 KB | 66 KB | 1.9 ms | 2.8 ms | 0.8 ms | 2.1 ms |
-| 1,664 snapshots | 860 KB | 669 KB | 4.1 ms | 8.8 ms | 4.3 ms | 11 ms |
-| 5,623 snapshots | 4.40 MB | 2.31 MB | 16 ms | 36 ms | 14 ms | 61 ms |
+| 1,664 snapshots | 860 KB | 587 KB | 4.1 ms | 8.8 ms | 4.3 ms | 11 ms |
+| 5,623 snapshots | 4.40 MB | 2.17 MB | 16 ms | 36 ms | 14 ms | 61 ms |
 
 Both formats parse `importers`, `packages`, and `snapshots` on separate
 threads, and cut a large section into one chunk per thread at entry
