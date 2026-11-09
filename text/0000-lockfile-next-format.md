@@ -554,7 +554,12 @@ The installer derives it: `name@version`, then the names of the bound peers in
 parentheses. A version is added to a name only when two snapshots of the
 package differ on that name. `fs-impl@4.8.4(buffer-impl)` for a package with
 one snapshot, `fs-impl@4.8.4(buffer-impl@3.7.1)` and
-`fs-impl@4.8.4(buffer-impl@3.8.0)` when there are two. The patch hash and
+`fs-impl@4.8.4(buffer-impl@3.8.0)` when there are two. Two snapshots that
+bind the same version of a name to different snapshots of the provider nest
+the provider's discriminator, as today's keys do:
+`fs-impl@4.8.4(host@1.0.0(react@17.0.0))` and
+`fs-impl@4.8.4(host@1.0.0(react@18.0.0))`, so their directories and the
+peer links inside them stay apart. The patch hash and
 `virtualStoreDirMaxLength` apply to the directory name as today.
 
 Under a provider bump, a snapshot keeps its directory, and the installer
