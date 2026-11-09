@@ -305,11 +305,14 @@ does:
           react: 18.3.1
 ```
 
-A `catalogs` entry under `settings` is written on one line too:
-`'@babel/core': {specifier: ^7.29.7, version: 7.29.7}`.
+A `catalogs` entry under `settings` follows the same rule: `react: 19.2.7`
+for an exact specifier, and `'@babel/core': {specifier: ^7.29.7, version:
+7.29.7}` on one line for a range. A catalog entry records the bare version
+of an `npm:` alias, so `npm:name@1.2.3` implies `1.2.3` there.
 
 A reader that rejects a lockfile whose specifier implies a version it cannot
-find, such as a `catalog:` entry `settings.catalogs` lacks, fails with
+find, such as a `catalog:` entry `settings.catalogs` lacks or a catalog
+entry `npm:name` without a version, fails with
 `ERR_PNPM_NEXT_LOCKFILE_UNDERIVABLE_VERSION`.
 
 ### Patches
@@ -462,6 +465,7 @@ settings:
   catalogs:
     default:
       '@babel/core': {specifier: ^7.29.7, version: 7.29.7}
+      react: 19.2.7
   overrides:
     react@19: 19.2.7
   patchedDependencies:
@@ -470,8 +474,9 @@ settings:
 
 Today's settings come first, alphabetical, then the recorded sections in the
 order above. `catalogs` is the one entry resolution touches: its entries are
-configuration, and each carries the version it resolved to, as an importer's
-dependency does. The up-to-date check compares the one subtree against the
+configuration, and each carries the version it resolved to, the way an
+importer's dependency does, specifier alone when the version follows from
+it. The up-to-date check compares the one subtree against the
 current configuration.
 
 `peersSuffixMaxLength` is removed. No suffix is written, so no suffix is
