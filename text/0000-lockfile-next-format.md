@@ -260,7 +260,7 @@ The version follows from:
 - an exact version, which is the version;
 - `npm:name@1.2.3`, which is `name@1.2.3`;
 - a `link:` or `file:` path, which is the specifier itself;
-- `catalog:` or `catalog:<name>`, which is the version the `catalogs`
+- `catalog:` or `catalog:<name>`, which is the version `settings.catalogs`
   section records for the entry, as `name@version` when the catalog entry is
   an `npm:` alias.
 
@@ -269,17 +269,17 @@ specifier writes both, so the lockfile says where the workspace dependency
 lives without the workspace. A dependency whose version does not select its
 snapshot writes `{specifier, version, peers}`.
 
-A `catalogs` entry is written on one line too:
+A `catalogs` entry under `settings` is written on one line too:
 `'@babel/core': {specifier: ^7.29.7, version: 7.29.7}`.
 
 A reader that rejects a lockfile whose specifier implies a version it cannot
-find, such as a `catalog:` entry the `catalogs` section lacks, fails with
+find, such as a `catalog:` entry `settings.catalogs` lacks, fails with
 `ERR_PNPM_NEXT_LOCKFILE_UNDERIVABLE_VERSION`.
 
 ### Patches
 
-No key or reference carries a `(patch_hash=…)` group. `patchedDependencies`
-records every patch once, keyed as today by `name@version`, a range, or a
+No key or reference carries a `(patch_hash=…)` group. `patchedDependencies`,
+under `settings`, records every patch once, keyed as today by `name@version`, a range, or a
 name, with the patch file's hash. A reader matches a package to that section
 the way the resolver does: the exact version first, then the one range it
 satisfies, then the bare name.
@@ -409,6 +409,34 @@ repoints one symlink inside it. Today it removes the directory and creates
 the renamed one, with every symlink and hard link in it.
 
 ### Settings
+
+`settings` records what `pnpm-workspace.yaml` said when the lockfile was
+written. Beside today's settings it holds the sections that are top-level
+keys today and top-level keys of `pnpm-workspace.yaml`: `catalogs`,
+`overrides`, `patchedDependencies`, `ignoredOptionalDependencies`, and the
+checksums `packageExtensionsChecksum` and `pnpmfileChecksum` that stand in
+for `packageExtensions` and the pnpmfile. The top level of the lockfile is
+then `lockfileVersion`, `settings`, `importers`, `packages`, and `time`: the
+version, the inputs, the two outputs, and the dates.
+
+```yaml
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+  catalogs:
+    default:
+      '@babel/core': {specifier: ^7.29.7, version: 7.29.7}
+  overrides:
+    react@19: 19.2.7
+  patchedDependencies:
+    foo@2.1.0: abc123
+```
+
+Today's settings come first, alphabetical, then the recorded sections in the
+order above. `catalogs` is the one entry resolution touches: its entries are
+configuration, and each carries the version it resolved to, as an importer's
+dependency does. The up-to-date check compares the one subtree against the
+current configuration.
 
 `peersSuffixMaxLength` is removed. No suffix is written, so no suffix is
 hashed.
