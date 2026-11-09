@@ -183,6 +183,13 @@ entry is written on its key's line; a map that holds `with` is written one
 binding per line, as the next sections show. The examples below are
 fragments of such a file, with their indentation reduced.
 
+A lockfile with a boot document, the first document of a two-document
+`pnpm-lock.yaml` that records `configDependencies` and
+`packageManagerDependencies`, keeps it as it is: a YAML document before the
+main one, separated by `---`. The main document is the JSON. A YAML reader
+sees a stream of two documents, as today, and the prototype preserves the
+boot document byte for byte, as it does for today's format.
+
 ### Packages
 
 `packages` maps `name@version` to one entry per package. The entry carries
@@ -340,11 +347,19 @@ from the specifier, and `{specifier, version}` on one line otherwise:
 },
 ```
 
+The specifier is written alone only when the version pnpm resolved is the
+one the specifier implies; a dependency whose version differs writes both.
 The version follows from:
 
-- an exact version, which is the version;
+- an exact version, which is the version. An exact version that
+  `linkWorkspacePackages` resolved to a workspace link differs, and writes
+  both;
 - `npm:name@1.2.3`, which is `name@1.2.3`;
-- a `link:` or `file:` path, which is the specifier itself;
+- a `link:` or `file:` path, which is the specifier itself. An importer's
+  `file:` version is relative to the lockfile's directory where the
+  specifier is relative to the project, so the two read the same only for
+  the root project, and a `file:` dependency of another project writes
+  both;
 - `catalog:` or `catalog:<name>`, which is the version `settings.catalogs`
   section records for the entry, as `name@version` when the catalog entry is
   an `npm:` alias;
@@ -428,10 +443,13 @@ To follow the reference `fs-impl: 4.8.4` from a referrer:
 2. If the reference has `with`, pick the snapshot that binds each peer it
    names to the reference given.
 3. Otherwise pick the snapshot none of whose peer bindings disagrees with
-   the referrer's scope, agreeing on the most names, and then
-   binding the fewest names the scope lacks. A name the scope lacks is
-   neutral, because an optional peer bound from elsewhere in the graph is in
-   no referrer's scope.
+   the referrer's scope, agreeing on the most names, then binding the
+   fewest names the scope lacks, and among equals the one listed first
+   under `snapshots`. A name the scope lacks is neutral, because an
+   optional peer bound from elsewhere in the graph is in no referrer's
+   scope. The list order is part of the file, so every reader breaks a
+   tie the same way, and the writer's read-back below adds `with` wherever
+   that choice is not the snapshot it meant.
 
 The scope selects the snapshot whenever every binding below the referrer is in
 it. A peer bound to the referrer's own dependency or own peer is. A peer bound
@@ -472,7 +490,14 @@ and so on.
 The walk takes importers and children in name order, so every reader reaches
 the same snapshot first. Peers in a cycle are written as `name@version`, as
 the resolver writes them. Where the walk does not find the provider, the
-binding names its provider's snapshot, like a reference in step 2.
+binding names its provider's snapshot, like a reference in step 2. That is
+also how two snapshots of a package whose bindings agree on every version
+but whose providers' snapshots differ are told apart: the read-back finds
+that the version alone does not select the provider, and the binding
+names the provider's snapshot. The one such case the prototype refuses is
+a lockfile whose hashed suffixes hide which provider snapshot each of two
+snapshots bound, so there is nothing to write; see [Prototype
+results](#prototype-results).
 
 ### Diffs
 
