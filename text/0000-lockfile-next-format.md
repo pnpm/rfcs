@@ -208,6 +208,15 @@ or later. pnpm 14 rewrites a boot document it finds in another format than
 the project's, which repairs one written by a pnpm 11 that made the first
 switch into the project.
 
+A pnpm 11 or 12 released before that reader takes a boot document in this
+format for a missing one. It then resolves the pinned version from the
+registry instead of from the lockfile, as it does for a project with no
+boot document, and a frozen install fails with
+`ERR_PNPM_FROZEN_LOCKFILE_WITH_OUTDATED_LOCKFILE`. A project that pins pnpm 14 or later
+therefore needs the pnpm making the switch to be at least the release that
+reads this format. Since the format reaches boot documents only with pnpm
+14, those releases precede the first such document by a major.
+
 ### Packages
 
 `packages` maps `name@version` to one entry per package. The entry carries
