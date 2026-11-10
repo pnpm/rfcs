@@ -179,9 +179,10 @@ other: adding or removing it changes one line. A tab indents each level:
 inside a flow collection YAML allows a tab as separation, every reader of
 `pnpm-lock.yaml` that was tried accepts it, and it makes the file a tenth
 smaller than two spaces would. Entries follow each other without blank
-lines: every entry closes with its own `},` line, which gives a diff or a
-merge the context that blank lines gave today's format. A map that holds a
-dependency's `specifier` and
+lines. The entries of the top-level map and of `projects` and `packages`
+are maps written over several lines, so each closes with its own `},`
+line, which gives a diff or a merge the context that blank lines gave
+today's format. A map that holds a dependency's `specifier` and
 `version`, a peer's `specifier`, `version` and `optional`, or a catalog
 entry is written on its key's line; a map that holds `with` is written one
 binding per line, as the next sections show. The examples below are
