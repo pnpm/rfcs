@@ -150,6 +150,7 @@ that spans lines:
 ```json
 {
   "lockfileVersion": "13.0",
+
   "projects": {
     ".": {
       "dependencies": {
@@ -157,6 +158,7 @@ that spans lines:
       },
     },
   },
+
   "packages": {
     "left-pad@1.3.0": {
       "integrity": "sha512-...",
@@ -178,14 +180,18 @@ The trailing comma is what lets git treat the last entry of a map like any
 other: adding or removing it changes one line. A tab indents each level:
 inside a flow collection YAML allows a tab as separation, every reader of
 `pnpm-lock.yaml` that was tried accepts it, and it makes the file a tenth
-smaller than two spaces would. Entries follow each other without blank
-lines. A map written over several lines closes with its own `},` line,
-which gives a diff or a merge the context that blank lines gave today's
-format. A map that holds a dependency's `specifier` and
-`version`, a peer's `specifier`, `version` and `optional`, or a catalog
-entry is written on its key's line; a map that holds `with` is written one
-binding per line, as the next sections show. The examples below are
-fragments of such a file, with their indentation reduced.
+smaller than two spaces would. A blank line separates the entries of the
+top-level map and of `projects` and `packages`. Every map other than fixed
+package metadata (`resolution` unless it has `variations` or `binary`,
+`engines`, `cpu`, `os`, and `libc`) is written across lines, one entry per
+line, closing with its own `},` line: a dependency's `specifier` and
+`version`, a peer's `specifier`, `version`, `optional`, and `below`, a
+catalog entry's `specifier` and `version`, and `with`. That puts each field
+on its own line between the entry's `"<name>": {` and `},` lines, so two
+branches that change adjacent map entries (such as the `version` of two
+adjacent ranged dependencies or catalog entries) or fields separated by an
+unchanged line merge without a conflict. The examples below are fragments
+of such a file, with their indentation reduced.
 
 A lockfile with a boot document, the first document of a two-document
 `pnpm-lock.yaml` that records `configDependencies` and
@@ -230,13 +236,18 @@ what today's `packages` and `snapshots` entries carry, together:
   "buffer-impl@3.7.1": {
     "integrity": "sha512-...",
   },
+
   "path-impl@3.1.2": {
     "integrity": "sha512-...",
   },
+
   "fs-impl@4.8.4": {
     "integrity": "sha512-...",
     "peerDependencies": {
-      "buffer-impl": {"specifier": "*", "optional": true},
+      "buffer-impl": {
+        "specifier": "*",
+        "optional": true,
+      },
     },
     "dependencies": {
       "path-impl": "3.1.2",
@@ -244,20 +255,28 @@ what today's `packages` and `snapshots` entries carry, together:
     "snapshots": [
       {
         "peerDependencies": {
-          "buffer-impl": {"version": "3.7.1"},
+          "buffer-impl": {
+            "version": "3.7.1",
+          },
         },
       },
       {
         "peerDependencies": {
-          "buffer-impl": {"version": "3.8.0"},
+          "buffer-impl": {
+            "version": "3.8.0",
+          },
         },
       },
     ],
   },
+
   "container@3.2.2": {
     "integrity": "sha512-...",
     "peerDependencies": {
-      "buffer-impl": {"version": "3.7.1", "below": true},
+      "buffer-impl": {
+        "version": "3.7.1",
+        "below": true,
+      },
     },
     "dependencies": {
       "fs-impl": "4.8.4",
@@ -279,9 +298,11 @@ Besides today's metadata fields, an entry has these:
 
 `peerDependencies` keeps today's meaning, the ranges the package declares,
 and takes `peerDependenciesMeta` in: a peer's entry is its range, or a map of
-`specifier` and `optional` when there is something to say besides the range.
-The map is written on the peer's line, as `resolution` is today, so a change
-to a peer stays a one-line diff. The resolved maps have their own names.
+`specifier`, `version`, and `optional` when there is something to say besides
+the range. The map is written one field per line, so binding or updating a
+peer changes only the `"version"` line while `"specifier"` and `"optional"`
+stay untouched, and two branches that bump adjacent peers merge without a
+conflict.
 
 Rules:
 
@@ -358,20 +379,24 @@ Rules:
 
 The section is `projects`, the word pnpm uses for these entries everywhere
 else; today's format calls it `importers`. A project's dependency is its
-specifier alone when the version follows from the specifier, and
-`{specifier, version}` on one line otherwise:
+specifier alone when the version follows from the specifier, and a
+`{specifier, version}` map otherwise:
 
 ```json
 "projects": {
   "packages/app": {
     "dependencies": {
       "@babel/core": "catalog:",
-      "debug": {"specifier": "^4.0.0", "version": "4.4.0"},
+      "debug": {
+        "specifier": "^4.0.0",
+        "version": "4.4.0",
+      },
       "injected-utils": "workspace:*",
       "left-pad": "1.3.0",
       "shared-utils": "workspace:*",
     },
   },
+
   "packages/shared-utils": {
     "name": "shared-utils",
   },
@@ -430,8 +455,8 @@ without `with` does:
 ```
 
 A `catalogs` entry under `settings` follows the same rule: `"react":
-"19.2.7"` for an exact specifier, and `"@babel/core": {"specifier":
-"^7.29.7", "version": "7.29.7"}` on one line for a range. A catalog entry records the bare version
+"19.2.7"` for an exact specifier, and a `{"specifier": "^7.29.7", "version":
+"7.29.7"}` map for a range. A catalog entry records the bare version
 of an `npm:` alias, so `npm:name@1.2.3` implies `1.2.3` there.
 
 A reader that rejects a lockfile whose specifier implies a version it cannot
@@ -538,18 +563,25 @@ A bump of `buffer-impl` to 3.7.2 changes the binding lines and nothing else:
    "fs-impl@4.8.4": {
      "integrity": "sha512-...",
      "peerDependencies": {
--      "buffer-impl": {"specifier": "*", "version": "3.7.1"},
-+      "buffer-impl": {"specifier": "*", "version": "3.7.2"},
+       "buffer-impl": {
+         "specifier": "*",
+-        "version": "3.7.1",
++        "version": "3.7.2",
+       },
      },
      "dependencies": {
        "path-impl": "3.1.2",
      },
    },
+
    "container@3.2.2": {
      "integrity": "sha512-...",
      "peerDependencies": {
--      "buffer-impl": {"version": "3.7.1", "below": true},
-+      "buffer-impl": {"version": "3.7.2", "below": true},
+       "buffer-impl": {
+-        "version": "3.7.1",
++        "version": "3.7.2",
+         "below": true,
+       },
      },
      "dependencies": {
        "fs-impl": "4.8.4",
@@ -564,8 +596,11 @@ pnpm/pnpm#17773 case, gains one line per snapshot that binds it:
    "fs-impl@4.8.4": {
      "integrity": "sha512-...",
      "peerDependencies": {
--      "bare-buffer": {"specifier": "*", "optional": true},
-+      "bare-buffer": {"specifier": "*", "version": "2.6.1", "optional": true},
+       "bare-buffer": {
+         "specifier": "*",
++        "version": "2.6.1",
+         "optional": true,
+       },
      },
      "dependencies": {
        "path-impl": "3.1.2",
@@ -622,7 +657,10 @@ change.
   "excludeLinksFromLockfile": false,
   "catalogs": {
     "default": {
-      "@babel/core": {"specifier": "^7.29.7", "version": "7.29.7"},
+      "@babel/core": {
+        "specifier": "^7.29.7",
+        "version": "7.29.7",
+      },
       "react": "19.2.7",
     },
   },
