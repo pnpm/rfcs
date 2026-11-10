@@ -188,9 +188,10 @@ line, closing with its own `},` line: a dependency's `specifier` and
 `version`, a peer's `specifier`, `version`, `optional`, and `below`, a
 catalog entry's `specifier` and `version`, and `with`. That puts each field
 on its own line between the entry's `"<name>": {` and `},` lines, so two
-branches that change adjacent entries or different fields of the same entry
-merge without a conflict. The examples below are fragments of such a file,
-with their indentation reduced.
+branches that change adjacent map entries (such as the `version` of two
+adjacent ranged dependencies or catalog entries) or fields separated by an
+unchanged line merge without a conflict. The examples below are fragments
+of such a file, with their indentation reduced.
 
 A lockfile with a boot document, the first document of a two-document
 `pnpm-lock.yaml` that records `configDependencies` and
