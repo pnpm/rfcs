@@ -1,25 +1,23 @@
-# Routers as indexes: source identity for routed packages
+# Source-pinning routers and direct upstream fetch
 
-> Status: draft. Amends [pnpr registries](./0000-pnpr-registry-mounts.md).
+> Status: draft. Extends [pnpr registries](./0000-pnpr-registry-mounts.md).
 
 ## Summary
 
-A router should only decide which concrete registry owns a package name. It
-should not serve that package's tarball under its own URL.
+Two opt-in settings, both off by default. With both off, pnpr behaves as it
+does today.
 
-Every version pnpr serves names its concrete **source** registry in its
-metadata. pnpm records that source in the lockfile package key
-(`lodash@npmjs:4.17.21`) and rebuilds the tarball URL from the source, not from
-the router the project is configured with. No tarball URL is written to the
-lockfile.
-
-Because the source decides where its tarballs live, a public upstream can also
-declare that its tarballs are fetched from the origin directly, without passing
-through pnpr.
+1. **`pinSources` on a router.** The router names the concrete **source**
+   registry of every version in its metadata and points `dist.tarball` at the
+   source's own URL. pnpm records the source in the lockfile package key
+   (`lodash@npmjs:4.17.21`) and rebuilds the tarball URL from the source, not
+   from the router. No tarball URL is written to the lockfile.
+2. **`fetch: direct` on a public upstream.** Its tarballs are fetched from the
+   origin, without passing through pnpr. This builds on the first setting.
 
 This is the lockfile follow-up that the registries RFC left open under
-[Future lockfile requirement][future-requirement]. It replaces that RFC's
-rule that a router serves tarballs on the base the client addressed.
+[Future lockfile requirement][future-requirement], offered as an option
+instead of a replacement for the current behavior.
 
 [future-requirement]: ./0000-pnpr-registry-mounts.md#client-routing-and-lockfiles
 
@@ -27,8 +25,8 @@ rule that a router serves tarballs on the base the client addressed.
 
 ### One tarball has many URLs
 
-Today a router rewrites `dist.tarball` onto the base the client addressed. With
-this configuration:
+A router rewrites `dist.tarball` onto the base the client addressed. With this
+configuration:
 
 ```yaml
 registries:
@@ -57,10 +55,10 @@ lists the upstream.
 A package reached through a router gets a plain key. Reordering the router's
 sources, or moving a name from one source to another, changes the origin of a
 locked package and the lockfile shows no diff. Registry-qualified keys were
-added to pnpm to close exactly this substitution gap for named registries. A
-router reopens it one level down.
+added to pnpm to close this substitution gap for named registries. A router
+reopens it one level down.
 
-The registries RFC already states the fix: "When a package is reached through a
+The registries RFC states the fix: "When a package is reached through a
 router, that future identity should be the concrete source it resolved to, not
 the router, so a later router edit cannot silently change a locked package's
 origin."
@@ -73,12 +71,33 @@ this: it always rewrites `dist.tarball` onto pnpr. An operator who wants pnpr
 for routing, policy, and private packages still pays storage and egress for
 every public tarball.
 
+### Why these are options
+
+Each setting trades something away, and operators weigh the trade differently.
+
+| | Default | `pinSources` | `pinSources` + `fetch: direct` |
+| --- | --- | --- | --- |
+| Tarball URLs per package | one per base | one | one, at the origin |
+| Lockfile records the source | no | yes | yes |
+| pnpr can block a version that is already locked | yes | yes | no |
+| pnpr mirrors the bytes | yes | yes | no |
+| Lockfile changes when a registry is renamed or a package moves between sources | no | yes | yes |
+| Works with clients that do not know the setting | yes | yes, but they write tarball URLs into their lockfiles | same |
+
 ## Detailed Explanation
 
-### Source identity in metadata
+### `pinSources`
 
-Every version in a packument or version manifest that pnpr serves carries the
-name of its concrete source:
+```yaml
+registries:
+  main:
+    type: router
+    sources: [private, npmjs]
+    pinSources: true
+```
+
+Every version in a packument or version manifest served through a pinning
+router carries the name of its source:
 
 ```json
 {
@@ -92,51 +111,36 @@ name of its concrete source:
 }
 ```
 
-- A router sets `source` to the source that claims the name.
-- A concrete registry addressed at its own `/~<name>/` base sets `source` to
-  its own name.
-- The `/npm/` base sets what the registry named by `defaultRegistry` would set.
-- `dist.tarball` points at the source's tarball location (see below), whichever
-  base the client addressed. Clients that do not read `dist.pnpr` follow it.
+- `source` is the source that claims the name.
+- `dist.tarball` points at the source's `/npm/~<source>/` base. Clients that do
+  not read `dist.pnpr` follow it.
+- The `/npm/` base behaves like the registry that `defaultRegistry` names.
+- A concrete registry that a pinning router lists names itself the same way
+  when it is addressed at its own base. A package then has one key, whichever
+  base a project addresses.
+- The router's own tarball routes keep serving, so lockfiles written before
+  the setting was turned on still install.
 
-A packument for one package is therefore the same document on every base that
-reaches the same source.
-
-### Where a source's tarballs live
-
-| Source | Tarball location |
-| --- | --- |
-| hosted | `<pnpr>/npm/~<name>/<pkg>@<version>` |
-| upstream (default) | `<pnpr>/npm/~<name>/<pkg>@<version>`, fetched, verified, and cached by pnpr |
-| upstream with `fetch: direct` | the origin's own tarball URL |
-
-`fetch: direct` is accepted only on a `public: true` upstream that serves
-`.tgz`. pnpr still serves and filters that upstream's metadata.
-
-A router no longer serves tarball bytes. Its tarball routes answer with a
-redirect to the source's location, so lockfiles and clients from before this
-change keep working.
+A router without `pinSources` is unchanged: `dist.tarball` stays on the
+addressed base and no `source` is emitted.
 
 ### Lockfile
 
-pnpm keys a package by its source:
+pnpm keys a package by the source its metadata names:
 
 ```yaml
 packages:
   lodash@npmjs:4.17.21:
     resolution: {integrity: sha512-...}
-  '@acme/ui@a-private:2.0.0':
+  '@acme/ui@private:2.0.0':
     resolution: {integrity: sha512-...}
 ```
 
-- The key is the same whether the project addressed a router, the `/npm/`
-  base, or the source's own base.
 - A direct dependency and a transitive one resolve to the same key, so one
   copy is installed.
-- The rule that the default registry's packages keep plain keys no longer
-  applies to packages whose metadata names a source.
 - pnpm reads `dist.pnpr.source` only from a registry declared with
   `serverType: pnpr`. From any other registry it is ignored.
+- A version without `dist.pnpr.source` is keyed as it is today.
 
 ### Mapping a source name to a URL
 
@@ -145,7 +149,7 @@ project's configuration. pnpm resolves a source name in this order:
 
 1. A registry that declares that name as its `prefix` in `registries`.
 2. A sibling of the pnpr registry the package name routes to. For a routed
-   base of `https://pnpr.example.com/npm/~team-a/` or
+   base of `https://pnpr.example.com/npm/~main/` or
    `https://pnpr.example.com/npm/`, the source `npmjs` is
    `https://pnpr.example.com/npm/~npmjs/`.
 
@@ -156,8 +160,25 @@ When they differ, it writes the tarball URL into the lockfile entry, as it does
 today for any URL it cannot rebuild. The lockfile is always installable, and it
 is URL-free whenever the project's configuration agrees with the server.
 
-For a `fetch: direct` upstream, the project declares the origin under the
-source's name:
+### `fetch: direct`
+
+```yaml
+registries:
+  npmjs:
+    type: upstream
+    url: https://registry.npmjs.org/
+    public: true
+    fetch: direct
+```
+
+- `dist.tarball` is the origin's own tarball URL. pnpr still serves and filters
+  the upstream's metadata.
+- The upstream names itself in `dist.pnpr.source` on every base that reaches
+  it, so a router that lists it must set `pinSources`. pnpr refuses to start
+  otherwise.
+- It is accepted only on a `public: true` upstream that serves `.tgz`.
+
+The project declares the origin under the source's name:
 
 ```yaml
 registries:
@@ -168,7 +189,7 @@ registries:
 Pointing the same prefix at `https://pnpr.example.com/npm/~npmjs/` instead
 sends the downloads through pnpr. The lockfile key is the same in both cases.
 
-### What direct fetch gives up
+What direct fetch gives up:
 
 - A frozen install never asks pnpr about a direct package. A version that pnpr
   starts hiding after it was locked still installs.
@@ -181,7 +202,31 @@ sends the downloads through pnpr. The lockfile key is the same in both cases.
 `POST /-/pnpr/v0/resolve` returns the same keys and the same tarball locations
 as a client-side resolution through the registry path.
 
+### Compatibility
+
+Both settings are additive, so they can ship after pnpr 1.0:
+
+- `dist.pnpr.source` is a new field. pnpr already strips any `dist.pnpr` that
+  an upstream sends.
+- `pinSources` and `fetch` are new configuration keys that default to today's
+  behavior.
+- pnpm changes a key only when the field is present.
+
+One thing has to hold before 1.0: a registry name must be usable as a lockfile
+key prefix. pnpm's prefix grammar requires a leading letter, then letters,
+digits, `.`, `_`, and `-`, and rejects reserved specifier prefixes such as
+`npm` and `workspace`. pnpm/pnpm#18043 restricts pnpr registry names to that
+grammar.
+
 ## Rationale and Alternatives
+
+### Make source pinning the only behavior
+
+Every router pins its sources and stops serving tarballs under its own URL.
+This gives one model to explain, but it forces registry names into every
+lockfile, re-keys lockfiles when an operator renames a registry, and makes
+older clients write tarball URLs. An operator who only wants a registry facade
+gets those costs with no benefit.
 
 ### Redirect only
 
@@ -189,8 +234,8 @@ A router answers each tarball request with a redirect to
 `/npm/~<source>/<pkg>@<version>`. This fixes the duplicate cache entries with
 no client or lockfile change, and a Worker in front of pnpr can follow the
 redirect so the client sees one response. It does not record the source in the
-lockfile and does not allow direct fetch. This RFC keeps the redirect as the
-compatibility path.
+lockfile and does not allow direct fetch. It remains a cheap fix for the cache
+problem alone.
 
 ### Client-side routing with declared prefixes
 
@@ -218,20 +263,20 @@ direct and mirrored downloads without changing what the server emits.
 ### pnpr
 
 - `rewrite_upstream_tarball_urls` in `crates/upstream/src/packument.rs` takes
-  the base to rewrite onto. A router request passes the source's location.
+  the base to rewrite onto. A pinning router passes the source's base.
 - The `dist.pnpr` object is already written by `server/tar_registry.rs`. It
   gains `source`.
-- Router tarball routes in `server/routing.rs` redirect.
 - `resolver/wire/tarball_router.rs` emits source-qualified keys and the same
   locations.
-- `fetch` is added to the upstream registry config and validated against
-  `public` and `tarballs`.
+- `pinSources` is added to the router config and `fetch` to the upstream
+  config, with the validation described above.
 
 ### pnpm
 
 - The key prefix is chosen before metadata is fetched, from configuration
-  alone (`resolving-npm-resolver/src/npm_resolver/registry_dependency.rs`). It
-  moves after the pick, in `build_resolve_result`.
+  alone (`resolving-npm-resolver/src/npm_resolver/registry_dependency.rs`).
+  For a `serverType: pnpr` registry it is chosen after the pick, in
+  `build_resolve_result`.
 - The store fast path (`npm_resolver/store_peek.rs`) creates a package id
   without metadata. It needs the source recorded in the store index, or it is
   skipped for `serverType: pnpr` registries.
@@ -242,10 +287,10 @@ direct and mirrored downloads without changing what the server emits.
   sibling lookup.
 - `rekeyed` in `lockfile/src/resolution/registry.rs` derives keys from
   configuration. It cannot produce a source-qualified key for an existing
-  plain one, so adoption re-resolves the lockfile once.
+  plain one, so turning `pinSources` on re-resolves the lockfile once.
 
 This is a pnpm v12 change. A client without it follows `dist.tarball` and
-writes the URL of every routed package into its lockfile.
+writes the URL of every package from a pinning router into its lockfile.
 
 ## Prior Art
 
@@ -255,16 +300,13 @@ are the encoding this RFC reuses.
 
 ## Unresolved Questions and Bikeshedding
 
-- The name and values of the upstream setting: `fetch: direct`, or another
-  spelling.
+- The names `pinSources` and `fetch: direct`.
 - Whether a built-in prefix such as `npmjs` should win over the sibling lookup,
   so that a direct npm upstream needs no declaration in the project.
-- Whether a router keeps its own `tarballs: tar` setting. A router that serves
-  no bytes has no format, so a tar and a `.tgz` view of one origin become two
-  upstream registries with two caches.
-- Whether hosted and private sources should be qualified too when the project
-  addresses them through a router, or only public upstreams. This RFC
-  qualifies all of them.
-- Renaming a registry in `pnpr.yaml` re-keys every lockfile that used it.
+- A pinning router with `tarballs: tar` over a `.tgz` source serves different
+  bytes than the source's own base. Should that combination be refused, or
+  should the router keep its own tarball URL for it?
+- Should a concrete registry name itself only when a pinning router lists it,
+  as proposed, or whenever it is addressed?
+- Renaming a registry in `pnpr.yaml` re-keys every lockfile that pinned it.
   Should a registry be able to declare a stable identity apart from its name?
-- How long the router redirect stays.
