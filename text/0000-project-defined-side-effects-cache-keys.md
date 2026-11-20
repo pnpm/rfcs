@@ -197,7 +197,7 @@ All changes are in the pnpm v12 CLI, under `pnpm/` in pnpm/pnpm. pnpm v11 doesn'
 
 **Configuration** (`pnpm/crates/config`). `SideEffectsCacheSettings` gains `engine` and `key`, typed so that a map can be added later. Both flow through applying, resetting, the resolved form and the environment overlay, as `exclude` does. `apply_side_effects_cache` decides what an omitted `read` or `write` means (unresolved question 1).
 
-**Commands.** The `store` dispatcher in `pnpm/crates/cli/src/cli_args/dispatch_query/maintenance.rs` applies `updateConfig`. The install state in `pnpm/crates/package-manager/src/install_state/settings.rs` records both fields.
+**Commands.** The `store` dispatcher in `pnpm/crates/cli/src/cli_args/dispatch_query/maintenance.rs` applies `updateConfig`. The install state in `pnpm/crates/package-manager/src/install_state/settings.rs` records both fields. Under the global virtual store, `build_state_unchanged` in `pnpm/crates/package-manager/src/install/prepare_modules_state/up_to_date.rs` also compares the recorded values. Otherwise the up-to-date shortcut skips linking, and the slots don't move.
 
 **Tests.**
 
@@ -230,9 +230,10 @@ The implementation is done when:
 
 ## Unresolved Questions and Bikeshedding
 
-1. `read` and `write` in hook output. When the cache is off, a hook sees `sideEffectsCache: false`, and the pattern `{ ...config.sideEffectsCache, key }` then returns `{ key }`. `apply_side_effects_cache` defaults a missing `read` and `write` to `true`, so the hook turns the cache back on and overrides `--no-side-effects-cache`. Proposal: in hook output, an omitted `read` or `write` keeps its current value.
+1. `read` and `write` in hook output. When `pnpm-workspace.yaml` sets `sideEffectsCache: false`, a hook sees `sideEffectsCache: false`, and the pattern `{ ...config.sideEffectsCache, key }` then returns `{ key }`. `apply_side_effects_cache` defaults a missing `read` and `write` to `true`, so the hook turns the cache back on. Proposal: in hook output, an omitted `read` or `write` keeps its current value.
 2. `engine` and a package's own `node@runtime:` pin. The slot hash prefers a package's own pin over the install's engine. Proposal: a configured `engine` wins, since the project owns the value. The runtime dependency still changes `deps=`.
 3. Which slots get `key`. The maintainer's reply says "only of a built package". This RFC reads that as the build-required set, dependents included. Gating on the built package alone would let two targets share a dependent's slot whose links point at different builds.
 4. Empty strings. Proposal: reject them, so that a hook bug can't silently fall back to shared keys.
-5. Project-local `node_modules`. Without the global virtual store, should changing a value re-import built packages that are already linked, or is `pnpm rebuild` the answer?
+5. Project-local `node_modules`. Without the global virtual store, a changed value forces a full install. In a first implementation, built packages that were already linked kept their old build output until `pnpm rebuild`. Should the install re-import them?
 6. `pnpm dlx`. It loads the project's `pnpm-workspace.yaml` without the hooks, so a value set there can reach the tool's install. Proposal: `dlx` ignores both fields, since it installs a tool for the host and not for the project's target.
+7. The `--side-effects-cache` and `--no-side-effects-cache` flags. When either is on the command line, pnpm drops a hook's whole `sideEffectsCache` result, `engine` and `key` included. A run with the flag then computes different global virtual store slots than a run without it. Proposal: the flags set only `read` and `write`, as they already leave a declared `remote` tier in place, and a hook's `engine` and `key` still apply.
