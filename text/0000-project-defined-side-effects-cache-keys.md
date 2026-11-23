@@ -59,8 +59,8 @@ sideEffectsCache:
 
 | Field | Effect on the key | Cost of a wrong value |
 |---|---|---|
-| `engine` | Replaces the host part, used as written. | Can merge entries that must stay apart. |
-| `key` | Appends `;key=<hash>`. pnpm hashes the value, so paths in it never reach the store index or a server. | Can only split entries. Costs an extra build. |
+| `engine` | Replaces the host part, used as written. | Can merge builds that today's keys keep apart, such as builds for two platforms. |
+| `key` | Appends `;key=<hash>`. pnpm hashes the value, so paths in it never reach the store index or a server. | Never merges builds that today's keys keep apart. A key that misses a build input keeps builds that differ in it under one entry, as today, so pnpm can restore the wrong one. An input the build doesn't use costs extra builds. |
 
 - pnpm doesn't interpret either value.
 - A project that sets `engine` owns the platform and the architecture in it. A value that leaves them out shares builds between machines with different platforms. The docs must say so.
@@ -69,12 +69,15 @@ sideEffectsCache:
 
 ### Setting the values from `updateConfig`
 
-The hook of each install root computes the values at install time. pnpm v12 already applies a `sideEffectsCache` object returned by `updateConfig` (tested with `exclude`), so no new hook is needed.
+The hook of each install root computes the values at install time. pnpm v12 reads a hook's result with the same settings reader as `pnpm-workspace.yaml`, so it applies a `sideEffectsCache` object a hook returns, and no new hook is needed. The discussion confirmed this with `exclude` on pnpm 12.16.0. No pnpm test covers it yet, and [Implementation](#implementation) adds one for `key`.
 
 ```js title=".pnpmfile.mjs"
 import { createHash } from 'node:crypto'
 
-const buildInputs = ['npm_config_runtime', 'npm_config_target', 'npm_config_arch', 'CC', 'CXX', 'CFLAGS', 'CXXFLAGS', 'LDFLAGS']
+const buildInputs = [
+  'npm_config_runtime', 'npm_config_target', 'npm_config_arch', 'npm_config_disturl',
+  'CC', 'CXX', 'CFLAGS', 'CXXFLAGS', 'LDFLAGS',
+]
 
 export const hooks = {
   updateConfig: config => {
@@ -87,7 +90,7 @@ export const hooks = {
 }
 ```
 
-A real hook would remove machine-specific paths from the values first, and could add a compiler's `--version` output or a checksum of the sysroot. Unresolved question 1 covers what this example does when the cache is off.
+A real hook removes machine-specific paths from the values first. It also has to cover the inputs no variable names. Examples are a compiler's `--version` output, a checksum of the sysroot, and a checksum of the headers if their download URL can serve new ones. A new compiler at the same path otherwise keeps the key, and pnpm restores the old compiler's build. Unresolved question 1 covers what this example does when the cache is off.
 
 ### The local cache key
 
@@ -119,8 +122,15 @@ Every command that computes a cache key or a slot path sees the same `updateConf
 
 - `pnpm rebuild` already runs the hooks.
 - `pnpm store status` doesn't, so it would look for the wrong slots. A hook-set `sideEffectsCache.exclude` has the same gap today, so the fix ships on its own, as a bug fix to a released setting.
-- An optimistic repeat install records both fields, as it records `exclude`. A changed value forces a full install.
+- An optimistic repeat install records both fields, as it records `exclude`. A changed value forces a full install, which [Changing a value](#changing-a-value) describes.
 - pnpm's download of itself keeps the host engine. Unresolved question 6 covers `pnpm dlx`.
+
+### Changing a value
+
+When `engine` or `key` differs from the value recorded for the installed `node_modules`, pnpm doesn't take the up-to-date shortcut, as with a changed `allowBuilds` decision. The old target's build must not stay linked.
+
+- Under the global virtual store, built packages and their dependents move to new slots.
+- Without the global virtual store, a package's directory doesn't depend on the key, so the new key alone changes nothing on disk. pnpm imports every package that builds again, then restores its build from the cache under the new key or runs its build script. Dependents keep their links, which point to the same directories.
 
 ### Unset fields
 
@@ -145,7 +155,7 @@ A cloned repository controls `pnpm-workspace.yaml` and its pnpmfile, so it contr
 
 ### `key` alone
 
-The first proposal in the discussion had only `key`. The host values aren't only incomplete, they can be wrong. In the VS Code setup, `node24` names the Node.js that runs the install, but the build targets Electron or the server's runtime. With `key` alone, one Electron build made under two host Node.js versions lands under two keys. `engine` lets the project replace the host values. The cost is that a wrong `engine` can merge entries that must stay apart, while a wrong `key` only splits them.
+The first proposal in the discussion had only `key`. The host values aren't only incomplete, they can be wrong. In the VS Code setup, `node24` names the Node.js that runs the install, but the build targets Electron or the server's runtime. With `key` alone, one Electron build made under two host Node.js versions lands under two keys. `engine` lets the project replace the host values. The cost is that a wrong `engine` can merge builds that today's keys keep apart, which `key` never does.
 
 ### A list of environment variable names
 
@@ -197,7 +207,7 @@ All changes are in the pnpm v12 CLI, under `pnpm/` in pnpm/pnpm. pnpm v11 doesn'
 
 **Configuration** (`pnpm/crates/config`). `SideEffectsCacheSettings` gains `engine` and `key`, typed so that a map can be added later. Both flow through applying, resetting, the resolved form and the environment overlay, as `exclude` does. `apply_side_effects_cache` decides what an omitted `read` or `write` means (unresolved question 1).
 
-**Commands.** The `store` dispatcher in `pnpm/crates/cli/src/cli_args/dispatch_query/maintenance.rs` applies `updateConfig`. The install state in `pnpm/crates/package-manager/src/install_state/settings.rs` records both fields. Under the global virtual store, `build_state_unchanged` in `pnpm/crates/package-manager/src/install/prepare_modules_state/up_to_date.rs` also compares the recorded values. Otherwise the up-to-date shortcut skips linking, and the slots don't move.
+**Commands.** The `store` dispatcher in `pnpm/crates/cli/src/cli_args/dispatch_query/maintenance.rs` applies `updateConfig`. The install state in `pnpm/crates/package-manager/src/install_state/settings.rs` records both fields. `build_state_unchanged` in `pnpm/crates/package-manager/src/install/prepare_modules_state/up_to_date.rs` compares the recorded values with and without the global virtual store, so a changed value never takes the up-to-date shortcut. Without the global virtual store, the linker also has to import the packages that build again, because their directories don't change with the key. A full install alone leaves the old build linked.
 
 **Tests.**
 
@@ -208,6 +218,7 @@ All changes are in the pnpm v12 CLI, under `pnpm/` in pnpm/pnpm. pnpm v11 doesn'
 - CLI tests with two projects sharing one store:
   - Different values make the second install run the build script. Equal values restore the build.
   - Under the global virtual store, only built packages and their dependents get new slots.
+  - Without the global virtual store, a reinstall with a new `key` replaces a build that is already linked. The new build comes from the cache when one is present, and from the build script otherwise.
   - `pnpm rebuild` and `pnpm store status` agree with `pnpm install` on a hook-set value.
   - A restored remote artifact lands in the local cache under the configured key.
 - Repeat-install drift for both fields.
@@ -220,13 +231,14 @@ The implementation is done when:
 2. With the same `engine`, builds made under two host Node.js versions share one cache entry.
 3. With neither field set, no cache key, slot path or remote input key changes.
 4. `pnpm install`, `pnpm rebuild` and `pnpm store status` compute the same keys and slots for a value set by `updateConfig`.
+5. After `key` changes, `pnpm install` replaces the linked build of a native package, with or without the global virtual store, and without `pnpm rebuild`.
 
 ## Prior Art
 
 - [prebuild-install](https://github.com/prebuild/prebuild-install) picks a prebuilt binary by target: `--runtime` (`node`, `napi` or `electron`), `--target`, `--arch`, `--platform` and `--libc`, or the matching `npm_config_*` variables. The target is an input separate from the Node.js that runs the installer, which is what `engine` gives the cache.
 - [ccache](https://ccache.dev/manual/latest.html)'s `compiler_check` setting accepts `string:value`, for "another string that the build system generates to identify the compiler", or a command whose output ccache hashes. That is the role of `key`: the build system says what identifies its toolchain, and the cache hashes it without interpreting it.
 - [`actions/cache`](https://github.com/actions/cache#creating-a-cache-key) takes its `key` from the workflow, commonly built from the runner's OS and a hash of the lockfiles.
-- [RFC 0007's prior art](./0007-shared-side-effects-cache.md#prior-art) notes that Turborepo, Nx and moon take their keys from user configuration, so a wrong key is the user's misconfiguration. This RFC makes that trade for two values only, and `key` can only split entries.
+- [RFC 0007's prior art](./0007-shared-side-effects-cache.md#prior-art) notes that Turborepo, Nx and moon take their keys from user configuration, so a wrong key is the user's misconfiguration. This RFC makes that trade for two values only, and `key` never merges builds that today's keys keep apart.
 
 ## Unresolved Questions and Bikeshedding
 
@@ -234,6 +246,6 @@ The implementation is done when:
 2. `engine` and a package's own `node@runtime:` pin. The slot hash prefers a package's own pin over the install's engine. Proposal: a configured `engine` wins, since the project owns the value. The runtime dependency still changes `deps=`.
 3. Which slots get `key`. The maintainer's reply says "only of a built package". This RFC reads that as the build-required set, dependents included. Gating on the built package alone would let two targets share a dependent's slot whose links point at different builds.
 4. Empty strings. Proposal: reject them, so that a hook bug can't silently fall back to shared keys.
-5. Project-local `node_modules`. Without the global virtual store, a changed value forces a full install. In a first implementation, built packages that were already linked kept their old build output until `pnpm rebuild`. Should the install re-import them?
+5. Project-local `node_modules`. In a first implementation, a full install without the global virtual store kept the old build linked until `pnpm rebuild`. pnpm records no engine for a project-local `node_modules` today, so a Node.js major upgrade has the same effect. Proposal: import the packages that build again, as [Changing a value](#changing-a-value) describes. A project changes these values on purpose to switch targets, such as an Electron upgrade, so the old target's build must not stay linked.
 6. `pnpm dlx`. It loads the project's `pnpm-workspace.yaml` without the hooks, so a value set there can reach the tool's install. Proposal: `dlx` ignores both fields, since it installs a tool for the host and not for the project's target.
 7. The `--side-effects-cache` and `--no-side-effects-cache` flags. When either is on the command line, pnpm drops a hook's whole `sideEffectsCache` result, `engine` and `key` included. A run with the flag then computes different global virtual store slots than a run without it. Proposal: the flags set only `read` and `write`, as they already leave a declared `remote` tier in place, and a hook's `engine` and `key` still apply.
